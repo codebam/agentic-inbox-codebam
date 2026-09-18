@@ -48,6 +48,9 @@ export interface Email {
 	participants?: string;
 	needs_reply?: boolean;
 	has_draft?: boolean;
+	// Present in the aggregated All Accounts list so each row knows which
+	// mailbox it belongs to.
+	mailboxId?: string;
 }
 
 export interface Attachment {

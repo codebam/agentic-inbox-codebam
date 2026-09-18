@@ -6,6 +6,7 @@ import { Badge, Button, Dialog, Input, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	CaretLeftIcon,
+	EnvelopeOpenIcon,
 	FileIcon,
 	FolderIcon,
 	PaperPlaneTiltIcon,
@@ -159,6 +160,13 @@ export default function Sidebar() {
 
 			{/* Navigation */}
 			<nav className="flex-1 overflow-y-auto px-2 space-y-0.5">
+				<FolderLink
+					to="/all"
+					icon={<EnvelopeOpenIcon size={18} />}
+					label="All Accounts"
+					onClick={handleNavClick}
+				/>
+
 				{SYSTEM_FOLDER_LINKS.map((folder) => (
 					<FolderLink
 						key={folder.id}

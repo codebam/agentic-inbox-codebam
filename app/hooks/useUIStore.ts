@@ -17,9 +17,11 @@ export interface ComposeOptions {
 interface UIState {
 	// Side panel state
 	selectedEmailId: string | null;
+	/** Mailbox that owns the selected email (set by the All Accounts view). */
+	selectedMailboxId: string | null;
 	isComposing: boolean;
 	_previousEmailId: string | null;
-	selectEmail: (id: string | null) => void;
+	selectEmail: (id: string | null, mailboxId?: string | null) => void;
 	startCompose: (options?: ComposeOptions) => void;
 	closePanel: () => void;
 	closeCompose: () => void;
@@ -45,6 +47,7 @@ interface UIState {
 
 export const useUIStore = create<UIState>((set, get) => ({
 	selectedEmailId: null,
+	selectedMailboxId: null,
 	isComposing: false,
 	_previousEmailId: null,
 	composeOptions: { mode: "new", originalEmail: null },
@@ -52,7 +55,14 @@ export const useUIStore = create<UIState>((set, get) => ({
 	isSidebarOpen: false,
 	isAgentPanelOpen: true,
 
-	selectEmail: (id) => set({ selectedEmailId: id, isComposing: false }),
+	selectEmail: (id, mailboxId) =>
+		set((state) => ({
+			selectedEmailId: id,
+			// Keep the previously selected mailbox when callers only pass an
+			// email id (mailbox routes); All Accounts passes the mailbox explicitly.
+			selectedMailboxId: id ? (mailboxId ?? state.selectedMailboxId) : null,
+			isComposing: false,
+		})),
 
 	startCompose: (options) =>
 		set((state) => {
@@ -63,12 +73,13 @@ export const useUIStore = create<UIState>((set, get) => ({
 				_previousEmailId: state.selectedEmailId,
 				// Keep selectedEmailId when replying/forwarding so the thread stays visible
 				selectedEmailId: isReplyOrForward ? state.selectedEmailId : null,
+				selectedMailboxId: isReplyOrForward ? state.selectedMailboxId : null,
 				composeOptions: options || { mode: "new", originalEmail: null },
 				isSidebarOpen: false,
 			};
 		}),
 
-	closePanel: () => set({ selectedEmailId: null, isComposing: false, _previousEmailId: null, composeOptions: { mode: "new" as const, originalEmail: null } }),
+	closePanel: () => set({ selectedEmailId: null, selectedMailboxId: null, isComposing: false, _previousEmailId: null, composeOptions: { mode: "new" as const, originalEmail: null } }),
 
 	closeCompose: () =>
 		set((state) => ({

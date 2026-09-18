@@ -8,11 +8,18 @@ import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
 
-export default function ComposePanel() {
-	const { mailboxId, folder } = useParams<{
+export default function ComposePanel({
+	mailboxId: mailboxIdProp,
+}: {
+	/** Optional override used by the All Accounts view. Falls back to the route param. */
+	mailboxId?: string;
+} = {}) {
+	const params = useParams<{
 		mailboxId: string;
 		folder: string;
 	}>();
+	const mailboxId = mailboxIdProp ?? params.mailboxId;
+	const folder = params.folder;
 
 	const {
 		to,

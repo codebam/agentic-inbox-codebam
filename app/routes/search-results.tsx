@@ -64,7 +64,7 @@ export default function SearchResultsRoute() {
 	const totalCount = searchData?.totalCount ?? 0;
 	const isPanelOpen = selectedEmailId !== null || isComposing;
 
-	const handleRowClick = (email: Email) => { selectEmail(email.id); if (!email.read && mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { read: true } }); };
+	const handleRowClick = (email: Email) => { selectEmail(email.id, mailboxId); if (!email.read && mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { read: true } }); };
 	const folderDisplayName = (name: string | null | undefined): string => { if (!name) return ""; const map: Record<string, string> = { inbox: "Inbox", sent: "Sent", draft: "Drafts", archive: "Archive", trash: "Trash" }; return map[name.toLowerCase()] || name; };
 
 	return (

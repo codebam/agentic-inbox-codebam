@@ -12,7 +12,13 @@ import {
 	Text,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
-import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import {
+	CaretRightIcon,
+	EnvelopeIcon,
+	EnvelopeOpenIcon,
+	PlusIcon,
+	TrashIcon,
+} from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router";
@@ -168,13 +174,32 @@ export default function HomeRoute() {
 					</div>
 				) : accounts.length > 0 ? (
 					<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
-						{accounts.map((account, idx) => (
+						<RouterLink
+							to="/all"
+							className="group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint"
+						>
+							<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default">
+								<EnvelopeOpenIcon size={20} />
+							</div>
+							<div className="min-w-0 flex-1">
+								<div className="text-sm font-medium text-kumo-default">
+									All Accounts
+								</div>
+								<div className="text-sm text-kumo-subtle truncate">
+									See emails from all {accounts.length} mailbox
+									{accounts.length === 1 ? "" : "es"} in one place
+								</div>
+							</div>
+							<CaretRightIcon
+								size={16}
+								className="shrink-0 text-kumo-subtle"
+							/>
+						</RouterLink>
+						{accounts.map((account) => (
 							<RouterLink
 								key={account.id}
 								to={`/mailbox/${account.id}`}
-								className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
-									idx > 0 ? "border-t border-kumo-line" : ""
-								}`}
+								className="group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint border-t border-kumo-line"
 							>
 								<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
 									{account.name.charAt(0).toUpperCase()}

@@ -101,6 +101,8 @@ function useInvalidateEmailData() {
 		qc.invalidateQueries({
 			queryKey: queryKeys.folders.list(mailboxId),
 		});
+		// Keep the All Accounts aggregate in sync when a mailbox changes.
+		qc.invalidateQueries({ queryKey: ["all-emails"] });
 	};
 }
 
@@ -183,6 +185,7 @@ export function useUpdateEmail() {
 			qc.invalidateQueries({
 				queryKey: queryKeys.folders.list(mailboxId),
 			});
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
 		},
 	});
 }
@@ -200,6 +203,7 @@ export function useMarkThreadRead() {
 			qc.invalidateQueries({
 				queryKey: queryKeys.folders.list(mailboxId),
 			});
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
 		},
 	});
 }

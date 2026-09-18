@@ -9,12 +9,15 @@ import EmailPanel from "~/components/EmailPanel";
 interface MailboxSplitViewProps {
 	selectedEmailId: string | null;
 	isComposing: boolean;
+	/** Mailbox that owns the selected email. Defaults to the route param. */
+	mailboxId?: string;
 	children: ReactNode;
 }
 
 export default function MailboxSplitView({
 	selectedEmailId,
 	isComposing,
+	mailboxId,
 	children,
 }: MailboxSplitViewProps) {
 	const isPanelOpen = selectedEmailId !== null || isComposing;
@@ -33,16 +36,16 @@ export default function MailboxSplitView({
 			{isPanelOpen && (
 				<div className="flex-1 flex flex-col min-w-0 overflow-hidden w-full md:w-auto">
 					{isComposing && !selectedEmailId ? (
-						<ComposePanel />
+						<ComposePanel mailboxId={mailboxId} />
 					) : isComposing && selectedEmailId ? (
 						<div className="flex flex-col h-full overflow-y-auto">
-							<ComposePanel />
+							<ComposePanel mailboxId={mailboxId} />
 							<div className="border-t border-kumo-line">
-								<EmailPanel emailId={selectedEmailId} />
+								<EmailPanel emailId={selectedEmailId} mailboxId={mailboxId} />
 							</div>
 						</div>
 					) : selectedEmailId ? (
-						<EmailPanel emailId={selectedEmailId} />
+						<EmailPanel emailId={selectedEmailId} mailboxId={mailboxId} />
 					) : null}
 				</div>
 			)}

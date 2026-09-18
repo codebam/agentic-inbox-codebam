@@ -29,8 +29,17 @@ function EmailPanelSkeleton() {
 	);
 }
 
-export default function EmailPanel({ emailId }: { emailId: string }) {
-	const { mailboxId, folder } = useParams<{ mailboxId: string; folder: string }>();
+export default function EmailPanel({
+	emailId,
+	mailboxId: mailboxIdProp,
+}: {
+	emailId: string;
+	/** Optional override used by the All Accounts view. Falls back to the route param. */
+	mailboxId?: string;
+}) {
+	const params = useParams<{ mailboxId: string; folder: string }>();
+	const mailboxId = mailboxIdProp ?? params.mailboxId;
+	const folder = params.folder;
 	const { data: email } = useEmail(mailboxId, emailId) as { data?: Email };
 	const { data: threadRepliesRaw } = useThreadReplies(mailboxId, email?.thread_id) as {
 		data?: Email[];
@@ -50,7 +59,10 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 	const [sourceViewEmail, setSourceViewEmail] = useState<Email | null>(null);
 	const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
-	const isDraftFolder = folder === Folders.DRAFT;
+	// In the All Accounts view there is no folder route param, so fall back to
+	// the selected email's own folder when deciding draft behaviour.
+	const isDraftFolder =
+		folder === Folders.DRAFT || email?.folder_id === Folders.DRAFT;
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
