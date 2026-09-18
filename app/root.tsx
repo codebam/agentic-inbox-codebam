@@ -25,6 +25,30 @@ import {
 import { ApiError } from "~/services/api";
 import "./index.css";
 
+/**
+ * Runs before styles/hydration so Kumo's `data-mode` theme switches with the
+ * OS setting without a flash of the wrong theme. Lives in <head>, then keeps
+ * tracking live `prefers-color-scheme` changes.
+ */
+const SYSTEM_THEME_SCRIPT = `
+(function () {
+	try {
+		var mql = window.matchMedia("(prefers-color-scheme: dark)");
+		var apply = function (event) {
+			document.documentElement.setAttribute(
+				"data-mode",
+				event.matches ? "dark" : "light",
+			);
+		};
+		apply(mql);
+		if (mql.addEventListener) mql.addEventListener("change", apply);
+		else if (mql.addListener) mql.addListener(apply);
+	} catch (error) {
+		// Leave the light defaults in place if matchMedia is unavailable.
+	}
+})();
+`.trim();
+
 function makeQueryClient() {
 	return new QueryClient({
 		defaultOptions: {
@@ -77,9 +101,11 @@ const KumoLink = forwardRef<
 
 export function Layout({ children }: { children: React.ReactNode }) {
 	return (
-		<html lang="en">
+		<html lang="en" suppressHydrationWarning>
 			<head>
 				<meta charSet="UTF-8" />
+				<meta name="color-scheme" content="light dark" />
+				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />
 				<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 				<link
 					rel="icon"
