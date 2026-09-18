@@ -4,7 +4,8 @@
 	"compatibility_date": "2025-11-28",
 	"main": "./workers/app.ts",
 	"observability": {
-		"enabled": true
+		"enabled": true,
+		"redact_query_string": false
 	},
 	"compatibility_flags": [
 		"nodejs_compat"
@@ -13,8 +14,9 @@
 		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
-		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"DOMAINS": "seanbehan.ca, codebam.ca",
+		"EMAIL_ADDRESSES": [],
+		"name": "EMAIL_ADDRESSES"
 	},
 	"send_email": [
 		{
@@ -66,6 +68,13 @@
 			"new_sqlite_classes": [
 				"EmailMCP"
 			]
+		}
+	],
+	"routes": [
+		{
+			"pattern": "email.codebam.ca",
+			"zone_name": "codebam.ca",
+			"custom_domain": true
 		}
 	]
 }
