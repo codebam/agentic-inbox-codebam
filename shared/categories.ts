@@ -20,7 +20,7 @@ export const MAX_EMAIL_CATEGORIES = 12;
 
 /** Category names/descriptions are broadcast to the model, so cap their size. */
 const MAX_CATEGORY_NAME_LENGTH = 60;
-const MAX_CATEGORY_DESCRIPTION_LENGTH = 300;
+const MAX_CATEGORY_DESCRIPTION_LENGTH = 600;
 
 export interface EmailCategory {
 	/** Stable identifier stored on emails and used as the Jev criteria key. */
