@@ -246,7 +246,7 @@ function writeErrorMessage(message, error) {
 		id,
 		error: {
 			code: -32000,
-			message: `agentic-inbox MCP bridge error${status ? ` (HTTP ${status})` : ""}: ${detail}`,
+			message: `agentic-inbox-codebam MCP bridge error${status ? ` (HTTP ${status})` : ""}: ${detail}`,
 		},
 	});
 }
@@ -284,7 +284,7 @@ async function consumeSse(response) {
 						await emitMessages(JSON.parse(data));
 					} catch {
 						process.stderr.write(
-							"[agentic-inbox-mcp] Ignoring malformed SSE data from server.\n",
+							"[agentic-inbox-codebam-mcp] Ignoring malformed SSE data from server.\n",
 						);
 					}
 				}
@@ -350,7 +350,7 @@ async function postMessage(message, alreadyRetried = false) {
 		accept: "application/json, text/event-stream",
 		authorization: `Bearer ${token}`,
 		"content-type": "application/json",
-		"user-agent": `agentic-inbox-mcp-bridge/${BRIDGE_VERSION}`,
+		"user-agent": `agentic-inbox-codebam-mcp-bridge/${BRIDGE_VERSION}`,
 	});
 
 	if (sessionId) headers.set("mcp-session-id", sessionId);
@@ -404,7 +404,7 @@ function enqueue(line) {
 		})
 		.catch((error) => {
 			process.stderr.write(
-				`[agentic-inbox-mcp] Unexpected bridge error: ${
+				`[agentic-inbox-codebam-mcp] Unexpected bridge error: ${
 					error instanceof Error ? (error.stack ?? error.message) : String(error)
 				}\n`,
 			);
@@ -419,7 +419,7 @@ async function terminateSession() {
 		const headers = new Headers({
 			authorization: `Bearer ${token}`,
 			"mcp-session-id": sessionId,
-			"user-agent": `agentic-inbox-mcp-bridge/${BRIDGE_VERSION}`,
+			"user-agent": `agentic-inbox-codebam-mcp-bridge/${BRIDGE_VERSION}`,
 		});
 		const response = await fetch(remoteUrl, { method: "DELETE", headers });
 		await response.body?.cancel?.().catch?.(() => {});
@@ -468,11 +468,11 @@ process.on("SIGTERM", () => {
 try {
 	await getToken();
 	process.stderr.write(
-		`[agentic-inbox-mcp] Bridging stdio to ${remoteUrl} using the local credential.\n`,
+		`[agentic-inbox-codebam-mcp] Bridging stdio to ${remoteUrl} using the local credential.\n`,
 	);
 } catch (error) {
 	process.stderr.write(
-		`[agentic-inbox-mcp] ${error instanceof Error ? error.message : String(error)}\n`,
+		`[agentic-inbox-codebam-mcp] ${error instanceof Error ? error.message : String(error)}\n`,
 	);
 	process.exit(1);
 }

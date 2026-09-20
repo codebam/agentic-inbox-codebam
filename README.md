@@ -1,27 +1,31 @@
 <div align="center">
-  <h1>Agentic Inbox</h1>
+  <h1>Agentic Inbox Codebam</h1>
   <p><em>A self-hosted email client with an AI agent, running entirely on Cloudflare Workers</em></p>
+  <p>A modified fork of <a href="https://github.com/cloudflare/agentic-inbox">cloudflare/agentic-inbox</a></p>
 </div>
 
-Agentic Inbox lets you send, receive, and manage emails through a modern web interface -- all powered by your own Cloudflare account. Incoming emails arrive via [Cloudflare Email Routing](https://developers.cloudflare.com/email-routing/), each mailbox is isolated in its own [Durable Object](https://developers.cloudflare.com/durable-objects/) with a SQLite database, and attachments are stored in [R2](https://developers.cloudflare.com/r2/).
+> [!IMPORTANT]
+> **This is an independent, modified fork of Cloudflare's Agentic Inbox. It is not affiliated with, endorsed by, or sponsored by Cloudflare, Inc.** The original project and this fork are licensed under the Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE) for the retained copyright and attribution notices, and the git history for the complete list of changes.
+
+Agentic Inbox Codebam lets you send, receive, and manage emails through a modern web interface -- all powered by your own Cloudflare account. Incoming emails arrive via [Cloudflare Email Routing](https://developers.cloudflare.com/email-routing/), each mailbox is isolated in its own [Durable Object](https://developers.cloudflare.com/durable-objects/) with a SQLite database, and attachments are stored in [R2](https://developers.cloudflare.com/r2/).
 
 An **AI-powered Email Agent** can read your inbox, search conversations, and draft replies -- built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/) and [Workers AI](https://developers.cloudflare.com/workers-ai/).
 
-![Agentic Inbox screenshot](./demo_app.png)
+![Agentic Inbox Codebam screenshot](./demo_app.png)
 
 
-Read the blog post to learn more about Cloudflare Email Service and how to use it with the Agents SDK, MCP, and from the Wrangler CLI: [Email for Agents](https://blog.cloudflare.com/email-for-agents/).
+Read the original Cloudflare blog post to learn more about Cloudflare Email Service and how to use it with the Agents SDK, MCP, and from the Wrangler CLI: [Email for Agents](https://blog.cloudflare.com/email-for-agents/).
 
 ## How to setup
 
-**Important**: Clicking the 'Deploy to Cloudflare' button is only one part of the setup. You must follow the **After deploying** steps as well. For a full step-by-step guide with screenshots, refer to this comment: 
+**Important**: Clicking the 'Deploy to Cloudflare' button is only one part of the setup. You must follow the **After deploying** steps as well. For a full step-by-step guide with screenshots, refer to the original project's comment:
 https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 ### To set up
 
 1. Deploy to Cloudflare. The deploy flow will automatically provision R2, Durable Objects, and Workers AI. You'll be prompted for **DOMAINS**, which is the domain (yourdomain.com) you want to receive emails for (email@yourdomain.com).
 
-     [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agentic-inbox)
+     [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/codebam/agentic-inbox-codebam)
 
 2. **Configure Cloudflare Access** -- Enable [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) on your Worker under Settings > Domains & Routes. The modal will show your `POLICY_AUD` and `TEAM_DOMAIN` values. `TEAM_DOMAIN` can be either your Access team URL or the full `.../cdn-cgi/access/certs` URL. **You must set these as secrets for your Worker.** Add a **Bypass** policy for `/mcp` and `/mcp/*` so external agents can authenticate with Wrangler keys (see [Agent-first MCP server](#agent-first-mcp-server)).
 3. **Set up Email Routing** -- In the Cloudflare dashboard, go to each domain > Email Routing and create a catch-all rule that forwards to this Worker. Mail sent to an address that does not have its own mailbox is delivered to that domain's `catch-all@<domain>` mailbox, which the Worker creates automatically. The original SMTP recipient is preserved and shown as **Delivered to** in the message view.
@@ -46,6 +50,10 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **AI categorization on arrival** — TypeSafe's Jev model (`typesafe/jev`) classifies each incoming email as spam or not-spam with a calibrated probability, and can label it with custom categories. Detected spam is filed in the Spam folder and skipped by auto-draft. Categories can be defined per mailbox, app-wide in Global Settings for every mailbox, or both; each mailbox can opt out of global categories.
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
+
+### What's different in this fork
+
+This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev, the combined All Accounts view, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
 
 ## Stack
 
@@ -100,10 +108,10 @@ MCP clients that only support local stdio servers can launch the bundled bridge.
 ```json
 {
   "mcpServers": {
-    "agentic-inbox": {
+    "agentic-inbox-codebam": {
       "command": "node",
       "args": [
-        "/absolute/path/to/agentic-inbox/scripts/mcp-bridge.mjs",
+        "/absolute/path/to/agentic-inbox-codebam/scripts/mcp-bridge.mjs",
         "--url",
         "https://email.example.com/mcp"
       ]
@@ -119,7 +127,7 @@ If your MCP client supports remote HTTP servers and custom headers:
 ```json
 {
   "mcpServers": {
-    "agentic-inbox": {
+    "agentic-inbox-codebam": {
       "url": "https://email.example.com/mcp",
       "headers": {
         "Authorization": "Bearer <output of: npx wrangler auth token>"
@@ -165,4 +173,6 @@ Auth results are cached per Worker isolate for 5 minutes (and in the Cloudflare 
 
 ## License
 
-Apache 2.0 -- see [LICENSE](LICENSE).
+Licensed under the Apache License 2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Agentic Inbox Codebam is a modified fork of [cloudflare/agentic-inbox](https://github.com/cloudflare/agentic-inbox), Copyright (c) 2026 Cloudflare, Inc. Fork modifications Copyright (c) 2026 codebam. This fork is not affiliated with, endorsed by, or sponsored by Cloudflare, Inc.

@@ -17,7 +17,7 @@ import {
 } from "~/queries/categorization";
 
 export function meta() {
-	return [{ title: "Global Settings · Agentic Inbox" }];
+	return [{ title: "Global Settings · Agentic Inbox Codebam" }];
 }
 
 export default function GlobalSettingsRoute() {

@@ -56,7 +56,7 @@ const TOOLS = [
 	{ name: "delete_email", desc: "Delete an email" },
 ];
 
-const BRIDGE_PATH = "/path/to/agentic-inbox/scripts/mcp-bridge.mjs";
+const BRIDGE_PATH = "/path/to/agentic-inbox-codebam/scripts/mcp-bridge.mjs";
 
 export default function MCPPanel() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
@@ -66,7 +66,7 @@ export default function MCPPanel() {
 	const bridgeConfig = JSON.stringify(
 		{
 			mcpServers: {
-				"agentic-inbox": {
+				"agentic-inbox-codebam": {
 					command: "node",
 					args: [BRIDGE_PATH, "--url", mcpUrl],
 				},

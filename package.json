@@ -1,10 +1,10 @@
 {
-	"name": "agentic-inbox",
+	"name": "agentic-inbox-codebam",
 	"private": true,
 	"license": "Apache-2.0",
 	"type": "module",
 	"cloudflare": {
-		"label": "Agentic Inbox",
+		"label": "Agentic Inbox Codebam",
 		"products": [
 			"Workers",
 			"Durable Objects",

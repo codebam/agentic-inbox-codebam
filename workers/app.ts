@@ -77,7 +77,7 @@ function isMcpPath(pathname: string) {
 }
 
 function mcpAuthErrorResponse(c: Context, result: McpAuthFailure) {
-	c.header("WWW-Authenticate", `Bearer realm="agentic-inbox-mcp", error="${result.error}"`);
+	c.header("WWW-Authenticate", `Bearer realm="agentic-inbox-codebam-mcp", error="${result.error}"`);
 	c.header("Access-Control-Allow-Origin", "*");
 	c.header("Access-Control-Expose-Headers", "WWW-Authenticate");
 	return c.json(

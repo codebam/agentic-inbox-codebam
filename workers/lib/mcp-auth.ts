@@ -290,7 +290,7 @@ async function cloudflareGet(
 			headers: {
 				Accept: "application/json",
 				Authorization: `Bearer ${token}`,
-				"User-Agent": "agentic-inbox-mcp/1.0",
+				"User-Agent": "agentic-inbox-codebam-mcp/1.0",
 			},
 			signal: controller.signal,
 		});
@@ -630,7 +630,7 @@ async function readAuthCache(
 
 	try {
 		const key = new Request(
-			`https://agentic-inbox.invalid/__mcp_auth_cache/v1/${await hashToken(token)}`,
+			`https://agentic-inbox-codebam.invalid/__mcp_auth_cache/v1/${await hashToken(token)}`,
 			{ method: "GET" },
 		);
 		const cached = await cache.match(key);
@@ -663,7 +663,7 @@ async function writeAuthCache(
 
 	try {
 		const key = new Request(
-			`https://agentic-inbox.invalid/__mcp_auth_cache/v1/${await hashToken(token)}`,
+			`https://agentic-inbox-codebam.invalid/__mcp_auth_cache/v1/${await hashToken(token)}`,
 			{ method: "GET" },
 		);
 		await cache.put(

@@ -64,11 +64,11 @@ function mcpResult(result: Record<string, unknown>) {
 export class EmailMCP extends McpAgent<Env> {
 	server = new McpServer(
 		{
-			name: "agentic-inbox",
+			name: "agentic-inbox-codebam",
 			version: "1.1.0",
 		},
 		{
-			instructions: `Agentic Inbox is a self-hosted email client. You can read, search, draft, and send email for any mailbox returned by list_mailboxes.
+			instructions: `Agentic Inbox Codebam is a self-hosted email client. You can read, search, draft, and send email for any mailbox returned by list_mailboxes.
 
 Workflow:
 1. Call list_mailboxes to discover available mailbox addresses.

@@ -1,0 +1,26 @@
+Agentic Inbox Codebam
+Copyright (c) 2026 codebam
+
+This product is a modified fork of Agentic Inbox:
+  https://github.com/cloudflare/agentic-inbox
+  Copyright (c) 2026 Cloudflare, Inc.
+  Licensed under the Apache License, Version 2.0.
+
+This fork is maintained independently and is not affiliated with, endorsed
+by, or sponsored by Cloudflare, Inc. The names "Cloudflare" and "Agentic
+Inbox" are used only to describe the origin of this work.
+
+Changes in this fork include, among others:
+  - Renamed and rebranded the project to Agentic Inbox Codebam across the
+    README, app UI, MCP metadata, configuration examples, and scripts.
+  - Added per-domain catch-all mailbox routing.
+  - Added global and per-mailbox AI email categorization using TypeSafe Jev.
+  - Added the combined All Accounts email view.
+  - Added agent-first MCP authentication using Wrangler login credentials.
+  - Added Markdown support to the email composer and split heavy composer
+    chunks so they are lazy-loaded.
+  - Added system-preference dark mode.
+  - Updated dependencies to resolve security advisories.
+  - All other changes are documented in the project git history.
+
+The Apache License 2.0 text is retained verbatim in LICENSE.
