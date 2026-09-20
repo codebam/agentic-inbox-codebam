@@ -4,17 +4,19 @@
 
 import { Banner, Button, Dialog, Input, Text } from "@cloudflare/kumo";
 import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
+import { lazy, Suspense } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
-import ComposeBodyEditor from "./ComposeBodyEditor";
 import { useUIStore } from "~/hooks/useUIStore";
+
+const ComposeBodyEditor = lazy(() => import("./ComposeBodyEditor"));
 
 export default function ComposeEmail() {
 	const { mailboxId, folder } = useParams<{
 		mailboxId: string;
 		folder: string;
 	}>();
-	
+
 	const { isComposeModalOpen, closeComposeModal } = useUIStore();
 
 	const {
@@ -44,9 +46,7 @@ export default function ComposeEmail() {
 			onOpenChange={(open) => !open && !isSending && closeComposeModal()}
 		>
 			<Dialog size="lg" className="p-6 max-h-[85vh] overflow-y-auto">
-				<Dialog.Title className="text-lg font-semibold mb-5">
-					{formTitle}
-				</Dialog.Title>
+				<Dialog.Title className="text-lg font-semibold mb-5">{formTitle}</Dialog.Title>
 				<form onSubmit={(e) => handleSend(e, closeComposeModal)} className="space-y-4">
 					{error && <Banner variant="error" text={error} />}
 					<div className="flex items-center gap-2">
@@ -104,7 +104,15 @@ export default function ComposeEmail() {
 						<Text size="sm" DANGEROUS_className="font-medium mb-1.5 block">
 							Message
 						</Text>
-						<ComposeBodyEditor value={body} onChange={setBody} />
+						<Suspense
+							fallback={
+								<div className="min-h-[180px] rounded-lg border border-kumo-line bg-kumo-recessed p-3 text-xs text-kumo-subtle">
+									Loading editor…
+								</div>
+							}
+						>
+							<ComposeBodyEditor value={body} onChange={setBody} />
+						</Suspense>
 					</div>
 					<div className="flex justify-between items-center pt-2">
 						<Button
