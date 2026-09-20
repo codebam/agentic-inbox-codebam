@@ -21,7 +21,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { Folders } from "shared/folders";
-import { normalizeCategorizationSettings } from "shared/categories";
+import { mergeCategorizationCategories } from "shared/categories";
 import { formatListDate } from "shared/dates";
 import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
@@ -34,6 +34,7 @@ import {
 } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
+import { useGlobalCategorization } from "~/queries/categorization";
 import { queryKeys } from "~/queries/keys";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
@@ -172,11 +173,15 @@ export default function EmailListRoute() {
 	const deleteEmail = useDeleteEmail();
 
 	const { data: mailbox } = useMailbox(mailboxId);
+	const { data: globalCategorization } = useGlobalCategorization();
 	const categories = useMemo(
 		() =>
-			normalizeCategorizationSettings(mailbox?.settings?.categorization)
-				.categories,
-		[mailbox],
+			mergeCategorizationCategories(
+				globalCategorization?.categories ?? [],
+				mailbox?.settings?.categorization?.categories ?? [],
+				mailbox?.settings?.categorization?.useGlobalCategories !== false,
+			),
+		[globalCategorization, mailbox],
 	);
 
 	const params = useMemo(

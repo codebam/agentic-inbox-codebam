@@ -27,6 +27,7 @@ import { getSnippetText } from "~/lib/utils";
 import { useAllEmails } from "~/queries/all-emails";
 import { useDeleteEmail, useMarkThreadRead, useUpdateEmail } from "~/queries/emails";
 import { useMailboxes } from "~/queries/mailboxes";
+import { useGlobalCategorization } from "~/queries/categorization";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
 
@@ -80,6 +81,7 @@ export default function AllAccountsRoute() {
 	const [page, setPage] = useState(1);
 	const { selectedEmailId, selectedMailboxId, isComposing, selectEmail, closePanel } = useUIStore();
 	const { data: mailboxes = [] } = useMailboxes();
+	const { data: globalCategorization } = useGlobalCategorization();
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
@@ -293,6 +295,7 @@ export default function AllAccountsRoute() {
 														)}
 														<CategoryBadge
 															category={email.category}
+															categories={globalCategorization?.categories}
 														/>
 														<span
 															className={`truncate text-sm ${

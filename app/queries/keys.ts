@@ -28,4 +28,7 @@ export const queryKeys = {
 			["search", mailboxId, query, page] as const,
 	},
 	config: ["config"] as const,
+	categorization: {
+		global: ["global-categorization"] as const,
+	},
 };

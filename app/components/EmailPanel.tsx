@@ -9,7 +9,7 @@ import { Folders } from "shared/folders";
 import {
 	SPAM_CATEGORY_ID,
 	categoryLabel,
-	normalizeCategorizationSettings,
+	mergeCategorizationCategories,
 } from "shared/categories";
 import EmailPanelDialogs from "~/components/email-panel/EmailPanelDialogs";
 import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
@@ -21,6 +21,7 @@ import api from "~/services/api";
 import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
+import { useGlobalCategorization } from "~/queries/categorization";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email, Folder, Mailbox } from "~/types";
 
@@ -58,6 +59,7 @@ export default function EmailPanel({
 	const { data: currentMailbox } = useMailbox(mailboxId) as {
 		data?: Mailbox;
 	};
+	const { data: globalCategorization } = useGlobalCategorization();
 	const { closePanel, startCompose } = useUIStore();
 	const toastManager = useKumoToastManager();
 	const [isSending, setIsSending] = useState(false);
@@ -102,9 +104,15 @@ export default function EmailPanel({
 
 	const moveToFolders = useMemo(() => { const cur = folder || email?.folder_id; return folders.filter((f) => f.id !== cur); }, [folders, folder, email?.folder_id]);
 
-	const categoryNames = normalizeCategorizationSettings(
-		currentMailbox?.settings?.categorization,
-	).categories;
+	const categoryNames = useMemo(
+		() =>
+			mergeCategorizationCategories(
+				globalCategorization?.categories ?? [],
+				currentMailbox?.settings?.categorization?.categories ?? [],
+				currentMailbox?.settings?.categorization?.useGlobalCategories !== false,
+			),
+		[globalCategorization, currentMailbox?.settings?.categorization],
+	);
 	const category = email?.category
 		? categoryLabel(email.category, categoryNames)
 		: null;

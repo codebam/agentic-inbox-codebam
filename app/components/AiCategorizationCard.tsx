@@ -2,14 +2,12 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Input, Switch } from "@cloudflare/kumo";
-import { PlusIcon, SparkleIcon, TrashIcon } from "@phosphor-icons/react";
-import {
-	MAX_EMAIL_CATEGORIES,
-	slugifyCategoryId,
-	type CategorizationSettings,
-	type EmailCategory,
-} from "shared/categories";
+import { Badge, Input, Switch } from "@cloudflare/kumo";
+import { SparkleIcon } from "@phosphor-icons/react";
+import { Link } from "react-router";
+import type { CategorizationSettings } from "shared/categories";
+import CategoryEditor from "~/components/CategoryEditor";
+import { useGlobalCategorization } from "~/queries/categorization";
 
 interface AiCategorizationCardProps {
 	settings: CategorizationSettings;
@@ -18,65 +16,20 @@ interface AiCategorizationCardProps {
 
 /**
  * Per-mailbox controls for Jev inbound classification: a master switch,
- * spam-detection threshold/behavior, and the custom category editor.
+ * spam-detection threshold/behavior, app-wide global category opt-in, and
+ * mailbox-specific categories.
  */
 export default function AiCategorizationCard({
 	settings,
 	onChange,
 }: AiCategorizationCardProps) {
+	const { data: globalCategorization } = useGlobalCategorization();
+	const globalCategories = globalCategorization?.categories ?? [];
+	const useGlobalCategories = settings.useGlobalCategories !== false;
+
 	const updateSpam = (patch: Partial<CategorizationSettings["spam"]>) => {
 		onChange({ ...settings, spam: { ...settings.spam, ...patch } });
 	};
-
-	const addCategory = () => {
-		if (settings.categories.length >= MAX_EMAIL_CATEGORIES) return;
-		onChange({
-			...settings,
-			categories: [
-				...settings.categories,
-				{ id: "", name: "", description: "" },
-			],
-		});
-	};
-
-	const updateCategory = (index: number, patch: Partial<EmailCategory>) => {
-		onChange({
-			...settings,
-			categories: settings.categories.map((category, i) =>
-				i === index ? { ...category, ...patch } : category,
-			),
-		});
-	};
-
-	/**
-	 * Freeze a human-readable, URL-safe ID once the user finishes naming a
-	 * new category. Keeping the ID stable across later renames means already
-	 * classified emails keep referring to the same category.
-	 */
-	const handleCategoryNameBlur = (index: number) => {
-		const category = settings.categories[index];
-		if (!category || category.id || !category.name.trim()) return;
-		onChange({
-			...settings,
-			categories: settings.categories.map((item, i) =>
-				i === index
-					? {
-							...item,
-							id: slugifyCategoryId(item.name) || `category-${index + 1}`,
-						}
-					: item,
-			),
-		});
-	};
-
-	const removeCategory = (index: number) => {
-		onChange({
-			...settings,
-			categories: settings.categories.filter((_, i) => i !== index),
-		});
-	};
-
-	const { spam, categories } = settings;
 
 	return (
 		<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
@@ -117,12 +70,12 @@ export default function AiCategorizationCard({
 						{/* Spam */}
 						<div className="rounded-md border border-kumo-line bg-kumo-recessed p-4 space-y-3">
 							<Switch
-								checked={spam.enabled}
+								checked={settings.spam.enabled}
 								onCheckedChange={(enabled) => updateSpam({ enabled })}
 								label="Detect spam"
 								size="sm"
 							/>
-							{spam.enabled && (
+							{settings.spam.enabled && (
 								<>
 									<div className="flex flex-wrap items-center gap-3">
 										<span className="text-xs font-medium text-kumo-strong">
@@ -134,7 +87,7 @@ export default function AiCategorizationCard({
 											min={0.5}
 											max={1}
 											step={0.05}
-											value={String(spam.threshold)}
+											value={String(settings.spam.threshold)}
 											onChange={(e) => {
 												const value = Number(e.target.value);
 												if (Number.isFinite(value)) {
@@ -152,7 +105,7 @@ export default function AiCategorizationCard({
 										</span>
 									</div>
 									<Switch
-										checked={spam.moveToSpam}
+										checked={settings.spam.moveToSpam}
 										onCheckedChange={(moveToSpam) => updateSpam({ moveToSpam })}
 										label="Move detected spam to the Spam folder"
 										size="sm"
@@ -161,78 +114,66 @@ export default function AiCategorizationCard({
 							)}
 						</div>
 
-						{/* Custom categories */}
-						<div className="space-y-3">
+						{/* Global categories */}
+						<div className="rounded-md border border-kumo-line bg-kumo-recessed p-4 space-y-3">
 							<div className="flex items-start justify-between gap-3">
 								<div>
 									<div className="text-sm font-medium text-kumo-default">
-										Categories
+										Global categories
 									</div>
 									<p className="text-xs text-kumo-subtle mt-0.5">
-										Optional labels beyond spam/not-spam. Jev picks the best
-										match for each incoming email.
+										Shared by every mailbox. Managed once in Global Settings.
 									</p>
 								</div>
-								<Button
-									variant="secondary"
-									size="sm"
-									icon={<PlusIcon size={14} />}
-									onClick={addCategory}
-									disabled={categories.length >= MAX_EMAIL_CATEGORIES}
+								<Link
+									to="/settings"
+									className="shrink-0 text-xs font-medium text-kumo-link hover:underline"
 								>
-									Add
-								</Button>
+									Manage
+								</Link>
 							</div>
 
-							{categories.length === 0 ? (
-								<p className="text-xs text-kumo-subtle">
-									No categories yet. Add one or more (for example
-									&quot;Work&quot; or &quot;Newsletters&quot;) and Jev will
-									label each email.
-								</p>
-							) : (
-								<div className="space-y-2">
-									{categories.map((category, index) => (
-										<div
-											key={index}
-											className="flex flex-col gap-2 rounded-md border border-kumo-line bg-kumo-recessed p-3 md:flex-row md:items-center"
-										>
-											<Input
-												aria-label={`Category ${index + 1} name`}
-												placeholder="Category name"
-												value={category.name}
-												onChange={(e) =>
-													updateCategory(index, { name: e.target.value })
-												}
-												onBlur={() => handleCategoryNameBlur(index)}
-												className="md:w-44"
-												size="sm"
-											/>
-											<Input
-												aria-label={`Category ${index + 1} description`}
-												placeholder="What belongs in this category?"
-												value={category.description}
-												onChange={(e) =>
-													updateCategory(index, {
-														description: e.target.value,
-													})
-												}
-												className="flex-1"
-												size="sm"
-											/>
-											<Button
-												variant="ghost"
-												shape="square"
-												size="sm"
-												icon={<TrashIcon size={14} />}
-												onClick={() => removeCategory(index)}
-												aria-label={`Remove category ${category.name || index + 1}`}
-											/>
-										</div>
-									))}
-								</div>
-							)}
+							<Switch
+								checked={useGlobalCategories}
+								onCheckedChange={(checked) =>
+									onChange({ ...settings, useGlobalCategories: checked })
+								}
+								label="Apply global categories to this mailbox"
+								size="sm"
+							/>
+
+							{useGlobalCategories &&
+								(globalCategories.length > 0 ? (
+									<ul className="space-y-1.5">
+										{globalCategories.map((category) => (
+											<li
+												key={category.id}
+												className="flex flex-wrap items-baseline gap-2 text-xs"
+											>
+												<Badge variant="secondary">{category.name}</Badge>
+												{category.description && (
+													<span className="text-kumo-subtle">
+														{category.description}
+													</span>
+												)}
+											</li>
+										))}
+									</ul>
+								) : (
+									<p className="text-xs text-kumo-subtle">
+										No global categories defined yet.
+									</p>
+								))}
 						</div>
+
+						{/* Mailbox-specific categories */}
+						<CategoryEditor
+							title="Mailbox-specific categories"
+							description="Optional categories only for this mailbox. Applied in addition to global categories."
+							emptyText='No mailbox-specific categories yet. Add one (for example "Invoices") to label only this mailbox.'
+							categories={settings.categories}
+							onChange={(categories) => onChange({ ...settings, categories })}
+						/>
 					</>
 				)}
 			</div>

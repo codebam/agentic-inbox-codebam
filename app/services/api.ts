@@ -2,6 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type { GlobalCategorizationSettings } from "shared/categories";
 import type { Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -98,6 +99,12 @@ const api = {
 	// Config
 	getConfig: () =>
 		get<{ domains: string[]; emailAddresses: string[] }>("/api/v1/config"),
+
+	// Global categorization (applies to every mailbox that opts in)
+	getGlobalCategorization: () =>
+		get<GlobalCategorizationSettings>("/api/v1/categorization"),
+	updateGlobalCategorization: (settings: GlobalCategorizationSettings) =>
+		put<GlobalCategorizationSettings>("/api/v1/categorization", settings),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),

@@ -16,6 +16,7 @@ import {
 	CaretRightIcon,
 	EnvelopeIcon,
 	EnvelopeOpenIcon,
+	GearSixIcon,
 	PlusIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
@@ -151,15 +152,24 @@ export default function HomeRoute() {
 				<div className="mb-8">
 					<div className="flex items-center justify-between">
 						<h1 className="text-2xl font-bold text-kumo-default">Mailboxes</h1>
-						{!isConfigured && (
-							<Button
-								variant="primary"
-								icon={<PlusIcon size={16} />}
-								onClick={() => setIsCreateOpen(true)}
+						<div className="flex items-center gap-3">
+							<RouterLink
+								to="/settings"
+								className="inline-flex items-center gap-1.5 text-sm text-kumo-subtle hover:text-kumo-default no-underline transition-colors"
 							>
-								New Mailbox
-							</Button>
-						)}
+								<GearSixIcon size={16} />
+								<span>Global settings</span>
+							</RouterLink>
+							{!isConfigured && (
+								<Button
+									variant="primary"
+									icon={<PlusIcon size={16} />}
+									onClick={() => setIsCreateOpen(true)}
+								>
+									New Mailbox
+								</Button>
+							)}
+						</div>
 					</div>
 					{domains.length > 0 && (
 						<p className="text-sm text-kumo-subtle mt-1">

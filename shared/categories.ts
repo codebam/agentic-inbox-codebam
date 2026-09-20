@@ -48,9 +48,22 @@ export interface CategorizationSettings {
 	/** Master switch for inbound email classification. */
 	enabled: boolean;
 	spam: SpamCategorizationSettings;
-	/** Optional categories in addition to the spam/not-spam question. */
+	/** Optional mailbox-specific categories in addition to the spam/not-spam question. */
+	categories: EmailCategory[];
+	/**
+	 * Include app-wide categories managed in Global Settings. Defaults to true
+	 * so global categories apply to every mailbox unless explicitly disabled.
+	 */
+	useGlobalCategories: boolean;
+}
+
+/** App-wide categories shared by any mailbox that opts in. */
+export interface GlobalCategorizationSettings {
 	categories: EmailCategory[];
 }
+
+/** Max categories after merging global and mailbox-specific lists. */
+export const MAX_MERGED_CATEGORIES = MAX_EMAIL_CATEGORIES * 2;
 
 export const DEFAULT_SPAM_THRESHOLD = 0.8;
 
@@ -64,6 +77,7 @@ export function defaultCategorizationSettings(): CategorizationSettings {
 			moveToSpam: true,
 		},
 		categories: [],
+		useGlobalCategories: true,
 	};
 }
 
@@ -84,16 +98,71 @@ export function normalizeCategorizationSettings(
 			? (value.spam as Partial<SpamCategorizationSettings>)
 			: {};
 
-	const rawCategories = Array.isArray(value.categories) ? value.categories : [];
+	const threshold =
+		typeof spamRaw.threshold === "number" && Number.isFinite(spamRaw.threshold)
+			? spamRaw.threshold
+			: DEFAULT_SPAM_THRESHOLD;
+
+	return {
+		enabled: value.enabled !== false,
+		spam: {
+			enabled: spamRaw.enabled !== false,
+			threshold: Math.min(1, Math.max(0.5, threshold)),
+			moveToSpam: spamRaw.moveToSpam !== false,
+		},
+		categories: normalizeCategoryList(value.categories),
+		useGlobalCategories: value.useGlobalCategories !== false,
+	};
+}
+
+/** Normalize the app-wide category list stored in R2. */
+export function normalizeGlobalCategorizationSettings(
+	raw: unknown,
+): GlobalCategorizationSettings {
+	const value =
+		raw && typeof raw === "object"
+			? (raw as Partial<GlobalCategorizationSettings>)
+			: {};
+	return { categories: normalizeCategoryList(value.categories) };
+}
+
+/**
+ * Merge global categories with mailbox-specific ones for classification,
+ * filtering, and display. Mailbox categories win when IDs collide; order is
+ * global-first, then mailbox-specific.
+ */
+export function mergeCategorizationCategories(
+	globalCategories: readonly EmailCategory[],
+	mailboxCategories: readonly EmailCategory[],
+	useGlobalCategories: boolean,
+): EmailCategory[] {
+	const merged = new Map<string, EmailCategory>();
+	if (useGlobalCategories) {
+		for (const category of normalizeCategoryList(globalCategories)) {
+			merged.set(category.id, category);
+		}
+	}
+	for (const category of normalizeCategoryList(mailboxCategories)) {
+		merged.set(category.id, category);
+	}
+	return [...merged.values()].slice(0, MAX_MERGED_CATEGORIES);
+}
+
+/**
+ * Turn arbitrary category JSON into bounded, unique category definitions.
+ * Shared by per-mailbox settings and the global settings file.
+ */
+function normalizeCategoryList(rawCategories: unknown): EmailCategory[] {
+	const list = Array.isArray(rawCategories) ? rawCategories : [];
 	const categories: EmailCategory[] = [];
 	const seenIds = new Set<string>();
 
 	for (
 		let index = 0;
-		index < rawCategories.length && categories.length < MAX_EMAIL_CATEGORIES;
+		index < list.length && categories.length < MAX_EMAIL_CATEGORIES;
 		index++
 	) {
-		const candidate = rawCategories[index];
+		const candidate = list[index];
 		if (!candidate || typeof candidate !== "object") continue;
 
 		const name =
@@ -122,20 +191,7 @@ export function normalizeCategorizationSettings(
 		categories.push({ id: uniqueId, name, description });
 	}
 
-	const threshold =
-		typeof spamRaw.threshold === "number" && Number.isFinite(spamRaw.threshold)
-			? spamRaw.threshold
-			: DEFAULT_SPAM_THRESHOLD;
-
-	return {
-		enabled: value.enabled !== false,
-		spam: {
-			enabled: spamRaw.enabled !== false,
-			threshold: Math.min(1, Math.max(0.5, threshold)),
-			moveToSpam: spamRaw.moveToSpam !== false,
-		},
-		categories,
-	};
+	return categories;
 }
 
 /** Build a safe URL/SQL/Jev-key friendly category ID from a display name. */

@@ -20,8 +20,13 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import {
 	defaultCategorizationSettings,
+	mergeCategorizationCategories,
 	normalizeCategorizationSettings,
 } from "../shared/categories";
+import {
+	getGlobalCategorization,
+	putGlobalCategorization,
+} from "./lib/global-categorization";
 import {
 	classifyIncomingEmail,
 	serializeClassification,
@@ -99,6 +104,20 @@ app.get("/api/v1/config", (c) => {
 	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
 	const emailAddresses = c.env.EMAIL_ADDRESSES ?? [];
 	return c.json({ domains, emailAddresses });
+});
+
+// -- Global categorization ------------------------------------------
+
+app.get("/api/v1/categorization", async (c) => {
+	return c.json(await getGlobalCategorization(c.env.BUCKET));
+});
+
+app.put("/api/v1/categorization", async (c) => {
+	const body = await c.req.json().catch(() => null);
+	if (!body || typeof body !== "object") {
+		return c.json({ error: "Invalid categorization settings" }, 400);
+	}
+	return c.json(await putGlobalCategorization(c.env.BUCKET, body));
 });
 
 // -- Mailboxes ------------------------------------------------------
@@ -509,6 +528,21 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
+	// Merge app-wide categories with this mailbox's own categories unless the
+	// mailbox opted out. Global category edits then apply to all mailboxes
+	// without rewriting each mailbox settings JSON.
+	const globalCategories = categorization.useGlobalCategories
+		? (await getGlobalCategorization(env.BUCKET)).categories
+		: [];
+	const effectiveCategorization = {
+		...categorization,
+		categories: mergeCategorizationCategories(
+			globalCategories,
+			categorization.categories,
+			categorization.useGlobalCategories,
+		),
+	};
+
 	// Best-effort Jev classification. A null result (disabled/failed) still
 	// delivers the email to the Inbox.
 	const classification = await classifyIncomingEmail(env.AI, {
@@ -517,11 +551,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		recipients: [...allRecipients, ...ccRecipients].join(", "),
 		subject: parsedEmail.subject || "",
 		body: parsedEmail.html || parsedEmail.text || "",
-	}, categorization);
+	}, effectiveCategorization);
 
 	const isSpam = classification?.isSpam === true;
 	const destinationFolder =
-		isSpam && categorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
+		isSpam && effectiveCategorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
 
 	await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
