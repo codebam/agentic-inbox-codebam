@@ -19,6 +19,7 @@ export interface EmailMetadata {
 	subject: string;
 	sender: string;
 	recipient: string;
+	envelope_recipient?: string | null;
 	cc?: string | null;
 	bcc?: string | null;
 	date: string;

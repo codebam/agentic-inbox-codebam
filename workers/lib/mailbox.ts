@@ -8,8 +8,23 @@
  * and attaches it to the Hono context (`c.var.mailboxStub`).
  */
 import { createMiddleware } from "hono/factory";
+import { defaultCategorizationSettings } from "../../shared/categories";
 import type { MailboxDO } from "../durableObject";
 import type { Env } from "../types";
+
+/**
+ * Default settings for a newly-created mailbox. Shared by the mailbox API and
+ * the inbound catch-all provisioning path so both create identical records.
+ */
+export function defaultMailboxSettings(name: string) {
+	return {
+		fromName: name,
+		forwarding: { enabled: false, email: "" },
+		signature: { enabled: false, text: "" },
+		autoReply: { enabled: false, subject: "", message: "" },
+		categorization: defaultCategorizationSettings(),
+	};
+}
 
 export type MailboxContext = {
 	Bindings: Env;

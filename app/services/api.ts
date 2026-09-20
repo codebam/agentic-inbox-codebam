@@ -98,7 +98,12 @@ interface EmailListResponse {
 const api = {
 	// Config
 	getConfig: () =>
-		get<{ domains: string[]; emailAddresses: string[] }>("/api/v1/config"),
+		get<{
+			domains: string[];
+			emailAddresses: string[];
+			catchAllMailbox?: string | null;
+			catchAllMailboxes?: string[];
+		}>("/api/v1/config"),
 
 	// Global categorization (applies to every mailbox that opts in)
 	getGlobalCategorization: () =>

@@ -19,10 +19,20 @@ import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import {
-	defaultCategorizationSettings,
 	mergeCategorizationCategories,
 	normalizeCategorizationSettings,
 } from "../shared/categories";
+import {
+	CATCH_ALL_LOCAL_PARTS,
+	emailDomain,
+	hasConfiguredAddresses,
+	isCatchAllAddress,
+	isMailboxCreationAllowed,
+	normalizeEmailAddress,
+	normalizeEmailAddressList,
+	parseDomains,
+	resolveCatchAllMailboxes,
+} from "../shared/mailboxes";
 import {
 	getGlobalCategorization,
 	putGlobalCategorization,
@@ -32,7 +42,11 @@ import {
 	serializeClassification,
 } from "./lib/categorize";
 import type { Env } from "./types";
-import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import {
+	defaultMailboxSettings,
+	requireMailbox,
+	type MailboxContext,
+} from "./lib/mailbox";
 import type { MailboxDO } from "./durableObject";
 
 type AppContext = Context<MailboxContext>;
@@ -100,10 +114,17 @@ app.use("/api/v1/mailboxes/:mailboxId/*", requireMailbox);
 // -- Config ---------------------------------------------------------
 
 app.get("/api/v1/config", (c) => {
-	const domainsRaw = c.env.DOMAINS || "";
-	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
-	const emailAddresses = c.env.EMAIL_ADDRESSES ?? [];
-	return c.json({ domains, emailAddresses });
+	const domains = parseDomains(c.env.DOMAINS);
+	const emailAddresses = normalizeEmailAddressList(c.env.EMAIL_ADDRESSES);
+	const catchAllMailboxes = [
+		...new Set(resolveCatchAllMailboxes(c.env).values()),
+	];
+	return c.json({
+		domains,
+		emailAddresses,
+		catchAllMailbox: normalizeEmailAddress(c.env.CATCH_ALL_MAILBOX),
+		catchAllMailboxes,
+	});
 });
 
 // -- Global categorization ------------------------------------------
@@ -130,21 +151,19 @@ app.get("/api/v1/mailboxes", async (c) => {
 app.post("/api/v1/mailboxes", async (c) => {
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
 	const email = rawEmail.toLowerCase();
-	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
-	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
-		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
+	const catchAllMailboxes = [
+		...new Set(resolveCatchAllMailboxes(c.env).values()),
+	];
+	if (!isMailboxCreationAllowed(email, c.env.EMAIL_ADDRESSES, catchAllMailboxes)) {
+		return c.json(
+			{ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES or a catch-all mailbox" },
+			403,
+		);
 	}
 	const key = `mailboxes/${email}.json`;
 	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
-	const defaultSettings = {
-		fromName: name,
-		forwarding: { enabled: false, email: "" },
-		signature: { enabled: false, text: "" },
-		autoReply: { enabled: false, subject: "", message: "" },
-		categorization: defaultCategorizationSettings(),
-	};
 	const finalSettings = {
-		...defaultSettings,
+		...defaultMailboxSettings(name),
 		...settings,
 		categorization: normalizeCategorizationSettings(settings?.categorization),
 	};
@@ -478,32 +497,121 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	return result;
 }
 
-async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env: Env, ctx: ExecutionContext) {
+export interface InboundEmailEvent {
+	readonly raw: ReadableStream;
+	readonly rawSize: number;
+	/** SMTP envelope recipient supplied by Cloudflare Email Routing. */
+	readonly to?: string;
+}
+
+async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	const parsedEmail = await new PostalMime().parse(rawEmail);
 
-	if (!parsedEmail.to?.length || !parsedEmail.to[0].address) throw new Error("received email with empty to");
+	const parsedToRecipients = (parsedEmail.to || [])
+		.map((recipient) => normalizeEmailAddress(recipient.address))
+		.filter((address): address is string => address !== null);
+	const ccRecipients = (parsedEmail.cc || [])
+		.map((recipient) => normalizeEmailAddress(recipient.address))
+		.filter((address): address is string => address !== null);
+	const bccRecipients = (parsedEmail.bcc || [])
+		.map((recipient) => normalizeEmailAddress(recipient.address))
+		.filter((address): address is string => address !== null);
 
-	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[]).map((a) => a.toLowerCase());
-	const allRecipients = parsedEmail.to.map((t) => t.address?.toLowerCase()).filter(Boolean) as string[];
-	const ccRecipients = (parsedEmail.cc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
-	const bccRecipients = (parsedEmail.bcc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
+	const envelopeRecipient = normalizeEmailAddress(event.to);
+	// The SMTP envelope recipient is the routing source of truth. Fall back to
+	// the visible To headers only for local/test invocations that do not supply
+	// one (and for Bcc-only messages without a usable envelope recipient).
+	const routingRecipients = envelopeRecipient
+		? [envelopeRecipient]
+		: parsedToRecipients;
+	if (routingRecipients.length === 0) {
+		throw new Error("received email with no valid recipient address");
+	}
+
+	// Visible headers are stored as-is; routing follows the SMTP envelope first,
+	// then the visible To headers as a fallback for older/local invocations.
+	const allRecipients = parsedToRecipients.length > 0 ? parsedToRecipients : routingRecipients;
+	const allowedAddresses = new Set(normalizeEmailAddressList(env.EMAIL_ADDRESSES));
+	const hasAllowList = hasConfiguredAddresses(env.EMAIL_ADDRESSES);
+	const catchAllMailboxes = resolveCatchAllMailboxes(env);
 
 	let mailboxId: string | undefined;
-	if (allowedAddresses.length > 0) {
-		mailboxId = allRecipients.find((addr) => allowedAddresses.includes(addr));
-		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
-	} else { mailboxId = allRecipients[0]; }
-	if (!mailboxId) throw new Error("received email with no valid recipient address");
+	let mailboxIsCatchAll = false;
 
-	const messageId = crypto.randomUUID();
-	const mailboxObject = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-	if (!mailboxObject) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
-	const mailboxSettings = (await mailboxObject.json().catch(() => ({}))) as Record<string, unknown>;
+	const directCandidates = hasAllowList
+		? routingRecipients.filter((address) => allowedAddresses.has(address))
+		: routingRecipients;
+
+	for (const candidate of directCandidates) {
+		if (await env.BUCKET.head(`mailboxes/${candidate}.json`)) {
+			mailboxId = candidate;
+			break;
+		}
+	}
+
+	// No dedicated mailbox: hand the message to the catch-all mailbox for the
+	// recipient's domain. Hand-made aliases (catchall@, catch_all@) are honoured
+	// before falling back to the canonical catch-all@ address.
+	if (!mailboxId) {
+		for (const candidate of routingRecipients) {
+			const domain = emailDomain(candidate);
+			if (!domain) continue;
+			const target = catchAllMailboxes.get(domain);
+			if (!target) continue;
+
+			// Only conventional catch-all names are resolved to hand-made
+			// aliases; an explicit CATCH_ALL_MAILBOXES target is used verbatim.
+			const targetAddresses = isCatchAllAddress(target)
+				? [
+						...new Set([
+							target,
+							...CATCH_ALL_LOCAL_PARTS.map((localPart) => `${localPart}@${domain}`),
+						]),
+					]
+				: [target];
+			for (const address of targetAddresses) {
+				if (await env.BUCKET.head(`mailboxes/${address}.json`)) {
+					mailboxId = address;
+					break;
+				}
+			}
+			if (!mailboxId) mailboxId = target;
+			mailboxIsCatchAll = true;
+			break;
+		}
+	}
+
+	if (!mailboxId) {
+		console.log(
+			hasAllowList
+				? "Ignoring email: no recipient matches EMAIL_ADDRESSES or a catch-all mailbox."
+				: `Ignoring email for ${routingRecipients.join(", ")}: mailbox does not exist and no catch-all is configured.`,
+		);
+		return;
+	}
+
+	const mailboxKey = `mailboxes/${mailboxId}.json`;
+	const mailboxObject = await env.BUCKET.get(mailboxKey);
+	let mailboxSettings: Record<string, unknown>;
+	if (mailboxObject) {
+		mailboxSettings = (await mailboxObject.json().catch(() => ({}))) as Record<string, unknown>;
+	} else if (mailboxIsCatchAll) {
+		const localPart = mailboxId.split("@")[0] || mailboxId;
+		mailboxSettings = defaultMailboxSettings(
+			isCatchAllAddress(mailboxId) ? "Catch-all" : localPart,
+		) as unknown as Record<string, unknown>;
+		await env.BUCKET.put(mailboxKey, JSON.stringify(mailboxSettings));
+		console.log(`Catch-all mailbox created: ${mailboxId}`);
+	} else {
+		console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`);
+		return;
+	}
 	const categorization = normalizeCategorizationSettings(mailboxSettings.categorization);
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
+	const messageId = crypto.randomUUID();
 	const attachmentData: StoredAttachment[] = [];
 	if (parsedEmail.attachments) {
 		for (const att of parsedEmail.attachments) {
@@ -560,6 +668,7 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
+		envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
 		date: new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",

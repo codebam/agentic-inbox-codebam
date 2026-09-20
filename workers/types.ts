@@ -5,6 +5,9 @@
 export interface Env extends Cloudflare.Env {
 	POLICY_AUD: string;
 	TEAM_DOMAIN: string;
+	/** Optional catch-all overrides. Unset enables per-domain derived defaults. */
+	CATCH_ALL_MAILBOX?: string;
+	CATCH_ALL_MAILBOXES?: string | string[];
 	/**
 	 * Optional explicit Cloudflare account allowlist for agent MCP auth.
 	 * When unset, MCP bearer credentials are accepted when they can read one of

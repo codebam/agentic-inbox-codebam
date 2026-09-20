@@ -8,3 +8,10 @@ TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 # Set a comma-separated Cloudflare account allowlist to bind MCP keys to
 # explicit accounts instead:
 # MCP_ALLOWED_ACCOUNT_IDS=023e105f4ecef8ad9ca31a8372d0c353
+
+# Optional: catch-all routing for unknown recipients. Unset derives a
+# catch-all@<domain> mailbox for every DOMAINS entry. Set CATCH_ALL_MAILBOXES
+# to a comma-separated address list, CATCH_ALL_MAILBOX to one global mailbox,
+# or CATCH_ALL_MAILBOX="" to disable catch-all capture.
+# CATCH_ALL_MAILBOXES=catch-all@example.com,catch-all@example.org
+# CATCH_ALL_MAILBOX=all@example.com

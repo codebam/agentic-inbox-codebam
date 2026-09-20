@@ -24,7 +24,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
      [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agentic-inbox)
 
 2. **Configure Cloudflare Access** -- Enable [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) on your Worker under Settings > Domains & Routes. The modal will show your `POLICY_AUD` and `TEAM_DOMAIN` values. `TEAM_DOMAIN` can be either your Access team URL or the full `.../cdn-cgi/access/certs` URL. **You must set these as secrets for your Worker.** Add a **Bypass** policy for `/mcp` and `/mcp/*` so external agents can authenticate with Wrangler keys (see [Agent-first MCP server](#agent-first-mcp-server)).
-3. **Set up Email Routing** -- In the Cloudflare dashboard, go to your domain > Email Routing and create a catch-all rule that forwards to this Worker
+3. **Set up Email Routing** -- In the Cloudflare dashboard, go to each domain > Email Routing and create a catch-all rule that forwards to this Worker. Mail sent to an address that does not have its own mailbox is delivered to that domain's `catch-all@<domain>` mailbox, which the Worker creates automatically. The original SMTP recipient is preserved and shown as **Delivered to** in the message view.
 4. **Enable Email Service** -- The worker needs the `send_email` binding to send outbound emails. See [Email Service docs](https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/)
 5. **Create a mailbox** -- Visit your deployed app and create a mailbox for any address on your domain (e.g. `hello@example.com`)
 
@@ -39,6 +39,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
+- **Per-domain catch-all** — Every configured domain gets a `catch-all@<domain>` mailbox so aliases and unknown recipients are captured instead of silently dropped. Dedicated mailboxes always take precedence, and the original envelope recipient is preserved separately from the visible To header
 - **All Accounts view** — Browse a combined, folder-filterable list of emails across every mailbox, with each row labelled by account
 - **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
 - **Agent-first MCP server** — External agents authenticate with the local Wrangler login key (`wrangler auth token`) to read, search, draft, and send email
@@ -62,8 +63,9 @@ npm run dev
 
 ### Configuration
 
-1. Set your domain in `wrangler.jsonc`
+1. Set your domains in `wrangler.jsonc` (`DOMAINS` accepts a comma-separated list)
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
+3. Optional: override catch-all routing with `CATCH_ALL_MAILBOXES` (comma-separated mailbox addresses, one per domain) or `CATCH_ALL_MAILBOX` (one mailbox for every domain). Leave both unset to derive `catch-all@<domain>`. Set `CATCH_ALL_MAILBOX` to an empty string to reject/ignore unknown recipients instead of capturing them.
 
 ### Deploy
 

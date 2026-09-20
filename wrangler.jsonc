@@ -16,6 +16,10 @@
 		// The worker now fails closed outside local development if Access is not configured.
 		"DOMAINS": "seanbehan.ca, codebam.ca",
 		"EMAIL_ADDRESSES": [],
+		// Optional catch-all overrides. Unset derives catch-all@<domain> for
+		// every DOMAINS entry (and creates it on first use).
+		// "CATCH_ALL_MAILBOXES": "catch-all@seanbehan.ca, catch-all@codebam.ca",
+		// "CATCH_ALL_MAILBOX": "all@seanbehan.ca",
 		"name": "EMAIL_ADDRESSES"
 	},
 	"send_email": [

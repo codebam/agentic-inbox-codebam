@@ -181,4 +181,11 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_category ON emails(category);
         `),
 	},
+	{
+		// The SMTP envelope recipient is the address Cloudflare Email Routing
+		// actually delivered to; the visible To header may differ for aliases,
+		// forwarded mail, or Bcc-only deliveries.
+		name: "10_add_envelope_recipient",
+		sql: txn(`ALTER TABLE emails ADD COLUMN envelope_recipient TEXT;`),
+	},
 ];

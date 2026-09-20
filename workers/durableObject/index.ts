@@ -78,6 +78,7 @@ interface EmailData {
 	subject: string;
 	sender: string;
 	recipient: string;
+	envelope_recipient?: string | null;
 	cc?: string | null;
 	bcc?: string | null;
 	date: string;
@@ -160,6 +161,7 @@ export class MailboxDO extends DurableObject<Env> {
 				subject: schema.emails.subject,
 				sender: schema.emails.sender,
 				recipient: schema.emails.recipient,
+				envelope_recipient: schema.emails.envelope_recipient,
 				cc: schema.emails.cc,
 				bcc: schema.emails.bcc,
 				date: schema.emails.date,
@@ -286,7 +288,7 @@ export class MailboxDO extends DurableObject<Env> {
 					FROM folder_emails fe
 				)
 				SELECT
-					lp.id, lp.subject, lp.sender, lp.recipient, lp.date,
+					lp.id, lp.subject, lp.sender, lp.recipient, lp.envelope_recipient, lp.date,
 					lp.read, lp.starred, lp.thread_id, lp.folder_id,
 					lp.in_reply_to, lp.email_references,
 					lp.category, lp.category_confidence,
@@ -376,7 +378,7 @@ export class MailboxDO extends DurableObject<Env> {
 					ON fe.raw_thread_id = tc.raw_thread_id
 			)
 			SELECT
-				lif.id, lif.subject, lif.sender, lif.recipient, lif.date,
+				lif.id, lif.subject, lif.sender, lif.recipient, lif.envelope_recipient, lif.date,
 				lif.read, lif.starred, lif.thread_id, lif.folder_id,
 				lif.in_reply_to, lif.email_references,
 				lif.category, lif.category_confidence,
@@ -707,7 +709,7 @@ export class MailboxDO extends DurableObject<Env> {
 			const p2 = addParam(`%${query}%`);
 			const p3 = addParam(`%${query}%`);
 			const p4 = addParam(`%${query}%`);
-			conditions.push(`(${prefix}subject LIKE ${p1} OR ${prefix}body LIKE ${p2} OR ${prefix}sender LIKE ${p3} OR ${prefix}recipient LIKE ${p4} OR ${prefix}cc LIKE ${p4} OR ${prefix}bcc LIKE ${p4})`);
+			conditions.push(`(${prefix}subject LIKE ${p1} OR ${prefix}body LIKE ${p2} OR ${prefix}sender LIKE ${p3} OR ${prefix}recipient LIKE ${p4} OR ${prefix}envelope_recipient LIKE ${p4} OR ${prefix}cc LIKE ${p4} OR ${prefix}bcc LIKE ${p4})`);
 		}
 		if (folder) {
 			const p = addParam(folder);
@@ -715,7 +717,7 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 		if (category) { const p = addParam(category); conditions.push(`${prefix}category = ${p}`); }
 		if (from) { const p = addParam(`%${from}%`); conditions.push(`${prefix}sender LIKE ${p}`); }
-		if (to) { const p = addParam(`%${to}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
+		if (to) { const p = addParam(`%${to}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}envelope_recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
 		if (subject) { const p = addParam(`%${subject}%`); conditions.push(`${prefix}subject LIKE ${p}`); }
 		if (date_start) { const p = addParam(date_start); conditions.push(`${prefix}date >= ${p}`); }
 		if (date_end) { const p = addParam(date_end); conditions.push(`${prefix}date <= ${p}`); }
@@ -735,7 +737,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const offset = (page - 1) * limit;
 
 		const query = `
-			SELECT e.id, e.subject, e.sender, e.recipient, e.cc, e.bcc, e.date,
+			SELECT e.id, e.subject, e.sender, e.recipient, e.envelope_recipient, e.cc, e.bcc, e.date,
 				e.read, e.starred, e.in_reply_to, e.email_references,
 				e.thread_id, e.folder_id, e.category, e.category_confidence,
 				SUBSTR(e.body, 1, 300) as snippet,
@@ -883,6 +885,7 @@ export class MailboxDO extends DurableObject<Env> {
 				subject: email.subject,
 				sender: email.sender,
 				recipient: email.recipient,
+				envelope_recipient: email.envelope_recipient ?? null,
 				cc: email.cc ?? null,
 				bcc: email.bcc ?? null,
 				date: email.date,

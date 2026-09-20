@@ -21,8 +21,9 @@ import {
 	TrashIcon,
 } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router";
+import { isCatchAllAddress } from "shared/mailboxes";
 import api from "~/services/api";
 import {
 	useCreateMailbox,
@@ -49,6 +50,15 @@ export default function HomeRoute() {
 
 	const domains = configData?.domains ?? [];
 	const emailAddresses = configData?.emailAddresses ?? [];
+	const catchAllMailboxes = configData?.catchAllMailboxes ?? [];
+	const configuredMailboxAddresses = useMemo(
+		() => [...new Set([...emailAddresses, ...catchAllMailboxes])],
+		[emailAddresses, catchAllMailboxes],
+	);
+	const catchAllAddresses = useMemo(
+		() => new Set(catchAllMailboxes.map((address) => address.toLowerCase())),
+		[catchAllMailboxes],
+	);
 
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newPrefix, setNewPrefix] = useState("");
@@ -70,15 +80,20 @@ export default function HomeRoute() {
 		}
 	}, [domains, selectedDomain]);
 
-	// Auto-create mailboxes from config (run once when both data sources are ready)
+	// Auto-create configured mailboxes, including the per-domain catch-all
+	// mailboxes, once both config and the current mailbox list are ready.
 	const autoCreateDone = useRef(false);
 	useEffect(() => {
 		if (autoCreateDone.current) return;
-		if (emailAddresses.length === 0 || !mailboxesFetched) return;
+		if (!configData || !mailboxesFetched) return;
+		if (configuredMailboxAddresses.length === 0) {
+			autoCreateDone.current = true;
+			return;
+		}
 		const existingEmails = new Set(
 			mailboxes.map((m) => m.email.toLowerCase()),
 		);
-		const toCreate = emailAddresses.filter(
+		const toCreate = configuredMailboxAddresses.filter(
 			(addr) => !existingEmails.has(addr.toLowerCase()),
 		);
 		if (toCreate.length === 0) {
@@ -90,11 +105,12 @@ export default function HomeRoute() {
 		Promise.all(
 			toCreate.map((addr) => {
 				const localPart = addr.split("@")[0] || addr;
-				return api.createMailbox(addr, localPart).catch(() => {});
+				const name = isCatchAllAddress(addr) ? "Catch-all" : localPart;
+				return api.createMailbox(addr, name).catch(() => {});
 			}),
 		).then(() => { if (!cancelled) refetchMailboxes(); });
 		return () => { cancelled = true; };
-	}, [emailAddresses, mailboxes, refetchMailboxes]);
+	}, [configData, configuredMailboxAddresses, mailboxes, mailboxesFetched, refetchMailboxes]);
 
 	const handleCreate = async (e: FormEvent) => {
 		e.preventDefault();
@@ -137,10 +153,10 @@ export default function HomeRoute() {
 
 	const isConfigured = emailAddresses.length > 0;
 	const accounts = isConfigured
-		? emailAddresses.map((addr) => ({
+		? configuredMailboxAddresses.map((addr) => ({
 				id: addr,
 				email: addr,
-				name: addr.split("@")[0] || addr,
+				name: isCatchAllAddress(addr) ? "Catch-all" : addr.split("@")[0] || addr,
 			}))
 		: mailboxes;
 
@@ -215,14 +231,24 @@ export default function HomeRoute() {
 									{account.name.charAt(0).toUpperCase()}
 								</div>
 								<div className="min-w-0 flex-1">
-									<div className="text-sm font-medium text-kumo-default truncate">
-										{account.name}
+									<div className="flex items-center gap-2">
+										<div className="text-sm font-medium text-kumo-default truncate">
+											{account.name}
+										</div>
+										{(isCatchAllAddress(account.email) ||
+											catchAllAddresses.has(account.email.toLowerCase())) && (
+											<span className="shrink-0 rounded-full bg-kumo-fill px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-kumo-subtle">
+												Catch-all
+											</span>
+										)}
 									</div>
 									<div className="text-sm text-kumo-subtle">
 										{account.email}
 									</div>
 								</div>
-								{!isConfigured && (
+								{!isConfigured &&
+									!isCatchAllAddress(account.email) &&
+									!catchAllAddresses.has(account.email.toLowerCase()) && (
 									<Button
 										variant="ghost"
 										size="sm"
