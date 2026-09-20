@@ -52,6 +52,7 @@ const SORT_COLUMN_MAP = {
 interface SearchFilterOptions {
 	query: string;
 	folder?: string;
+	category?: string;
 	from?: string;
 	to?: string;
 	subject?: string;
@@ -65,6 +66,7 @@ interface SearchFilterOptions {
 interface GetEmailsOptions {
 	folder?: string;
 	thread_id?: string;
+	category?: string;
 	page?: number;
 	limit?: number;
 	sortColumn?: SortColumn;
@@ -87,6 +89,9 @@ interface EmailData {
 	thread_id?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	category?: string | null;
+	category_confidence?: number | null;
+	classification?: string | null;
 }
 
 interface AttachmentData {
@@ -115,6 +120,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const {
 			folder,
 			thread_id,
+			category,
 			page = 1,
 			limit: rawLimit = 25,
 			sortColumn: rawSortColumn = "date",
@@ -141,6 +147,9 @@ export class MailboxDO extends DurableObject<Env> {
 		if (thread_id) {
 			conditions.push(eq(schema.emails.thread_id, thread_id));
 		}
+		if (category) {
+			conditions.push(eq(schema.emails.category, category));
+		}
 
 		const orderCol = SORT_COLUMN_MAP[sortColumn];
 		const orderDir = sortDirection === "ASC" ? asc(orderCol) : desc(orderCol);
@@ -160,6 +169,8 @@ export class MailboxDO extends DurableObject<Env> {
 				email_references: schema.emails.email_references,
 				thread_id: schema.emails.thread_id,
 				folder_id: schema.emails.folder_id,
+				category: schema.emails.category,
+				category_confidence: schema.emails.category_confidence,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
 			})
 			.from(schema.emails)
@@ -179,8 +190,8 @@ export class MailboxDO extends DurableObject<Env> {
 	/**
 	 * Count total emails matching the given filters (for pagination).
 	 */
-	async countEmails(options: { folder?: string; thread_id?: string } = {}) {
-		const { folder, thread_id } = options;
+	async countEmails(options: { folder?: string; thread_id?: string; category?: string } = {}) {
+		const { folder, thread_id, category } = options;
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
 
@@ -194,6 +205,11 @@ export class MailboxDO extends DurableObject<Env> {
 		if (thread_id) {
 			conditions.push(`thread_id = ?${params.length + 1}`);
 			params.push(thread_id);
+		}
+
+		if (category) {
+			conditions.push(`category = ?${params.length + 1}`);
+			params.push(category);
 		}
 
 		const where =
@@ -213,6 +229,7 @@ export class MailboxDO extends DurableObject<Env> {
 	async getThreadedEmails(options: GetEmailsOptions = {}) {
 		const {
 			folder,
+			category,
 			page = 1,
 			limit: rawLimit = 25,
 		} = options;
@@ -235,6 +252,10 @@ export class MailboxDO extends DurableObject<Env> {
 		//   2. Fallback: group by normalized subject (strips Re:/Fwd:/FW: prefixes)
 		//      for legacy emails that lack threading headers (thread_id IS NULL).
 		const isDraftFolder = folder === Folders.DRAFT;
+		const categoryClause = category ? "AND category = ?4" : "";
+		const categoryArgs: (string | number)[] = category
+			? [folder, limit, offset, category]
+			: [folder, limit, offset];
 
 		if (isDraftFolder) {
 			const result = this.ctx.storage.sql.exec(
@@ -244,6 +265,7 @@ export class MailboxDO extends DurableObject<Env> {
 						COALESCE(in_reply_to, id) as draft_group_key
 					FROM emails
 					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+					${categoryClause}
 				),
 				draft_stats AS (
 					SELECT
@@ -267,6 +289,7 @@ export class MailboxDO extends DurableObject<Env> {
 					lp.id, lp.subject, lp.sender, lp.recipient, lp.date,
 					lp.read, lp.starred, lp.thread_id, lp.folder_id,
 					lp.in_reply_to, lp.email_references,
+					lp.category, lp.category_confidence,
 					SUBSTR(lp.body, 1, 300) as snippet,
 					ds.thread_count, ds.thread_unread_count, ds.participants
 				FROM latest_per_group lp
@@ -274,7 +297,7 @@ export class MailboxDO extends DurableObject<Env> {
 				WHERE lp.rn = 1
 				ORDER BY lp.date DESC
 				LIMIT ?2 OFFSET ?3`,
-				folder, limit, offset
+				...categoryArgs
 			);
 
 			const rows = [...result];
@@ -297,6 +320,7 @@ export class MailboxDO extends DurableObject<Env> {
 					${NORMALIZED_SUBJECT_SQL} as normalized_subject
 				FROM emails
 				WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+				${categoryClause}
 			),
 			thread_to_conversation AS (
 				SELECT
@@ -355,6 +379,7 @@ export class MailboxDO extends DurableObject<Env> {
 				lif.id, lif.subject, lif.sender, lif.recipient, lif.date,
 				lif.read, lif.starred, lif.thread_id, lif.folder_id,
 				lif.in_reply_to, lif.email_references,
+				lif.category, lif.category_confidence,
 				SUBSTR(lif.body, 1, 300) as snippet,
 				cs.thread_count, cs.thread_unread_count, cs.participants,
 				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' LIMIT 1)
@@ -369,7 +394,7 @@ export class MailboxDO extends DurableObject<Env> {
 			WHERE lif.rn = 1
 			ORDER BY lif.date DESC
 			LIMIT ?2 OFFSET ?3`,
-			folder, limit, offset
+			...categoryArgs
 		);
 
 		const rows = [...result];
@@ -389,16 +414,21 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Count threaded conversations in a folder (for pagination).
 	 * Returns the number of conversation groups, not individual emails.
 	 */
-	async countThreadedEmails(folder: string) {
+	async countThreadedEmails(folder: string, category?: string) {
 		const isDraftFolder = folder === Folders.DRAFT;
+		const categoryClause = category ? "AND category = ?2" : "";
+		const countArgs: (string | number)[] = category
+			? [folder, category]
+			: [folder];
 
 		if (isDraftFolder) {
 			const row = [
 				...this.ctx.storage.sql.exec(
 					`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
 					 FROM emails
-					 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)`,
-					folder,
+					 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+					 ${categoryClause}`,
+					...countArgs,
 				),
 			][0] as { total: number } | undefined;
 			return row?.total ?? 0;
@@ -414,6 +444,7 @@ export class MailboxDO extends DurableObject<Env> {
 					${NORMALIZED_SUBJECT_SQL} as normalized_subject
 					FROM emails
 					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+					${categoryClause}
 				),
 				thread_to_conversation AS (
 					SELECT
@@ -428,7 +459,7 @@ export class MailboxDO extends DurableObject<Env> {
 				)
 				SELECT COUNT(DISTINCT conversation_id) as total
 				FROM thread_to_conversation`,
-				folder,
+				...countArgs,
 			),
 		][0] as { total: number } | undefined;
 		return row?.total ?? 0;
@@ -659,7 +690,7 @@ export class MailboxDO extends DurableObject<Env> {
 		options: SearchFilterOptions,
 		tableAlias = "",
 	): { conditions: string[]; params: (string | number)[] } {
-		const { query, folder, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment } = options;
+		const { query, folder, category, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment } = options;
 		const prefix = tableAlias ? `${tableAlias}.` : "";
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
@@ -682,6 +713,7 @@ export class MailboxDO extends DurableObject<Env> {
 			const p = addParam(folder);
 			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);
 		}
+		if (category) { const p = addParam(category); conditions.push(`${prefix}category = ${p}`); }
 		if (from) { const p = addParam(`%${from}%`); conditions.push(`${prefix}sender LIKE ${p}`); }
 		if (to) { const p = addParam(`%${to}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
 		if (subject) { const p = addParam(`%${subject}%`); conditions.push(`${prefix}subject LIKE ${p}`); }
@@ -705,7 +737,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const query = `
 			SELECT e.id, e.subject, e.sender, e.recipient, e.cc, e.bcc, e.date,
 				e.read, e.starred, e.in_reply_to, e.email_references,
-				e.thread_id, e.folder_id,
+				e.thread_id, e.folder_id, e.category, e.category_confidence,
 				SUBSTR(e.body, 1, 300) as snippet,
 				f.name as folder_name
 			FROM emails e
@@ -862,6 +894,9 @@ export class MailboxDO extends DurableObject<Env> {
 				thread_id: email.thread_id ?? null,
 				message_id: email.message_id ?? null,
 				raw_headers: email.raw_headers ?? null,
+				category: email.category ?? null,
+				category_confidence: email.category_confidence ?? null,
+				classification: email.classification ?? null,
 			})
 			.run();
 

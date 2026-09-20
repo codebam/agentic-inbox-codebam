@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Pagination, Tooltip } from "@cloudflare/kumo";
+import { Button, Pagination, Select, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
@@ -12,6 +12,7 @@ import {
 	FileIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
+	ProhibitIcon,
 	StarIcon,
 	TrashIcon,
 	TrayIcon,
@@ -20,7 +21,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { Folders } from "shared/folders";
+import { normalizeCategorizationSettings } from "shared/categories";
 import { formatListDate } from "shared/dates";
+import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
 import {
@@ -30,11 +33,13 @@ import {
 	useUpdateEmail,
 } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
+import { useMailbox } from "~/queries/mailboxes";
 import { queryKeys } from "~/queries/keys";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
 
 const PAGE_SIZE = 25;
+const CATEGORY_FILTER_ALL = "__all__";
 
 const FOLDER_EMPTY_STATES: Record<
 	string,
@@ -77,6 +82,12 @@ const FOLDER_EMPTY_STATES: Record<
 		title: "Trash is empty",
 		description:
 			"Deleted emails will appear here. You can restore them or permanently delete them.",
+	},
+	[Folders.SPAM]: {
+		icon: <ProhibitIcon size={48} weight="thin" className="text-kumo-subtle" />,
+		title: "No spam",
+		description:
+			"Emails that Jev flags as spam will be routed here when spam detection is enabled.",
 	},
 };
 
@@ -153,19 +164,29 @@ export default function EmailListRoute() {
 		startCompose,
 	} = useUIStore();
 	const [page, setPage] = useState(1);
+	const [categoryFilter, setCategoryFilter] = useState("");
 
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
 
+	const { data: mailbox } = useMailbox(mailboxId);
+	const categories = useMemo(
+		() =>
+			normalizeCategorizationSettings(mailbox?.settings?.categorization)
+				.categories,
+		[mailbox],
+	);
+
 	const params = useMemo(
 		() => ({
 			folder: folder || "",
 			page: String(page),
 			limit: String(PAGE_SIZE),
+			...(categoryFilter ? { category: categoryFilter } : {}),
 		}),
-		[folder, page],
+		[folder, page, categoryFilter],
 	);
 
 	const {
@@ -196,6 +217,7 @@ export default function EmailListRoute() {
 		if (folderChanged) {
 			closePanel();
 			setPage(1);
+			setCategoryFilter("");
 		}
 	}, [mailboxId, folder, closePanel]);
 
@@ -279,6 +301,28 @@ export default function EmailListRoute() {
 						{folderName}
 					</h1>
 					<div className="flex items-center gap-1">
+						{categories.length > 0 && (
+							<Select
+								aria-label="Filter by category"
+								size="sm"
+								value={categoryFilter || CATEGORY_FILTER_ALL}
+								onValueChange={(value) => {
+									const next =
+										value && value !== CATEGORY_FILTER_ALL
+											? String(value)
+											: "";
+									setCategoryFilter(next);
+									setPage(1);
+								}}
+							>
+								<Select.Option value={CATEGORY_FILTER_ALL}>All categories</Select.Option>
+								{categories.map((category) => (
+									<Select.Option key={category.id} value={category.id}>
+										{category.name}
+									</Select.Option>
+								))}
+							</Select>
+						)}
 						{totalCount > 0 && (
 							<span className="text-sm text-kumo-subtle mr-2 hidden sm:inline">
 								{totalCount} conversation{totalCount !== 1 ? "s" : ""}
@@ -377,6 +421,10 @@ export default function EmailListRoute() {
 														Draft
 													</span>
 												)}
+												<CategoryBadge
+													category={email.category}
+													categories={categories}
+												/>
 												{email.needs_reply && !email.has_draft && (
 													<Tooltip content="Needs reply" asChild>
 														<span className="shrink-0 text-kumo-warning">

@@ -36,6 +36,7 @@ type MailboxSearchStub = {
 	searchEmails: (options: {
 		query: string;
 		folder?: string;
+		category?: string;
 	}) => Promise<unknown>;
 };
 
@@ -54,11 +55,12 @@ export async function toolListMailboxes(env: Env) {
 export async function toolListEmails(
 	env: Env,
 	mailboxId: string,
-	params: { folder: string; limit: number; page: number },
+	params: { folder: string; limit: number; page: number; category?: string },
 ) {
 	const stub = getMailboxStub(env, mailboxId);
 	return stub.getEmails({
 		folder: params.folder,
+		category: params.category,
 		limit: params.limit,
 		page: params.page,
 		sortColumn: "date",
@@ -95,12 +97,13 @@ export async function toolGetThread(
 export async function toolSearchEmails(
 	env: Env,
 	mailboxId: string,
-	params: { query: string; folder?: string },
+	params: { query: string; folder?: string; category?: string },
 ) {
 	const stub = getMailboxStub(env, mailboxId);
 	return (stub as unknown as MailboxSearchStub).searchEmails({
 		query: params.query,
 		folder: params.folder,
+		category: params.category,
 	});
 }
 

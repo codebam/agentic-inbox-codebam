@@ -2,6 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type { CategorizationSettings } from "shared/categories";
+
 export interface SignatureSettings {
 	enabled: boolean;
 	text: string;
@@ -14,6 +16,7 @@ export interface MailboxSettings {
 	signature?: SignatureSettings;
 	autoReply?: { enabled: boolean; subject: string; message: string };
 	agentSystemPrompt?: string;
+	categorization?: CategorizationSettings;
 }
 
 export interface Mailbox {
@@ -40,6 +43,9 @@ export interface Email {
 	email_references?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	category?: string | null;
+	category_confidence?: number | null;
+	classification?: string | null;
 	attachments?: Attachment[];
 	snippet?: string | null;
 	// Thread aggregate fields (only present in threaded list view)

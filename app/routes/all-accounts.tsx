@@ -11,6 +11,7 @@ import {
 	EnvelopeSimpleIcon,
 	FileIcon,
 	PaperPlaneTiltIcon,
+	ProhibitIcon,
 	StackIcon,
 	StarIcon,
 	TrashIcon,
@@ -20,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { formatListDate } from "shared/dates";
 import { Folders, getFolderDisplayName } from "shared/folders";
+import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
 import { useAllEmails } from "~/queries/all-emails";
@@ -36,6 +38,7 @@ const FOLDER_TABS = [
 	{ id: Folders.SENT, label: "Sent", icon: <PaperPlaneTiltIcon size={15} weight="bold" /> },
 	{ id: Folders.DRAFT, label: "Drafts", icon: <FileIcon size={15} weight="bold" /> },
 	{ id: Folders.ARCHIVE, label: "Archive", icon: <ArchiveIcon size={15} weight="bold" /> },
+	{ id: Folders.SPAM, label: "Spam", icon: <ProhibitIcon size={15} weight="bold" /> },
 	{ id: Folders.TRASH, label: "Trash", icon: <TrashIcon size={15} weight="bold" /> },
 ] as const;
 
@@ -288,6 +291,9 @@ export default function AllAccountsRoute() {
 																{getFolderDisplayName(email.folder_id)}
 															</Badge>
 														)}
+														<CategoryBadge
+															category={email.category}
+														/>
 														<span
 															className={`truncate text-sm ${
 																hasUnread(email) ? "font-semibold text-kumo-default" : "text-kumo-strong"

@@ -6,6 +6,11 @@ import { useKumoToastManager } from "@cloudflare/kumo";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { Folders } from "shared/folders";
+import {
+	SPAM_CATEGORY_ID,
+	categoryLabel,
+	normalizeCategorizationSettings,
+} from "shared/categories";
 import EmailPanelDialogs from "~/components/email-panel/EmailPanelDialogs";
 import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
@@ -96,6 +101,13 @@ export default function EmailPanel({
 	}, [allMessages, draftMessageIds, currentMailbox?.email, email]);
 
 	const moveToFolders = useMemo(() => { const cur = folder || email?.folder_id; return folders.filter((f) => f.id !== cur); }, [folders, folder, email?.folder_id]);
+
+	const categoryNames = normalizeCategorizationSettings(
+		currentMailbox?.settings?.categorization,
+	).categories;
+	const category = email?.category
+		? categoryLabel(email.category, categoryNames)
+		: null;
 
 	if (!email) return <EmailPanelSkeleton />;
 
@@ -191,6 +203,9 @@ export default function EmailPanel({
 				subject={email.subject}
 				messageCount={allMessages.length}
 				showThreadCount={hasThread}
+				categoryLabel={category}
+				categoryConfidence={email.category_confidence}
+				isSpam={email.category === SPAM_CATEGORY_ID}
 			/>
 
 			<div className="flex-1 overflow-y-auto">

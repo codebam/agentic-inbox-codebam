@@ -18,6 +18,14 @@ import {
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
+import {
+	defaultCategorizationSettings,
+	normalizeCategorizationSettings,
+} from "../shared/categories";
+import {
+	classifyIncomingEmail,
+	serializeClassification,
+} from "./lib/categorize";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 import type { MailboxDO } from "./durableObject";
@@ -109,8 +117,18 @@ app.post("/api/v1/mailboxes", async (c) => {
 	}
 	const key = `mailboxes/${email}.json`;
 	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
-	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
-	const finalSettings = { ...defaultSettings, ...settings };
+	const defaultSettings = {
+		fromName: name,
+		forwarding: { enabled: false, email: "" },
+		signature: { enabled: false, text: "" },
+		autoReply: { enabled: false, subject: "", message: "" },
+		categorization: defaultCategorizationSettings(),
+	};
+	const finalSettings = {
+		...defaultSettings,
+		...settings,
+		categorization: normalizeCategorizationSettings(settings?.categorization),
+	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
 	await stub.getFolders();
@@ -127,10 +145,19 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
+	if (!settings || typeof settings !== "object") {
+		return c.json({ error: "settings must be an object" }, 400);
+	}
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.put(key, JSON.stringify(settings));
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
+	// Normalize server-side so an edited stale client cannot store malformed
+	// categorization settings that would break inbound classification.
+	const normalizedSettings = {
+		...settings,
+		categorization: normalizeCategorizationSettings(settings.categorization),
+	};
+	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
@@ -230,6 +257,7 @@ app.get("/api/v1/all-emails", async (c) => {
 app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const folder = c.req.query("folder");
 	const thread_id = c.req.query("thread_id");
+	const category = c.req.query("category") || undefined;
 	const threaded = boolQuery(c, "threaded");
 	const page = intQuery(c, "page");
 	const limit = intQuery(c, "limit");
@@ -238,13 +266,13 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const stub = c.var.mailboxStub;
 
 	if (threaded && folder) {
-		const emails = await (stub as any).getThreadedEmails({ folder, page, limit });
-		const totalCount = await (stub as any).countThreadedEmails(folder);
+		const emails = await (stub as any).getThreadedEmails({ folder, category, page, limit });
+		const totalCount = await (stub as any).countThreadedEmails(folder, category);
 		return c.json({ emails, totalCount });
 	}
-	const emails = await stub.getEmails({ folder, thread_id, page, limit, sortColumn, sortDirection });
+	const emails = await stub.getEmails({ folder, thread_id, category, page, limit, sortColumn, sortDirection });
 	if (folder) {
-		const totalCount = await stub.countEmails({ folder, thread_id });
+		const totalCount = await stub.countEmails({ folder, thread_id, category });
 		return c.json({ emails, totalCount });
 	}
 	return c.json(emails);
@@ -383,7 +411,8 @@ app.delete("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => 
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 	const searchOpts: Record<string, unknown> = {
-		query: c.req.query("query") || "", folder: c.req.query("folder"), from: c.req.query("from"),
+		query: c.req.query("query") || "", folder: c.req.query("folder"), category: c.req.query("category"),
+		from: c.req.query("from"),
 		to: c.req.query("to"), subject: c.req.query("subject"), date_start: c.req.query("date_start"),
 		date_end: c.req.query("date_end"), is_read: boolQuery(c, "is_read"),
 		is_starred: boolQuery(c, "is_starred"), has_attachment: boolQuery(c, "has_attachment"),
@@ -449,7 +478,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	if (!mailboxId) throw new Error("received email with no valid recipient address");
 
 	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	const mailboxObject = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+	if (!mailboxObject) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	const mailboxSettings = (await mailboxObject.json().catch(() => ({}))) as Record<string, unknown>;
+	const categorization = normalizeCategorizationSettings(mailboxSettings.categorization);
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
@@ -477,7 +509,21 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
-	await stub.createEmail(Folders.INBOX, {
+	// Best-effort Jev classification. A null result (disabled/failed) still
+	// delivers the email to the Inbox.
+	const classification = await classifyIncomingEmail(env.AI, {
+		sender: (parsedEmail.from?.address || "").toLowerCase(),
+		senderName: parsedEmail.from?.name || null,
+		recipients: [...allRecipients, ...ccRecipients].join(", "),
+		subject: parsedEmail.subject || "",
+		body: parsedEmail.html || parsedEmail.text || "",
+	}, categorization);
+
+	const isSpam = classification?.isSpam === true;
+	const destinationFolder =
+		isSpam && categorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
+
+	await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
@@ -485,13 +531,19 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		body: parsedEmail.html || parsedEmail.text || "",
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
+		category: classification?.category ?? null,
+		category_confidence: classification?.categoryConfidence ?? null,
+		classification: serializeClassification(classification),
 	}, attachmentData);
 
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
-	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
-	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	// Do not auto-draft replies to mail classified as spam.
+	if (!isSpam) {
+		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
+		})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	}
 }
 
 export { app, receiveEmail };

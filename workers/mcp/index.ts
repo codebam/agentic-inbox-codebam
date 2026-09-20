@@ -110,7 +110,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── list_emails ────────────────────────────────────────────
 		this.server.tool(
 			"list_emails",
-			"List emails in a mailbox folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id).",
+			"List emails in a mailbox folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, category).",
 			{
 				mailboxId: z
 					.string()
@@ -127,11 +127,17 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					.number()
 					.default(1)
 					.describe("Page number for pagination"),
+				category: z
+					.string()
+					.optional()
+					.describe(
+						"Optional category ID to filter by (spam or a configured category from an email's category field)",
+					),
 			},
-			async ({ mailboxId, folder, limit, page }) => {
+			async ({ mailboxId, folder, limit, page, category }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolListEmails(env, mailboxId, { folder, limit, page });
+				const result = await toolListEmails(env, mailboxId, { folder, limit, page, category });
 				return mcpText(result);
 			},
 		);
@@ -179,7 +185,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── search_emails ──────────────────────────────────────────
 		this.server.tool(
 			"search_emails",
-			"Search for emails matching a query across subject and body fields.",
+			"Search for emails matching a query across subject and body fields. Optionally filter by folder or Jev category.",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				query: z.string().describe("Search query to match against subject and body"),
@@ -187,11 +193,15 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					.string()
 					.optional()
 					.describe("Optional folder to restrict search to"),
+				category: z
+					.string()
+					.optional()
+					.describe("Optional category ID to restrict search to"),
 			},
-			async ({ mailboxId, query, folder }) => {
+			async ({ mailboxId, query, folder, category }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolSearchEmails(env, mailboxId, { query, folder });
+				const result = await toolSearchEmails(env, mailboxId, { query, folder, category });
 				return mcpText(result);
 			},
 		);
@@ -417,7 +427,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── move_email ─────────────────────────────────────────────
 		this.server.tool(
 			"move_email",
-			"Move an email to a different folder (inbox, sent, draft, archive, trash).",
+			"Move an email to a different folder (inbox, sent, draft, archive, spam, trash).",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				emailId: z.string().describe("The email ID"),

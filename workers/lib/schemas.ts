@@ -28,6 +28,8 @@ export interface EmailMetadata {
 	email_references?: string | null;
 	thread_id?: string | null;
 	folder_id?: string | null;
+	category?: string | null;
+	category_confidence?: number | null;
 	snippet?: string | null;
 }
 
@@ -35,6 +37,7 @@ export interface EmailFull extends EmailMetadata {
 	body?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	classification?: string | null;
 	attachments?: AttachmentInfo[];
 }
 

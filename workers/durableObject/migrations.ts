@@ -168,4 +168,17 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		// Jev classification results. `category` is `spam` or a configured
+		// category ID; `classification` stores the raw model answer for audit
+		// and future reprocessing.
+		name: "9_add_email_categorization",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN category TEXT;
+            ALTER TABLE emails ADD COLUMN category_confidence REAL;
+            ALTER TABLE emails ADD COLUMN classification TEXT;
+
+            CREATE INDEX IF NOT EXISTS idx_emails_category ON emails(category);
+        `),
+	},
 ];

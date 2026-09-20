@@ -111,7 +111,7 @@ function createEmailTools(env: Env, mailboxId: string) {
 	return {
 		list_emails: defineTool({
 			description:
-				"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id). Use folder='inbox' for received emails, 'sent' for sent emails.",
+				"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, category). Use folder='inbox' for received emails, 'sent' for sent emails.",
 			parameters: z.object({
 				folder: z
 					.string()
@@ -125,9 +125,15 @@ function createEmailTools(env: Env, mailboxId: string) {
 					.number()
 					.default(1)
 					.describe("Page number for pagination"),
+				category: z
+					.string()
+					.optional()
+					.describe(
+						"Optional category ID to filter by (spam or a configured category from an email's category field)",
+					),
 			}),
-			execute: async ({ folder, limit, page }): Promise<unknown> => {
-				return toolListEmails(env, mailboxId, { folder, limit, page });
+			execute: async ({ folder, limit, page, category }): Promise<unknown> => {
+				return toolListEmails(env, mailboxId, { folder, limit, page, category });
 			},
 		}),
 
@@ -159,7 +165,7 @@ function createEmailTools(env: Env, mailboxId: string) {
 
 		search_emails: defineTool({
 			description:
-				"Search for emails matching a query across subject and body fields.",
+				"Search for emails matching a query across subject and body fields. Optionally filter by folder or Jev category.",
 			parameters: z.object({
 				query: z
 					.string()
@@ -170,9 +176,13 @@ function createEmailTools(env: Env, mailboxId: string) {
 					.string()
 					.optional()
 					.describe("Optional folder to restrict search to"),
+				category: z
+					.string()
+					.optional()
+					.describe("Optional category ID to restrict search to"),
 			}),
-			execute: async ({ query, folder }): Promise<unknown> => {
-				return toolSearchEmails(env, mailboxId, { query, folder });
+			execute: async ({ query, folder, category }): Promise<unknown> => {
+				return toolSearchEmails(env, mailboxId, { query, folder, category });
 			},
 		}),
 
@@ -244,7 +254,7 @@ function createEmailTools(env: Env, mailboxId: string) {
 
 		move_email: defineTool({
 			description:
-				"Move an email to a different folder (inbox, sent, draft, archive, trash).",
+				"Move an email to a different folder (inbox, sent, draft, archive, spam, trash).",
 			parameters: z.object({
 				emailId: z.string().describe("The email ID"),
 				folderId: z

@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 
 export const folders = sqliteTable("folders", {
 	id: text("id").primaryKey(),
@@ -29,6 +29,9 @@ export const emails = sqliteTable("emails", {
 	thread_id: text("thread_id"),
 	message_id: text("message_id"),
 	raw_headers: text("raw_headers"),
+	category: text("category"),
+	category_confidence: real("category_confidence"),
+	classification: text("classification"),
 });
 
 export const attachments = sqliteTable("attachments", {

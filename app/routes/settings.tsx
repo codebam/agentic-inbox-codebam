@@ -6,6 +6,12 @@ import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/k
 import { RobotIcon, ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
+import AiCategorizationCard from "~/components/AiCategorizationCard";
+import {
+	defaultCategorizationSettings,
+	normalizeCategorizationSettings,
+	type CategorizationSettings,
+} from "shared/categories";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 
 // Placeholder shown in the textarea when no custom prompt is set.
@@ -20,12 +26,18 @@ export default function SettingsRoute() {
 
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
+	const [categorization, setCategorization] = useState<CategorizationSettings>(
+		defaultCategorizationSettings,
+	);
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
 		if (mailbox) {
 			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+			setCategorization(
+				normalizeCategorizationSettings(mailbox.settings?.categorization),
+			);
 		}
 	}, [mailbox]);
 
@@ -36,6 +48,7 @@ export default function SettingsRoute() {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
+			categorization: normalizeCategorizationSettings(categorization),
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -83,6 +96,11 @@ export default function SettingsRoute() {
 						<Input label="Email" type="email" value={mailbox.email} disabled />
 					</div>
 				</div>
+
+				<AiCategorizationCard
+					settings={categorization}
+					onChange={setCategorization}
+				/>
 
 				{/* Agent System Prompt */}
 				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
