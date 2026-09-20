@@ -12,6 +12,11 @@ export interface ComposeOptions {
 	originalEmail?: Email | null;
 	/** When editing a draft, this holds the draft email to pre-fill the composer */
 	draftEmail?: Email | null;
+	/**
+	 * Mailbox that owns this compose session. The All Accounts view has no
+	 * :mailboxId route param, so agent-created drafts pass their mailbox here.
+	 */
+	mailboxId?: string | null;
 }
 
 interface UIState {
@@ -42,6 +47,8 @@ interface UIState {
 	// Legacy dialog support (kept for non-split views)
 	isComposeModalOpen: boolean;
 	openComposeModal: (options?: ComposeOptions) => void;
+	/** Replace/attach the draft representing the current compose session. */
+	setComposeDraft: (draft: Email | null) => void;
 	closeComposeModal: () => void;
 }
 
@@ -68,12 +75,22 @@ export const useUIStore = create<UIState>((set, get) => ({
 		set((state) => {
 			const mode = options?.mode || "new";
 			const isReplyOrForward = mode === "reply" || mode === "reply-all" || mode === "forward";
+			// Prefer an explicitly supplied mailbox; otherwise derive it from the
+			// original/draft email, then from whatever is already selected.
+			const composeMailboxId =
+				options?.mailboxId ??
+				options?.originalEmail?.mailboxId ??
+				options?.draftEmail?.mailboxId ??
+				state.selectedMailboxId;
+			// Draft editing in the All Accounts view needs the owning mailbox just
+			// like a reply does, because there is no route param to fall back to.
+			const keepsSelection = isReplyOrForward || Boolean(options?.draftEmail);
 			return {
 				isComposing: true,
 				_previousEmailId: state.selectedEmailId,
 				// Keep selectedEmailId when replying/forwarding so the thread stays visible
 				selectedEmailId: isReplyOrForward ? state.selectedEmailId : null,
-				selectedMailboxId: isReplyOrForward ? state.selectedMailboxId : null,
+				selectedMailboxId: keepsSelection ? composeMailboxId : null,
 				composeOptions: options || { mode: "new", originalEmail: null },
 				isSidebarOpen: false,
 			};
@@ -94,6 +111,11 @@ export const useUIStore = create<UIState>((set, get) => ({
 	toggleSidebar: () => set({ isSidebarOpen: !get().isSidebarOpen }),
 
 	toggleAgentPanel: () => set({ isAgentPanelOpen: !get().isAgentPanelOpen }),
+
+	setComposeDraft: (draft) =>
+		set((state) => ({
+			composeOptions: { ...state.composeOptions, draftEmail: draft },
+		})),
 
 	openComposeModal: (options) =>
 		set({

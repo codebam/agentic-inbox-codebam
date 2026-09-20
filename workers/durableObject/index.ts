@@ -8,6 +8,7 @@ import { eq, and, or, asc, desc, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
+import { SPAM_CATEGORY_ID } from "../../shared/categories";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 
@@ -192,6 +193,40 @@ export class MailboxDO extends DurableObject<Env> {
 	/**
 	 * Count total emails matching the given filters (for pagination).
 	 */
+	/**
+	 * Return emails marked as spam: the Spam folder, the `spam` category, or
+	 * rows the classifier recorded with `is_spam: true` in the audit JSON.
+	 * Used by the bulk spam-delete tool so classification-only rows are not
+	 * missed when a mailbox had `moveToSpam` disabled.
+	 */
+	async getSpamEmails(options: { page?: number; limit?: number } = {}) {
+		const limit = Math.min(Math.max(options.limit ?? 100, 1), 100);
+		const offset = ((options.page ?? 1) - 1) * limit;
+		return [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, subject, sender, folder_id, category, classification
+				 FROM emails
+				 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+				    OR category = ?2
+				    OR (json_valid(classification)
+				        AND json_extract(classification, '$.is_spam') = 1)
+				 ORDER BY date DESC, id DESC
+				 LIMIT ?3 OFFSET ?4`,
+				Folders.SPAM,
+				SPAM_CATEGORY_ID,
+				limit,
+				offset,
+			),
+		] as {
+			id: string;
+			subject: string | null;
+			sender: string | null;
+			folder_id: string | null;
+			category: string | null;
+			classification: string | null;
+		}[];
+	}
+
 	async countEmails(options: { folder?: string; thread_id?: string; category?: string } = {}) {
 		const { folder, thread_id, category } = options;
 		const conditions: string[] = [];

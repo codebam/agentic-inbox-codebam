@@ -19,6 +19,7 @@ import {
 	textToHtml,
 } from "../lib/email-helpers";
 import {
+	toolListMailboxes,
 	toolListEmails,
 	toolGetEmail,
 	toolGetThread,
@@ -28,8 +29,12 @@ import {
 	toolMarkEmailRead,
 	toolMoveEmail,
 	toolDiscardDraft,
+	toolDeleteEmail,
+	toolDeleteSpamEmails,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
+import { isAllMailboxesAgentId } from "../../shared/mailboxes";
+import { isSpamMarkedEmail } from "../../shared/spam";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -69,6 +74,7 @@ Write like a real person. Short, direct, flowing prose. Get to the point. Plain 
 - Before drafting ANY reply, carefully read the full thread history.
 - NEVER repeat information that was already shared in a prior message in the thread.
 - Your reply should only contain NEW information or directly respond to what the person just said. Move the conversation forward, don't rehash it.
+- NEVER draft a reply to an email marked as spam: an email in the Spam folder, an email with the \`spam\` category, or an email whose classification audit says it is spam. Leave spam alone; if the operator asks for a reply to spam, explain that you cannot draft it.
 
 ## Who Are You Replying To?
 Use the name the person gives in their email body / signature. That's their name - use it. The "from" address is where you send the reply, but the name in the email is how you greet them.
@@ -86,6 +92,23 @@ You can ONLY draft emails. You do NOT have the ability to send emails directly.
 
 ## Draft Management
 Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
+
+/**
+ * Extra instructions appended to the default prompt when the built-in chat is
+ * opened from the All Accounts view. That agent instance is deliberately not
+ * bound to one mailbox and every mailbox tool requires an explicit mailboxId.
+ */
+const ALL_MAILBOXES_SYSTEM_PROMPT = `
+
+## All-mailbox mode
+You are connected to every mailbox in this account, not just one inbox.
+
+- Start any request that spans mailboxes by calling \`list_mailboxes\`. Each returned object has an \`id\`/\`email\`; pass that exact value as \`mailboxId\` to every other tool.
+- When the operator asks about "all my inboxes" or "all mailboxes", check every mailbox returned by list_mailboxes rather than only the most recent one.
+- To find spam, call \`list_emails\` with folder="spam" for each mailbox, and also consider emails with category="spam" (a mailbox with moveToSpam disabled still marks spam in the category field).
+- When the operator explicitly asks to delete spam across mailboxes, call \`delete_spam_emails\` (omit mailboxId to cover every mailbox). That tool only deletes messages marked as spam (Spam folder, \`spam\` category, or classifier audit). Report the per-mailbox counts back to the operator.
+- Never delete non-spam mail through delete_spam_emails, and never try to draft a reply to spam: both are enforced by the tools, but do not attempt to work around a refusal.
+`;
 
 /**
  * Fetch the custom system prompt for a mailbox from its R2 settings.
@@ -107,12 +130,78 @@ async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
 	return DEFAULT_SYSTEM_PROMPT;
 }
 
-function createEmailTools(env: Env, mailboxId: string) {
+function createEmailTools(env: Env, fixedMailboxId: string | null) {
+	const allMailboxes = fixedMailboxId === null;
+
+	const mailboxIdField: z.ZodRawShape = allMailboxes
+		? {
+				mailboxId: z
+					.string()
+					.min(1)
+					.describe(
+						"The mailbox address from list_mailboxes (e.g. user@example.com)",
+					),
+			}
+		: {};
+	const optionalMailboxIdField: z.ZodRawShape = allMailboxes
+		? {
+				mailboxId: z
+					.string()
+					.min(1)
+					.optional()
+					.describe(
+						"Mailbox address from list_mailboxes. Omit to operate on every mailbox.",
+					),
+			}
+		: {};
+
+	const missingMailbox = {
+		error:
+			"mailboxId is required. Call list_mailboxes first and pass the exact mailbox address.",
+	};
+
+	/**
+	 * Resolve the mailbox for one tool call. Global mode requires an explicit
+	 * mailboxId and verifies it exists, so a hallucinated or mistyped address
+	 * cannot silently operate on an empty Durable Object.
+	 */
+	const resolveMailboxId = async (
+		explicit?: string,
+	): Promise<string | { error: string }> => {
+		const candidate = (allMailboxes ? explicit : fixedMailboxId)?.trim();
+		if (!candidate) return missingMailbox;
+		if (!allMailboxes) return candidate;
+		const normalized = candidate.toLowerCase();
+		const exists = await env.BUCKET.head(`mailboxes/${normalized}.json`);
+		if (!exists) {
+			return {
+				error: `Mailbox "${candidate}" not found. Call list_mailboxes and use one of the returned IDs.`,
+			};
+		}
+		return normalized;
+	};
+
 	return {
+		// Only expose the mailbox list when the chat is not already scoped to
+		// a single mailbox; per-mailbox chats should stay focused.
+		...(allMailboxes
+			? {
+					list_mailboxes: defineTool({
+						description:
+							"List every mailbox in this account. Call this first for any request that spans mailboxes, then pass the returned mailboxId to the other tools.",
+						parameters: z.object({}),
+						execute: async (): Promise<unknown> => {
+							return toolListMailboxes(env);
+						},
+					}),
+				}
+			: {}),
+
 		list_emails: defineTool({
 			description:
-				"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, category). Use folder='inbox' for received emails, 'sent' for sent emails.",
+				"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, folder_id, category). Use folder='spam' to review the Spam folder.",
 			parameters: z.object({
+				...mailboxIdField,
 				folder: z
 					.string()
 					.default(Folders.INBOX)
@@ -132,8 +221,15 @@ function createEmailTools(env: Env, mailboxId: string) {
 						"Optional category ID to filter by (spam or a configured category from an email's category field)",
 					),
 			}),
-			execute: async ({ folder, limit, page, category }): Promise<unknown> => {
-				return toolListEmails(env, mailboxId, { folder, limit, page, category });
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListEmails(env, mailboxId, {
+					folder: args.folder ?? Folders.INBOX,
+					limit: args.limit ?? 20,
+					page: args.page ?? 1,
+					category: args.category,
+				});
 			},
 		}),
 
@@ -141,10 +237,13 @@ function createEmailTools(env: Env, mailboxId: string) {
 			description:
 				"Get a single email with its full body content and attachments. Use this to read the actual content of an email.",
 			parameters: z.object({
+				...mailboxIdField,
 				emailId: z.string().describe("The email ID to retrieve"),
 			}),
-			execute: async ({ emailId }): Promise<unknown> => {
-				return toolGetEmail(env, mailboxId, emailId);
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetEmail(env, mailboxId, args.emailId);
 			},
 		}),
 
@@ -152,14 +251,17 @@ function createEmailTools(env: Env, mailboxId: string) {
 			description:
 				"Get all emails in a conversation thread. This is essential for understanding the full context of a conversation before drafting a response. Returns all messages sorted chronologically.",
 			parameters: z.object({
+				...mailboxIdField,
 				threadId: z
 					.string()
 					.describe(
 						"The thread_id to retrieve all messages for. Get this from an email's thread_id field.",
 					),
 			}),
-			execute: async ({ threadId }): Promise<unknown> => {
-				return toolGetThread(env, mailboxId, threadId);
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetThread(env, mailboxId, args.threadId);
 			},
 		}),
 
@@ -167,11 +269,10 @@ function createEmailTools(env: Env, mailboxId: string) {
 			description:
 				"Search for emails matching a query across subject and body fields. Optionally filter by folder or Jev category.",
 			parameters: z.object({
+				...mailboxIdField,
 				query: z
 					.string()
-					.describe(
-						"Search query to match against subject and body",
-					),
+					.describe("Search query to match against subject and body"),
 				folder: z
 					.string()
 					.optional()
@@ -181,8 +282,14 @@ function createEmailTools(env: Env, mailboxId: string) {
 					.optional()
 					.describe("Optional category ID to restrict search to"),
 			}),
-			execute: async ({ query, folder, category }): Promise<unknown> => {
-				return toolSearchEmails(env, mailboxId, { query, folder, category });
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolSearchEmails(env, mailboxId, {
+					query: args.query,
+					folder: args.folder,
+					category: args.category,
+				});
 			},
 		}),
 
@@ -190,21 +297,22 @@ function createEmailTools(env: Env, mailboxId: string) {
 			description:
 				"Draft a new email (not a reply) and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review. Use this for composing new outbound emails. Write the body as plain text — no HTML tags.",
 			parameters: z.object({
+				...mailboxIdField,
 				to: z.string().email().describe("Recipient email address"),
-				subject: z
-					.string()
-					.describe("Subject line"),
+				subject: z.string().describe("Subject line"),
 				body: z
 					.string()
 					.describe(
 						"The plain text body of the email. No HTML — just write normally.",
 					),
 			}),
-			execute: async ({ to, subject, body }): Promise<unknown> => {
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDraftEmail(env, mailboxId, {
-					to,
-					subject,
-					body,
+					to: args.to,
+					subject: args.subject,
+					body: args.body,
 					isPlainText: true,
 				});
 			},
@@ -212,8 +320,9 @@ function createEmailTools(env: Env, mailboxId: string) {
 
 		draft_reply: defineTool({
 			description:
-				"Draft a reply to an existing email and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review and send from the UI. Write the body as plain text — no HTML tags.",
+				"Draft a reply to an existing email and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review and send from the UI. Drafts are refused for emails marked as spam. Write the body as plain text — no HTML tags.",
 			parameters: z.object({
+				...mailboxIdField,
 				originalEmailId: z
 					.string()
 					.describe("The ID of the email being replied to"),
@@ -227,12 +336,14 @@ function createEmailTools(env: Env, mailboxId: string) {
 						"The plain text body of the reply. No HTML — just write normally.",
 					),
 			}),
-			execute: async ({ originalEmailId, to, subject, body }): Promise<unknown> => {
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDraftReply(env, mailboxId, {
-					originalEmailId,
-					to,
-					subject,
-					body,
+					originalEmailId: args.originalEmailId,
+					to: args.to,
+					subject: args.subject,
+					body: args.body,
 					isPlainText: true,
 					runVerifyDraft: true,
 				});
@@ -242,13 +353,16 @@ function createEmailTools(env: Env, mailboxId: string) {
 		mark_email_read: defineTool({
 			description: "Mark an email as read or unread.",
 			parameters: z.object({
+				...mailboxIdField,
 				emailId: z.string().describe("The email ID"),
 				read: z
 					.boolean()
 					.describe("true to mark as read, false for unread"),
 			}),
-			execute: async ({ emailId, read }): Promise<unknown> => {
-				return toolMarkEmailRead(env, mailboxId, emailId, read);
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolMarkEmailRead(env, mailboxId, args.emailId, args.read);
 			},
 		}),
 
@@ -256,13 +370,51 @@ function createEmailTools(env: Env, mailboxId: string) {
 			description:
 				"Move an email to a different folder (inbox, sent, draft, archive, spam, trash).",
 			parameters: z.object({
+				...mailboxIdField,
 				emailId: z.string().describe("The email ID"),
 				folderId: z
 					.string()
 					.describe(MOVE_FOLDER_TOOL_DESCRIPTION),
 			}),
-			execute: async ({ emailId, folderId }): Promise<unknown> => {
-				return toolMoveEmail(env, mailboxId, emailId, folderId);
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolMoveEmail(env, mailboxId, args.emailId, args.folderId);
+			},
+		}),
+
+		delete_email: defineTool({
+			description:
+				"Permanently delete one email by ID. Only call this when the operator explicitly asks to delete that email.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID to delete"),
+			}),
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteEmail(env, mailboxId, args.emailId);
+			},
+		}),
+
+		delete_spam_emails: defineTool({
+			description:
+				"Permanently delete every email marked as spam (Spam folder, category 'spam', or classifier audit is_spam: true). In all-mailbox mode, omit mailboxId to clear spam from every mailbox. Only call this when the operator explicitly asks to delete spam; never delete non-spam mail with it.",
+			parameters: z.object({
+				...optionalMailboxIdField,
+			}).strict(),
+			execute: async (args: any): Promise<unknown> => {
+				if (!allMailboxes) {
+					return toolDeleteSpamEmails(env, fixedMailboxId ?? undefined);
+				}
+				// Omitted mailboxId intentionally means "every mailbox". A supplied
+				// but blank ID must not quietly become the same broad operation.
+				if (args.mailboxId === undefined) {
+					return toolDeleteSpamEmails(env);
+				}
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteSpamEmails(env, mailboxId);
 			},
 		}),
 
@@ -270,10 +422,13 @@ function createEmailTools(env: Env, mailboxId: string) {
 			description:
 				"Delete a draft email. Use this to discard drafts that are no longer needed or were rejected by the operator.",
 			parameters: z.object({
+				...mailboxIdField,
 				draftId: z.string().describe("The ID of the draft to delete"),
 			}),
-			execute: async ({ draftId }): Promise<unknown> => {
-				return toolDiscardDraft(env, mailboxId, draftId);
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDiscardDraft(env, mailboxId, args.draftId);
 			},
 		}),
 	};
@@ -285,17 +440,23 @@ function createEmailTools(env: Env, mailboxId: string) {
 export class EmailAgent extends AIChatAgent<any> {
 	async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
-		const mailboxId = this.name;
+		const agentName = this.name;
+		const allMailboxes = isAllMailboxesAgentId(agentName);
 		const workersai = createWorkersAI({ binding: env.AI });
-		const tools = createEmailTools(env, mailboxId);
-		const systemPrompt = await getSystemPrompt(env, mailboxId);
+		const tools = createEmailTools(env, allMailboxes ? null : agentName);
+		const systemPrompt = allMailboxes
+			? `${DEFAULT_SYSTEM_PROMPT}${ALL_MAILBOXES_SYSTEM_PROMPT}`
+			: await getSystemPrompt(env, agentName);
 
 		const result = streamText({
 			model: workersai("@cf/qwen/qwen3.8-27b"),
 			system: systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
-			stopWhen: stepCountIs(5),
+			// All-mailbox requests naturally take more rounds (list every mailbox,
+			// inspect and delete per mailbox). Per-mailbox chats keep a tighter
+			// bound so a normal request stays cheap.
+			stopWhen: stepCountIs(allMailboxes ? 40 : 5),
 			onFinish,
 		});
 
@@ -356,6 +517,18 @@ export class EmailAgent extends AIChatAgent<any> {
 		let threadContext = "";
 		try {
 			const email = (await stub.getEmail(emailData.emailId)) as EmailFull | null;
+
+			// Defense in depth: the inbound Worker already skips auto-draft for
+			// mail classified as spam, but re-check the stored row so a direct
+			// /onNewEmail invocation (or manually moved spam) can never create
+			// a reply draft.
+			if (isSpamMarkedEmail(email)) {
+				console.warn(
+					"Skipping auto-draft for spam-marked email:",
+					emailData.emailId,
+				);
+				return { status: "skipped_spam" as const };
+			}
 			if (email?.body) {
 				const isInjection = await isPromptInjection(env.AI, email.body);
 				if (isInjection) {
@@ -480,52 +653,74 @@ Based on the email content and thread context above, draft a reply using draft_r
 				stopWhen: stepCountIs(5),
 			});
 
-			// Check if draft_reply was called (saves to Drafts as side effect).
-			// If NOT, save the agent's text response as a draft directly.
+			// Check whether a draft was actually saved. A draft_reply call that
+			// was refused (for example because the email is spam) must not be
+			// reported as success.
 			const draftToolCalled = result.steps.some((step) =>
-				step.toolCalls.some((tc) => tc.toolName === "draft_reply" || tc.toolName === "draft_email"),
+				step.toolCalls?.some(
+					(tc) => tc?.toolName === "draft_reply" || tc?.toolName === "draft_email",
+				),
+			);
+			const draftToolSucceeded = result.steps.some((step) =>
+				(step.toolResults ?? []).some((toolResult: any) => {
+					const output = toolResult.output ?? toolResult.result;
+					return Boolean(
+						output &&
+							typeof output === "object" &&
+							"draftId" in output,
+					);
+				}),
 			);
 
+			let inlineDraftSaved = false;
 			if (!draftToolCalled && result.text.trim()) {
-				// Model generated a draft inline as text -- verify with AI
-				const sanitizedText = await verifyDraft(env.AI, result.text.trim());
-				if (!sanitizedText) {
-					// Inline text was entirely agent commentary, skip
-				} else {
-					const draftId = crypto.randomUUID();
-					const draftStub = getMailboxStub(env, emailData.mailboxId);
-					const reSubject = emailData.subject.startsWith("Re:")
-						? emailData.subject
-						: `Re: ${emailData.subject}`;
-					await draftStub.createEmail(
-						Folders.DRAFT,
-						{
-							id: draftId,
-							subject: reSubject,
-							sender: emailData.mailboxId.toLowerCase(),
-							recipient: emailData.sender.toLowerCase(),
-							date: new Date().toISOString(),
-						// verifyDraft may return plain text or HTML depending on its
-						// code path. Only wrap in textToHtml if it's plain text.
-						body: /<[a-z][\s\S]*>/i.test(sanitizedText)
-							? sanitizedText
-							: textToHtml(sanitizedText),
-						in_reply_to: emailData.emailId,
-							email_references: null,
-							thread_id: emailData.threadId,
-						},
-						[],
+				const draftStub = getMailboxStub(env, emailData.mailboxId);
+				// Fail closed: re-read the row before writing. If the email vanished
+				// or was marked as spam while the model was running, keep the draft
+				// out of the mailbox.
+				const freshEmail = (await draftStub.getEmail(emailData.emailId)) as EmailFull | null;
+				if (!freshEmail || isSpamMarkedEmail(freshEmail)) {
+					console.warn(
+						"Skipping inline auto-draft: email missing or marked as spam:",
+						emailData.emailId,
 					);
-					// Inline text saved as draft
+				} else {
+					// Model generated a draft inline as text -- verify with AI
+					const sanitizedText = await verifyDraft(env.AI, result.text.trim());
+					if (sanitizedText) {
+						const draftId = crypto.randomUUID();
+						const reSubject = emailData.subject.startsWith("Re:")
+							? emailData.subject
+							: `Re: ${emailData.subject}`;
+						await draftStub.createEmail(
+							Folders.DRAFT,
+							{
+								id: draftId,
+								subject: reSubject,
+								sender: emailData.mailboxId.toLowerCase(),
+								recipient: emailData.sender.toLowerCase(),
+								date: new Date().toISOString(),
+								// verifyDraft may return plain text or HTML depending on
+								// its code path; only wrap plain text.
+								body: /<[a-z][\s\S]*>/i.test(sanitizedText)
+									? sanitizedText
+									: textToHtml(sanitizedText),
+								in_reply_to: emailData.emailId,
+								email_references: null,
+								thread_id: emailData.threadId,
+							},
+							[],
+						);
+						inlineDraftSaved = true;
+					}
 				}
 			}
 
-			// Persist the conversation into the agent's chat history
-			// If it called the tool, we just log a simple success message so the chat isn't cluttered
-			// with conversational slop.
-			const assistantText = draftToolCalled 
+			// Persist the conversation into the agent's chat history.
+			const assistantText = draftToolSucceeded || inlineDraftSaved
 				? `Created draft reply to ${emailData.sender}.`
-				: result.text;
+				: result.text.trim() ||
+					"No draft was created. The email may be marked as spam; check the Spam folder.";
 
 			const newMessages = [
 				{

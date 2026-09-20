@@ -45,9 +45,10 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
 - **Per-domain catch-all** — Every configured domain gets a `catch-all@<domain>` mailbox so aliases and unknown recipients are captured instead of silently dropped. Dedicated mailboxes always take precedence, and the original envelope recipient is preserved separately from the visible To header
 - **All Accounts view** — Browse a combined, folder-filterable list of emails across every mailbox, with each row labelled by account
-- **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
+- **All-mailbox AI agent** — The All Accounts page has its own chat that can list every mailbox and then read, search, organise, and delete spam across all of them. Per-mailbox chats stay scoped to their mailbox. Tools cover reading, searching, folder moves, drafts, and spam cleanup; sending always requires the operator.
+- **Spam-safe drafting** — No draft reply is created for an email marked as spam (Spam folder, `spam` category, or a stored spam classification), whether it comes from auto-draft, the built-in chat, MCP, or the composer
 - **Agent-first MCP server** — External agents authenticate with the local Wrangler login key (`wrangler auth token`) to read, search, draft, and send email
-- **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
+- **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending. Auto-draft is skipped for spam and refused even if the trigger is invoked directly
 - **AI categorization on arrival** — TypeSafe's Jev model (`typesafe/jev`) classifies each incoming email as spam or not-spam with a calibrated probability, and can label it with custom categories. Detected spam is filed in the Spam folder and skipped by auto-draft. Categories can be defined per mailbox, app-wide in Global Settings for every mailbox, or both; each mailbox can opt out of global categories.
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 

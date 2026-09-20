@@ -23,6 +23,7 @@ import { useParams } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useUIStore } from "~/hooks/useUIStore";
+import { ALL_MAILBOXES_AGENT_ID } from "shared/mailboxes";
 import type { UIMessage } from "ai";
 
 const TOOL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -61,6 +62,18 @@ const TOOL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
 	move_email: {
 		label: "Moving email",
 		icon: <EnvelopeSimpleIcon size={14} weight="bold" />,
+	},
+	list_mailboxes: {
+		label: "Listing mailboxes",
+		icon: <EnvelopeSimpleIcon size={14} weight="bold" />,
+	},
+	delete_email: {
+		label: "Deleting email",
+		icon: <TrashIcon size={14} weight="bold" />,
+	},
+	delete_spam_emails: {
+		label: "Deleting spam",
+		icon: <TrashIcon size={14} weight="bold" />,
 	},
 };
 
@@ -104,10 +117,55 @@ function getToolNameFromPart(part: UIMessage["parts"][number]): string | null {
 }
 
 function hasDraftReplyTool(message: UIMessage): boolean {
-	return message.parts.some((part) => {
+	// Reuse extraction so the action button only appears for a successfully
+	// saved draft (a refused spam draft returns `{ error }` and has no id).
+	return extractDraftResult(message, "") !== null;
+}
+
+interface DraftToolResult {
+	draftId: string;
+	mailboxId: string;
+	to: string;
+	subject: string;
+	body: string;
+	originalEmailId?: string;
+	inReplyTo?: string;
+	threadId?: string;
+}
+
+/**
+ * Pull the saved draft out of a draft_reply / draft_email tool result.
+ *
+ * AI SDK v6 surfaces completed tool calls either as `output` or the older
+ * `result` property, so both are accepted. `agentName` is the fallback mailbox
+ * for results created before the server started returning `draft.mailboxId`.
+ */
+function extractDraftResult(
+	message: UIMessage,
+	agentName: string,
+): DraftToolResult | null {
+	for (const part of message.parts) {
 		const toolName = getToolNameFromPart(part);
-		return toolName === "draft_reply";
-	});
+		if (toolName !== "draft_reply" && toolName !== "draft_email") continue;
+		const output = (part as any).output ?? (part as any).result;
+		if (!output || typeof output !== "object") continue;
+		if ("error" in output) continue;
+		const draft = output.draft ?? output;
+		const draftId = output.draftId ?? draft.draftId ?? draft.id ?? "";
+		if (!draftId) continue;
+		return {
+			draftId,
+			mailboxId: draft.mailboxId ?? output.mailboxId ?? agentName,
+			to: draft.to ?? output.to ?? "",
+			subject: draft.subject ?? output.subject ?? "",
+			body: draft.body ?? output.body ?? "",
+			originalEmailId: draft.originalEmailId ?? output.originalEmailId,
+			inReplyTo:
+				draft.in_reply_to ?? output.in_reply_to ?? draft.originalEmailId,
+			threadId: draft.thread_id ?? output.thread_id,
+		};
+	}
+	return null;
 }
 
 function DraftActions({
@@ -294,20 +352,24 @@ function MessageBubble({
 }
 
 function AgentChatConnected({
+	agentName,
 	mailboxId,
+	allMailboxes,
 	useAgent,
 	useAgentChat,
 }: {
-	mailboxId: string;
+	agentName: string;
+	mailboxId?: string;
+	allMailboxes: boolean;
 	useAgent: typeof import("agents/react").useAgent;
 	useAgentChat: typeof import("@cloudflare/ai-chat/react").useAgentChat;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const [inputValue, setInputValue] = useState("");
-	const { startCompose } = useUIStore();
+	const { startCompose, selectEmail } = useUIStore();
 
-	const agent = useAgent({ agent: "EmailAgent", name: mailboxId });
+	const agent = useAgent({ agent: "EmailAgent", name: agentName });
 	const { messages, sendMessage, status, setMessages, stop } =
 		useAgentChat({ agent });
 	const isStreaming = status === "streaming" || status === "submitted";
@@ -336,11 +398,17 @@ function AgentChatConnected({
 		}
 	};
 
-	const suggestedPrompts = [
-		"Show me the latest inbox emails",
-		"Any unread emails?",
-		"Draft a response to the latest email",
-	];
+	const suggestedPrompts = allMailboxes
+		? [
+			"Review spam in all mailboxes",
+			"Show unread emails across all mailboxes",
+			"Delete the messages marked as spam",
+		]
+		: [
+			"Show me the latest inbox emails",
+			"Any unread emails?",
+			"Draft a response to the latest email",
+		];
 
 	return (
 		<div className="flex flex-col h-full">
@@ -349,7 +417,7 @@ function AgentChatConnected({
 				<div className="flex items-center gap-2">
 					<Badge variant="beta">AI</Badge>
 					<span className="text-xs text-kumo-subtle">
-						Email Agent
+						{allMailboxes ? "All-mailbox Agent" : "Email Agent"}
 					</span>
 				</div>
 				<div className="flex items-center gap-1">
@@ -385,8 +453,9 @@ function AgentChatConnected({
 							/>
 						</div>
 						<p className="text-xs text-kumo-subtle text-center leading-relaxed px-4">
-							I can read emails, search conversations, and draft
-							replies.
+							{allMailboxes
+								? "I can read and search every mailbox, draft replies, and clear spam."
+								: "I can read emails, search conversations, and draft replies."}
 						</p>
 						<div className="flex flex-col gap-1.5 w-full">
 							{suggestedPrompts.map((prompt) => (
@@ -410,39 +479,38 @@ function AgentChatConnected({
 								key={msg.id}
 								message={msg}
 								isStreaming={isStreaming}
-							onAction={(action) => {
-								if (action === "edit") {
-										// Extract draft data from the draft_reply tool result
-										let draftData: {
-											to?: string;
-											subject?: string;
-											body?: string;
-											id?: string;
-										} | null = null;
-										for (const part of msg.parts) {
-											if (
-												(part as any).toolName === "draft_reply" &&
-												(part as any).result
-											) {
-												draftData = (part as any).result;
-												break;
-											}
-										}
+								onAction={(action) => {
+									if (action === "edit") {
+										const draftData = extractDraftResult(msg, agentName);
 										if (draftData) {
-											const draftEmail = {
-												id: draftData.id || "",
-												subject: draftData.subject || "",
-												sender: mailboxId,
-												recipient: draftData.to || "",
-												date: new Date().toISOString(),
-												read: true,
-												starred: false,
-												body: draftData.body || "",
-											};
+											const targetMailboxId = draftData.mailboxId || mailboxId;
+											if (
+												!targetMailboxId ||
+												targetMailboxId === ALL_MAILBOXES_AGENT_ID
+											) {
+												sendMessage({
+													text: "I couldn't determine which mailbox that draft belongs to. Try asking me to draft it again.",
+												});
+												return;
+											}
+											selectEmail(null);
 											startCompose({
-												mode: "reply",
+												mode: draftData.inReplyTo ? "reply" : "new",
+												mailboxId: targetMailboxId,
 												originalEmail: null,
-												draftEmail,
+												draftEmail: {
+													id: draftData.draftId,
+													subject: draftData.subject,
+													sender: targetMailboxId,
+													recipient: draftData.to,
+													date: new Date().toISOString(),
+													read: true,
+													starred: false,
+													body: draftData.body,
+													in_reply_to: draftData.inReplyTo ?? null,
+													thread_id: draftData.threadId ?? null,
+													folder_id: "draft",
+												},
 											});
 										} else {
 											sendMessage({
@@ -522,7 +590,11 @@ function AgentChatConnected({
 }
 
 export default function AgentPanel() {
-	const { mailboxId } = useParams<{ mailboxId: string }>();
+	const { mailboxId } = useParams<{ mailboxId?: string }>();
+	// The All Accounts route has no :mailboxId param, so that instance uses the
+	// all-mailboxes sentinel and the server exposes cross-mailbox tools for it.
+	const allMailboxes = !mailboxId;
+	const agentName = mailboxId ?? ALL_MAILBOXES_AGENT_ID;
 	const [hooks, setHooks] = useState<{
 		useAgent: typeof import("agents/react").useAgent;
 		useAgentChat: typeof import("@cloudflare/ai-chat/react").useAgentChat;
@@ -566,7 +638,9 @@ export default function AgentPanel() {
 
 	return (
 		<AgentChatConnected
-			mailboxId={mailboxId ?? "default"}
+			agentName={agentName}
+			mailboxId={mailboxId}
+			allMailboxes={allMailboxes}
 			useAgent={hooks.useAgent}
 			useAgentChat={hooks.useAgentChat}
 		/>

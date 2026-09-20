@@ -164,7 +164,7 @@ function buildInitialComposeFields(
 
 export function useComposeForm(mailboxId?: string, _folder?: string) {
 	const toastManager = useKumoToastManager();
-	const { composeOptions, closePanel, closeCompose } = useUIStore();
+	const { composeOptions, closePanel, closeCompose, setComposeDraft } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
 	const sendEmailMutation = useSendEmail();
 	const saveDraftMutation = useSaveDraft();
@@ -212,16 +212,42 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 	const handleSaveDraft = async () => {
 		if (!mailboxId || isSending) return; setIsSavingDraft(true); setError(null);
 		try {
-			await saveDraftMutation.mutateAsync({ mailboxId, draft: {
+			const inReplyTo =
+				composeOptions.originalEmail?.id ||
+				composeOptions.draftEmail?.in_reply_to ||
+				null;
+			const threadId =
+				composeOptions.originalEmail?.thread_id ||
+				composeOptions.draftEmail?.thread_id ||
+				null;
+			const saved = await saveDraftMutation.mutateAsync({ mailboxId, draft: {
 				to,
 				cc: cc || undefined,
 				bcc: bcc || undefined,
 				subject,
 				body,
-				in_reply_to: composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to || undefined,
-				thread_id: composeOptions.originalEmail?.thread_id || composeOptions.draftEmail?.thread_id || undefined,
+				in_reply_to: inReplyTo || undefined,
+				thread_id: threadId || undefined,
 				draft_id: composeOptions.draftEmail?.id || undefined,
 			} });
+			// Remember the id returned by the server. Without this, a second
+			// "Save as Draft" would send the id of the now-deleted draft and
+			// fail validation.
+			setComposeDraft({
+				id: saved.id,
+				subject,
+				sender: mailboxId,
+				recipient: to,
+				date: new Date().toISOString(),
+				read: true,
+				starred: false,
+				body,
+				cc: cc || undefined,
+				bcc: bcc || undefined,
+				in_reply_to: inReplyTo,
+				thread_id: threadId || saved.id,
+				attachments: composeOptions.draftEmail?.attachments,
+			});
 			toastManager.add({ title: "Draft saved!" });
 		}
 		catch (err: unknown) {

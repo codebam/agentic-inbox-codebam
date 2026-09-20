@@ -12,6 +12,7 @@ import {
 	FileIcon,
 	PaperPlaneTiltIcon,
 	ProhibitIcon,
+	RobotIcon,
 	StackIcon,
 	StarIcon,
 	TrashIcon,
@@ -21,6 +22,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { formatListDate } from "shared/dates";
 import { Folders, getFolderDisplayName } from "shared/folders";
+import AgentSidebar from "~/components/AgentSidebar";
 import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
@@ -79,7 +81,15 @@ export default function AllAccountsRoute() {
 	const activeTab = FOLDER_TABS.find((tab) => tab.id === folder) ?? FOLDER_TABS[0];
 
 	const [page, setPage] = useState(1);
-	const { selectedEmailId, selectedMailboxId, isComposing, selectEmail, closePanel } = useUIStore();
+	const {
+		selectedEmailId,
+		selectedMailboxId,
+		isComposing,
+		selectEmail,
+		closePanel,
+		isAgentPanelOpen,
+		toggleAgentPanel,
+	} = useUIStore();
 	const { data: mailboxes = [] } = useMailboxes();
 	const { data: globalCategorization } = useGlobalCategorization();
 	const updateEmail = useUpdateEmail();
@@ -205,6 +215,21 @@ export default function AllAccountsRoute() {
 							onClick={handleRefresh}
 							disabled={isFetching}
 							aria-label="Refresh"
+						/>
+					</Tooltip>
+					<Tooltip
+						content={isAgentPanelOpen ? "Hide agent panel" : "Show all-mailbox agent"}
+						side="bottom"
+						asChild
+					>
+						<Button
+							variant={isAgentPanelOpen ? "secondary" : "ghost"}
+							shape="square"
+							size="sm"
+							icon={<RobotIcon size={18} />}
+							onClick={toggleAgentPanel}
+							aria-label="Toggle all-mailbox agent panel"
+							className="hidden lg:inline-flex"
 						/>
 					</Tooltip>
 				</div>
@@ -372,6 +397,13 @@ export default function AllAccountsRoute() {
 					</MailboxSplitView>
 				</div>
 			</div>
+
+			{/* All-mailbox agent + MCP sidebar (desktop) */}
+			{isAgentPanelOpen && (
+				<div className="hidden lg:flex w-[380px] shrink-0 border-l border-kumo-line flex-col bg-kumo-base overflow-hidden">
+					<AgentSidebar />
+				</div>
+			)}
 		</div>
 	);
 }

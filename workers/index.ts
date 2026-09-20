@@ -16,6 +16,7 @@ import {
 	listMailboxes,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
+import { isSpamMarkedEmail } from "../shared/spam";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import {
@@ -366,16 +367,83 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
-	if (draft_id) await stub.deleteEmail(draft_id); // not atomic — create-then-delete would be safer
+
+	// Draft replies to spam are refused at the same layer as the agent and MCP
+	// tools, so a human saving from the composer cannot create one either.
+	const currentDraft = draft_id
+		? ((await stub.getEmail(draft_id)) as {
+				folder_id?: string | null;
+				in_reply_to?: string | null;
+				thread_id?: string | null;
+			} | null)
+		: null;
+	if (draft_id && (!currentDraft || currentDraft.folder_id !== Folders.DRAFT)) {
+		return c.json({ error: "Draft not found" }, 404);
+	}
+
+	// Use the incoming target, or inherit it when updating an existing draft,
+	// so omitting in_reply_to cannot bypass the spam check.
+	const replyTarget = in_reply_to || currentDraft?.in_reply_to || null;
+	const threadTarget = thread_id || currentDraft?.thread_id || null;
+
+	if (replyTarget) {
+		const original = (await stub.getEmail(replyTarget)) as {
+			folder_id?: string | null;
+			category?: string | null;
+			classification?: string | null;
+		} | null;
+		if (!original) {
+			return c.json({ error: "Original email not found" }, 404);
+		}
+		if (isSpamMarkedEmail(original)) {
+			return c.json(
+				{
+					error:
+						"Cannot save a draft reply to an email marked as spam. Move the original out of Spam or remove the spam category first.",
+				},
+				409,
+			);
+		}
+	} else if (threadTarget) {
+		const threadEmails = (await (stub as any).getThreadEmails(threadTarget)) as Array<{
+			folder_id?: string | null;
+			category?: string | null;
+			classification?: string | null;
+		}>;
+		if (threadEmails.some((email) => isSpamMarkedEmail(email))) {
+			return c.json(
+				{
+					error:
+						"Cannot save a draft reply to a spam-marked thread. Move the original out of Spam or remove the spam category first.",
+				},
+				409,
+			);
+		}
+	}
+
+	if (draft_id && currentDraft) {
+		// Delete after validation; clean up R2 attachments just like the
+		// regular email-delete route.
+		const attachments = (await stub.deleteEmail(draft_id)) as
+			| { id: string; filename: string }[]
+			| null;
+		if (attachments && attachments.length > 0) {
+			await c.env.BUCKET.delete(
+				attachments.map(
+					(att) => `attachments/${draft_id}/${att.id}/${att.filename}`,
+				),
+			);
+		}
+	}
 	const messageId = crypto.randomUUID();
 	const now = new Date().toISOString();
 	await stub.createEmail(Folders.DRAFT, {
 		id: messageId, subject: subject || "", sender: mailboxId.toLowerCase(),
 		recipient: (to || "").toLowerCase(), cc: cc?.toLowerCase() || null, bcc: bcc?.toLowerCase() || null,
-		date: now, body, in_reply_to: in_reply_to || null, email_references: null,
-		thread_id: thread_id || in_reply_to || messageId,
+		date: now, body, in_reply_to: replyTarget || null, email_references: null,
+		thread_id: threadTarget || replyTarget || messageId,
 	}, []);
-	return c.json({ id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
+	return c.json({ id: messageId, draft_id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
 });
 
 app.get("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {

@@ -75,7 +75,8 @@ Workflow:
 2. Pass mailboxId to every other tool.
 3. Read before writing: use get_email and get_thread to understand the full context.
 4. draft_reply, create_draft, and update_draft only write to the Drafts folder; they never send.
-5. send_reply and send_email deliver real email immediately and cannot be undone. Call them only after the human operator has explicitly confirmed the exact recipient, subject, and body.
+5. Never draft a reply to an email marked as spam (Spam folder, \`spam\` category, or a stored spam classification). The draft tools enforce this and return an error; do not try to work around it.
+6. send_reply and send_email deliver real email immediately and cannot be undone. Call them only after the human operator has explicitly confirmed the exact recipient, subject, and body.
 
 Never invent recipients, and never send without confirmation. Prefer reply tools over new email when continuing an existing thread. Body fields accept HTML.`,
 		},

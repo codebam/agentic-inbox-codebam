@@ -29,6 +29,7 @@ import {
 import { verifyDraft } from "./ai";
 import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
+import { isSpamMarkedEmail } from "../../shared/spam";
 import type { Env } from "../types";
 
 // ── Type casts for DO methods not on the base stub type ────────────
@@ -43,6 +44,95 @@ type MailboxSearchStub = {
 type RateLimitStub = {
 	checkSendRateLimit: () => Promise<string | null>;
 };
+
+// ── deletion helpers ───────────────────────────────────────────────
+
+/**
+ * Delete an email row and its R2 attachment blobs.
+ *
+ * Returns the deleted attachment rows, or null when the email did not exist.
+ * The API route already cleans up R2; agent/MCP tool paths use this helper so
+ * delete_email and discard_draft cannot orphan attachment objects.
+ */
+async function deleteEmailWithAttachments(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+): Promise<{ id: string; filename: string }[] | null> {
+	const stub = getMailboxStub(env, mailboxId);
+	const attachments = (await stub.deleteEmail(emailId)) as
+		| { id: string; filename: string }[]
+		| null;
+	if (attachments === null) return null;
+	if (attachments.length > 0) {
+		await env.BUCKET.delete(
+			attachments.map(
+				(att) => `attachments/${emailId}/${att.id}/${att.filename}`,
+			),
+		);
+	}
+	return attachments;
+}
+
+/**
+ * Page through a mailbox folder/category and return every matching row.
+ * The Durable Object caps `limit` at 100, so chunk until a short page arrives.
+ */
+interface SpamEmailRow {
+	id: string;
+	subject: string | null;
+	sender: string | null;
+	folder_id: string | null;
+	category: string | null;
+	classification: string | null;
+}
+
+type MailboxSpamReaderStub = {
+	getSpamEmails: (options: {
+		page?: number;
+		limit?: number;
+	}) => Promise<SpamEmailRow[]>;
+};
+
+/**
+ * Page through a mailbox's spam-marked emails (Spam folder, `spam` category,
+ * or `classification.is_spam === true`). The DO caps each page at 100 rows.
+ */
+async function listAllSpamRows(
+	env: Env,
+	mailboxId: string,
+): Promise<SpamEmailRow[]> {
+	const stub = getMailboxStub(env, mailboxId) as unknown as MailboxSpamReaderStub;
+	const pageSize = 100;
+	const rows: SpamEmailRow[] = [];
+	for (let page = 1; ; page++) {
+		const chunk = await stub.getSpamEmails({ page, limit: pageSize });
+		rows.push(...chunk);
+		if (chunk.length < pageSize) break;
+	}
+	return rows;
+}
+
+type MailboxThreadReaderStub = {
+	getThreadEmails: (threadId: string) => Promise<
+		Array<{
+			folder_id?: string | null;
+			category?: string | null;
+			classification?: string | null;
+		}>
+	>;
+};
+
+/** True when any message in the thread is marked as spam. */
+async function threadHasSpamMarkedEmail(
+	env: Env,
+	mailboxId: string,
+	threadId: string,
+): Promise<boolean> {
+	const stub = getMailboxStub(env, mailboxId) as unknown as MailboxThreadReaderStub;
+	const emails = await stub.getThreadEmails(threadId);
+	return emails.some((email) => isSpamMarkedEmail(email));
+}
 
 // ── list_mailboxes ─────────────────────────────────────────────────
 
@@ -131,10 +221,24 @@ export async function toolDraftReply(
 		runVerifyDraft?: boolean;
 	},
 ): Promise<
-	| { status: "draft_saved"; draftId: string; message: string; draft: Record<string, string> }
+	| { status: "draft_saved"; draftId: string; message: string; draft: Record<string, string | null> }
 	| { error: string }
 > {
 	const stub = getMailboxStub(env, mailboxId);
+
+	// Refuse to draft a reply to anything marked as spam before doing any
+	// model work or writing a draft. This covers the Spam folder, the spam
+	// category, and the stored classifier audit trail.
+	const original = (await stub.getEmail(params.originalEmailId)) as EmailFull | null;
+	if (!original) {
+		return { error: "Original email not found" };
+	}
+	if (isSpamMarkedEmail(original)) {
+		return {
+			error:
+				"Refusing to draft a reply: this email is marked as spam. Move it out of Spam or remove the spam category if this is a mistake.",
+		};
+	}
 
 	// Verify/sanitize if requested
 	let processedBody = params.body.trim();
@@ -152,9 +256,6 @@ export async function toolDraftReply(
 	}
 
 	const draftId = crypto.randomUUID();
-
-	// Get the original email for thread_id and quoted text
-	const original = (await stub.getEmail(params.originalEmailId)) as EmailFull | null;
 	const threadId = original?.thread_id || params.originalEmailId;
 
 	// Append quoted original message
@@ -188,7 +289,10 @@ export async function toolDraftReply(
 		draftId,
 		message: "Draft saved to Drafts folder. Review it and confirm to send.",
 		draft: {
+			mailboxId,
 			originalEmailId: params.originalEmailId,
+			in_reply_to: params.originalEmailId,
+			thread_id: threadId,
 			to: params.to,
 			subject: params.subject,
 			body: params.isPlainText ? params.body.trim() : bodyHtml,
@@ -213,10 +317,35 @@ export async function toolDraftEmail(
 		thread_id?: string;
 	},
 ): Promise<
-	| { status: string; draftId: string; threadId?: string; message: string; draft?: Record<string, string> }
+	| { status: string; draftId: string; threadId?: string; message: string; draft?: Record<string, string | null> }
 	| { error: string }
 > {
 	const stub = getMailboxStub(env, mailboxId);
+
+	// A new-email draft that is threaded as a reply to a spam message is a
+	// reply draft in disguise; refuse it for the same reason as draft_reply.
+	let original: EmailFull | null = null;
+	if (params.in_reply_to) {
+		original = (await stub.getEmail(params.in_reply_to)) as EmailFull | null;
+		if (!original) {
+			return { error: "Original email not found" };
+		}
+		if (isSpamMarkedEmail(original)) {
+			return {
+				error:
+					"Refusing to draft a reply: the original email is marked as spam. Move it out of Spam or remove the spam category if this is a mistake.",
+			};
+		}
+	} else if (params.thread_id) {
+		// MCP create_draft allows a thread_id without in_reply_to. Treat that
+		// as a reply draft and refuse it if any message in the thread is spam.
+		if (await threadHasSpamMarkedEmail(env, mailboxId, params.thread_id)) {
+			return {
+				error:
+					"Refusing to draft a reply: the thread is marked as spam. Move it out of Spam or remove the spam category if this is a mistake.",
+			};
+		}
+	}
 
 	let processedBody = params.body.trim();
 	if (params.runVerifyDraft) {
@@ -236,7 +365,6 @@ export async function toolDraftEmail(
 	// Resolve thread ID
 	let resolvedThreadId = params.thread_id;
 	if (!resolvedThreadId && params.in_reply_to) {
-		const original = (await stub.getEmail(params.in_reply_to)) as EmailFull | null;
 		resolvedThreadId = original?.thread_id || params.in_reply_to;
 	}
 	if (!resolvedThreadId) {
@@ -265,6 +393,9 @@ export async function toolDraftEmail(
 		threadId: resolvedThreadId,
 		message: "Draft saved to Drafts folder. Review it and confirm to send.",
 		draft: {
+			mailboxId,
+			in_reply_to: params.in_reply_to || null,
+			thread_id: resolvedThreadId,
 			to: params.to,
 			subject: params.subject,
 			body: params.isPlainText ? params.body.trim() : processedBody,
@@ -290,8 +421,36 @@ export async function toolUpdateDraft(
 	const stub = getMailboxStub(env, mailboxId);
 
 	const oldDraft = (await stub.getEmail(params.draftId)) as EmailFull | null;
-	if (!oldDraft) {
+	if (!oldDraft || oldDraft.folder_id !== Folders.DRAFT) {
 		return { error: "Draft not found" };
+	}
+	if (isSpamMarkedEmail(oldDraft)) {
+		return {
+			error:
+				"Refusing to update this draft: the draft itself is marked as spam.",
+		};
+	}
+
+	// Updating a reply draft whose original is marked spam would reintroduce
+	// the draft the spam guard is meant to keep out of the mailbox.
+	if (oldDraft.in_reply_to) {
+		const original = (await stub.getEmail(oldDraft.in_reply_to)) as EmailFull | null;
+		if (!original) {
+			return { error: "Original email not found" };
+		}
+		if (isSpamMarkedEmail(original)) {
+			return {
+				error:
+					"Refusing to update this draft: the original email is marked as spam. Move it out of Spam or remove the spam category if this is a mistake.",
+			};
+		}
+	} else if (oldDraft.thread_id) {
+		if (await threadHasSpamMarkedEmail(env, mailboxId, oldDraft.thread_id)) {
+			return {
+				error:
+					"Refusing to update this draft: the thread is marked as spam. Move it out of Spam or remove the spam category if this is a mistake.",
+			};
+		}
 	}
 
 	// Verify the body BEFORE deleting the old draft to prevent data loss
@@ -303,7 +462,8 @@ export async function toolUpdateDraft(
 		return { error: "Draft verification failed — keeping existing draft unchanged. Please try again." };
 	}
 
-	await stub.deleteEmail(params.draftId);
+	// Delete the old draft (and its attachments) only after the new body is verified.
+	await deleteEmailWithAttachments(env, mailboxId, params.draftId);
 	await stub.createEmail(
 		Folders.DRAFT,
 		{
@@ -372,7 +532,10 @@ export async function toolDiscardDraft(
 	if (email.folder_id !== Folders.DRAFT) {
 		return { error: "Cannot discard: email is not a draft" };
 	}
-	await stub.deleteEmail(draftId);
+	const deleted = await deleteEmailWithAttachments(env, mailboxId, draftId);
+	if (deleted === null) {
+		return { error: "Draft not found" };
+	}
 	return { status: "discarded", draftId };
 }
 
@@ -383,12 +546,105 @@ export async function toolDeleteEmail(
 	mailboxId: string,
 	emailId: string,
 ) {
-	const stub = getMailboxStub(env, mailboxId);
-	const result = await stub.deleteEmail(emailId);
+	const result = await deleteEmailWithAttachments(env, mailboxId, emailId);
 	if (result === null) {
 		return { error: "Email not found", emailId };
 	}
 	return { status: "deleted", emailId };
+}
+
+// ── delete_spam_emails ─────────────────────────────────────────────
+
+export interface DeleteSpamMailboxResult {
+	mailboxId: string;
+	deletedCount: number;
+	deleted: { id: string; subject: string | null; sender: string | null; folder: string | null }[];
+}
+
+/**
+ * Permanently delete every email marked as spam: messages in the Spam folder,
+ * messages carrying the `spam` category (e.g. when a mailbox has `moveToSpam`
+ * disabled), and rows whose classification audit says `is_spam: true`.
+ * Rows are de-duplicated, so a message with several spam markers is deleted
+ * once.
+ *
+ * If `mailboxId` is omitted, every mailbox in the deployment is purged.
+ */
+export async function toolDeleteSpamEmails(
+	env: Env,
+	mailboxId?: string,
+): Promise<{
+	status: "spam_deleted";
+	deletedCount: number;
+	mailboxes: DeleteSpamMailboxResult[];
+} | {
+	status: "no_spam_found";
+	deletedCount: number;
+	mailboxes: DeleteSpamMailboxResult[];
+} | { error: string }> {
+	const mailboxIds = mailboxId
+		? [mailboxId]
+		: (await listMailboxes(env.BUCKET)).map((mailbox) => mailbox.id);
+
+	if (mailboxIds.length === 0) {
+		return { error: "No mailboxes found" };
+	}
+
+	const mailboxResults: DeleteSpamMailboxResult[] = [];
+	let deletedCount = 0;
+
+	for (const currentMailboxId of mailboxIds) {
+		const candidates = new Map<string, SpamEmailRow>();
+		for (const row of await listAllSpamRows(env, currentMailboxId)) {
+			// Re-check in JS as well: the SQL path is the index, the helper is the
+			// source of truth for what "marked as spam" means.
+			if (!isSpamMarkedEmail(row)) continue;
+			if (!candidates.has(row.id)) candidates.set(row.id, row);
+		}
+
+		// Keep the tool result small enough for a model context: report every
+		// count, but only the first 25 deleted rows per mailbox.
+		const MAX_REPORTED_DELETIONS = 25;
+		const deleted: DeleteSpamMailboxResult["deleted"] = [];
+		let mailboxDeletedCount = 0;
+		for (const row of candidates.values()) {
+			// Re-read immediately before deleting so mail moved out of Spam (or
+			// re-classified) after the initial query is not destroyed.
+			const current = (await getMailboxStub(
+				env,
+				currentMailboxId,
+			).getEmail(row.id)) as EmailFull | null;
+			if (!current || !isSpamMarkedEmail(current)) continue;
+			const result = await deleteEmailWithAttachments(
+				env,
+				currentMailboxId,
+				row.id,
+			);
+			if (result !== null) {
+				deletedCount++;
+				mailboxDeletedCount++;
+				if (deleted.length < MAX_REPORTED_DELETIONS) {
+					deleted.push({
+						id: row.id,
+						subject: row.subject,
+						sender: row.sender,
+						folder: row.folder_id,
+					});
+				}
+			}
+		}
+
+		mailboxResults.push({
+			mailboxId: currentMailboxId,
+			deletedCount: mailboxDeletedCount,
+			deleted,
+		});
+	}
+
+	if (deletedCount === 0) {
+		return { status: "no_spam_found", deletedCount, mailboxes: mailboxResults };
+	}
+	return { status: "spam_deleted", deletedCount, mailboxes: mailboxResults };
 }
 
 // ── send_reply ─────────────────────────────────────────────────────

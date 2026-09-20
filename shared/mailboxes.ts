@@ -14,6 +14,21 @@
 export const CATCH_ALL_LOCAL_PART = "catch-all";
 
 /**
+ * Durable Object instance name used by the built-in agent chat when it is
+ * opened from the All Accounts view. The agent recognizes this sentinel and
+ * exposes cross-mailbox tools instead of being bound to one inbox.
+ *
+ * The double underscores keep it from ever colliding with a real mailbox
+ * address (which always contains `@`).
+ */
+export const ALL_MAILBOXES_AGENT_ID = "__all_mailboxes__";
+
+/** True when an EmailAgent instance name is the all-mailboxes sentinel. */
+export function isAllMailboxesAgentId(value: unknown): boolean {
+	return typeof value === "string" && value === ALL_MAILBOXES_AGENT_ID;
+}
+
+/**
  * Conventional spellings recognised as catch-all mailboxes. The first one is
  * the address the app creates automatically; the rest are accepted for
  * deployments that already made a mailbox by hand.
