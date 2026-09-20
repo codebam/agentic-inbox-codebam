@@ -1,3 +1,10 @@
 # Cloudflare Access (required in production). TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 POLICY_AUD=your-access-policy-audience-tag
 TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+
+# Optional: advanced MCP auth configuration.
+# By default, `Authorization: Bearer <wrangler auth token>` credentials are
+# accepted when they can read one of the zones configured in wrangler.jsonc DOMAINS.
+# Set a comma-separated Cloudflare account allowlist to bind MCP keys to
+# explicit accounts instead:
+# MCP_ALLOWED_ACCOUNT_IDS=023e105f4ecef8ad9ca31a8372d0c353

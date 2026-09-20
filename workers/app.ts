@@ -4,10 +4,12 @@
 
 import { routeAgentRequest } from "agents";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
+import { authenticateMcpRequest, type McpAuthFailure } from "./lib/mcp-auth";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
@@ -39,14 +41,108 @@ function getAccessUrls(teamDomain: string) {
 	return { issuer, certsUrl };
 }
 
+const accessJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+function getAccessJwks(certsUrl: URL) {
+	const key = certsUrl.toString();
+	let jwks = accessJwks.get(key);
+	if (!jwks) {
+		jwks = createRemoteJWKSet(certsUrl);
+		accessJwks.set(key, jwks);
+	}
+	return jwks;
+}
+
+/**
+ * Validate a Cloudflare Access JWT. Used for the browser UI and as a fallback
+ * for MCP clients that are already operating inside the Access boundary.
+ */
+async function verifyCloudflareAccess(env: Env, token: string): Promise<boolean> {
+	if (!env.POLICY_AUD || !env.TEAM_DOMAIN) return false;
+
+	try {
+		const { issuer, certsUrl } = getAccessUrls(env.TEAM_DOMAIN);
+		await jwtVerify(token, getAccessJwks(certsUrl), {
+			issuer,
+			audience: env.POLICY_AUD,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isMcpPath(pathname: string) {
+	return pathname === "/mcp" || pathname.startsWith("/mcp/");
+}
+
+function mcpAuthErrorResponse(c: Context, result: McpAuthFailure) {
+	c.header("WWW-Authenticate", `Bearer realm="agentic-inbox-mcp", error="${result.error}"`);
+	c.header("Access-Control-Allow-Origin", "*");
+	c.header("Access-Control-Expose-Headers", "WWW-Authenticate");
+	return c.json(
+		{
+			jsonrpc: "2.0",
+			id: null,
+			error: {
+				code: -32001,
+				message: result.message,
+			},
+		},
+		result.status,
+	);
+}
+
 // Main app that wraps the API and adds React Router fallback
 const app = new Hono<{ Bindings: Env }>();
 
-// Cloudflare Access JWT validation middleware (production only)
+// Authentication middleware (production only).
+//
+// * `/mcp` is agent-facing and authenticates with a Wrangler credential via
+//   `Authorization: Bearer <wrangler auth token>`. Cloudflare Access JWTs are
+//   accepted as a fallback for clients already inside the Access boundary.
+// * All other routes keep the original Cloudflare Access gate.
 app.use("*", async (c, next) => {
-	// Skip validation in development
+	// Skip validation in development. Local MCP and UI traffic is already
+	// loopback-only in `wrangler dev`.
 	if (import.meta.env.DEV) {
 		return next();
+	}
+
+	const pathname = new URL(c.req.url).pathname;
+	if (isMcpPath(pathname)) {
+		// CORS preflight carries no credentials and must reach the MCP handler.
+		if (c.req.method === "OPTIONS") {
+			return next();
+		}
+
+		const authorization = c.req.header("authorization");
+		const accessToken = c.req.header("cf-access-jwt-assertion");
+
+		if (authorization) {
+			const result = await authenticateMcpRequest(authorization, c.env);
+			if (result.ok) {
+				return next();
+			}
+			// If a client has both headers, prefer a valid Access JWT as a
+			// compatibility path for browser-based MCP clients.
+			if (accessToken && (await verifyCloudflareAccess(c.env, accessToken))) {
+				return next();
+			}
+			return mcpAuthErrorResponse(c, result);
+		}
+
+		if (accessToken && (await verifyCloudflareAccess(c.env, accessToken))) {
+			return next();
+		}
+
+		return mcpAuthErrorResponse(c, {
+			ok: false,
+			status: 401,
+			error: "missing_token",
+			message:
+				"Missing Authorization header. Agents authenticate with `Authorization: Bearer <wrangler auth token>`; run `npx wrangler auth token` to retrieve the credential.",
+		});
 	}
 
 	const { POLICY_AUD, TEAM_DOMAIN } = c.env;
@@ -64,14 +160,7 @@ app.use("*", async (c, next) => {
 		return c.text("Missing required CF Access JWT", 403);
 	}
 
-	try {
-		const { issuer, certsUrl } = getAccessUrls(TEAM_DOMAIN);
-		const JWKS = createRemoteJWKSet(certsUrl);
-		await jwtVerify(token, JWKS, {
-			issuer,
-			audience: POLICY_AUD,
-		});
-	} catch {
+	if (!(await verifyCloudflareAccess(c.env, token))) {
 		return c.text("Invalid or expired Access token", 403);
 	}
 
@@ -80,9 +169,18 @@ app.use("*", async (c, next) => {
 	return next();
 });
 
-// MCP server endpoint — used by AI coding tools (ProtoAgent, Claude Code, Cursor, etc.)
-// Must be before API routes and React Router catch-all
-const mcpHandler = EmailMCP.serve("/mcp", { binding: "EMAIL_MCP" });
+// MCP server endpoint — used by AI coding tools and autonomous agents.
+// Must be before API routes and React Router catch-all.
+const mcpHandler = EmailMCP.serve("/mcp", {
+	binding: "EMAIL_MCP",
+	corsOptions: {
+		origin: "*",
+		methods: "GET,POST,DELETE,OPTIONS",
+		headers: "authorization,content-type,mcp-session-id,mcp-protocol-version,last-event-id",
+		exposeHeaders: "mcp-session-id",
+		maxAge: 86400,
+	},
+});
 app.all("/mcp", async (c) => {
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });

@@ -62,10 +62,24 @@ function mcpResult(result: Record<string, unknown>) {
  * draft replies, send messages, and manage folders.
  */
 export class EmailMCP extends McpAgent<Env> {
-	server = new McpServer({
-		name: "agentic-inbox",
-		version: "1.0.0",
-	});
+	server = new McpServer(
+		{
+			name: "agentic-inbox",
+			version: "1.1.0",
+		},
+		{
+			instructions: `Agentic Inbox is a self-hosted email client. You can read, search, draft, and send email for any mailbox returned by list_mailboxes.
+
+Workflow:
+1. Call list_mailboxes to discover available mailbox addresses.
+2. Pass mailboxId to every other tool.
+3. Read before writing: use get_email and get_thread to understand the full context.
+4. draft_reply, create_draft, and update_draft only write to the Drafts folder; they never send.
+5. send_reply and send_email deliver real email immediately and cannot be undone. Call them only after the human operator has explicitly confirmed the exact recipient, subject, and body.
+
+Never invent recipients, and never send without confirmation. Prefer reply tools over new email when continuing an existing thread. Body fields accept HTML.`,
+		},
+	);
 
 	async init() {
 		const env = this.env;

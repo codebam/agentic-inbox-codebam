@@ -23,7 +23,9 @@
 		"deploy": "npm run build && wrangler deploy",
 		"dev": "react-router dev",
 		"preview": "npm run build && vite preview",
-		"typecheck": "npm run cf-typegen && react-router typegen && tsc -b"
+		"typecheck": "npm run cf-typegen && react-router typegen && tsc -b",
+		"mcp:bridge": "node scripts/mcp-bridge.mjs",
+		"mcp:token": "wrangler auth token"
 	},
 	"dependencies": {
 		"@cloudflare/ai-chat": "^0.1.9",
