@@ -6,7 +6,7 @@ import { Banner, Button, Dialog, Input, Text } from "@cloudflare/kumo";
 import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
-import RichTextEditor from "./RichTextEditor";
+import ComposeBodyEditor from "./ComposeBodyEditor";
 import { useUIStore } from "~/hooks/useUIStore";
 
 export default function ComposeEmail() {
@@ -104,7 +104,7 @@ export default function ComposeEmail() {
 						<Text size="sm" DANGEROUS_className="font-medium mb-1.5 block">
 							Message
 						</Text>
-						<RichTextEditor value={body} onChange={setBody} />
+						<ComposeBodyEditor value={body} onChange={setBody} />
 					</div>
 					<div className="flex justify-between items-center pt-2">
 						<Button

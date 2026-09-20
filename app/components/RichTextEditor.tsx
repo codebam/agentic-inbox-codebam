@@ -26,16 +26,20 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useCallback, useEffect } from "react";
+import { type ReactNode, useCallback, useEffect } from "react";
+import { looksLikeMarkdown, markdownToHtml } from "~/lib/markdown";
 
 interface RichTextEditorProps {
 	value: string;
 	onChange: (value: string) => void;
+	/** Optional controls rendered at the end of the toolbar (e.g. mode switch). */
+	toolbarEnd?: ReactNode;
 }
 
 export default function RichTextEditor({
 	value,
 	onChange,
+	toolbarEnd,
 }: RichTextEditorProps) {
 	const editor = useEditor({
 		extensions: [
@@ -53,6 +57,22 @@ export default function RichTextEditor({
 			attributes: {
 				class:
 					"prose prose-sm max-w-none focus:outline-none min-h-[180px] p-3 text-sm [&_blockquote]:border-l-2 [&_blockquote]:border-kumo-line [&_blockquote]:pl-3 [&_blockquote]:text-kumo-subtle [&_blockquote]:bg-kumo-tint [&_blockquote]:py-1 [&_blockquote]:my-2 [&_blockquote]:text-xs [&_blockquote]:rounded-r-sm",
+			},
+			// Turn pasted plain-text Markdown into formatted rich text.
+			handlePaste: (view, event) => {
+				const clipboard = event.clipboardData;
+				if (!clipboard || clipboard.types.includes("text/html")) return false;
+				// Pasting into a code block should stay literal.
+				if (view.state.selection.$from.parent.type.name === "codeBlock") {
+					return false;
+				}
+				const text = clipboard.getData("text/plain");
+				if (!text.trim() || !looksLikeMarkdown(text)) return false;
+				const html = markdownToHtml(text);
+				if (!html) return false;
+				if (!editor) return false;
+				editor.chain().focus().insertContent(html).run();
+				return true;
 			},
 		},
 		onUpdate: ({ editor }) => {
@@ -228,6 +248,13 @@ export default function RichTextEditor({
 						aria-label="Redo"
 					/>
 				</Tooltip>
+
+				{toolbarEnd && (
+					<>
+						<div className="mx-1 h-5 w-px bg-kumo-fill" />
+						<div className="ml-auto flex items-center gap-0.5">{toolbarEnd}</div>
+					</>
+				)}
 			</div>
 
 			{/* Editor content */}

@@ -6,7 +6,7 @@ import { Banner, Button, Input } from "@cloudflare/kumo";
 import { FloppyDiskIcon, PaperPlaneTiltIcon, XIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
-import RichTextEditor from "./RichTextEditor";
+import ComposeBodyEditor from "./ComposeBodyEditor";
 
 export default function ComposePanel({
 	mailboxId: mailboxIdProp,
@@ -148,7 +148,7 @@ export default function ComposePanel({
 					</div>
 
 					<div className="border border-kumo-line rounded-md overflow-hidden bg-kumo-base">
-						<RichTextEditor
+						<ComposeBodyEditor
 							value={body}
 							onChange={setBody}
 						/>
