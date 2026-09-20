@@ -84,7 +84,10 @@ const SPAM_CRITERIA = {
 
 const CATEGORY_INSTRUCTIONS =
 	"Classify the received email described by `state` into exactly one category. " +
-	"Use the sender, subject, and body to choose the single best-fitting criterion.";
+	"Choose the single most specific criterion that fits. " +
+	"When several criteria overlap, prefer the one that describes the email's concrete action, purpose, or intent. " +
+	"Judge only evidence present in the email; do not infer private facts about the recipient, such as which products or services they already use. " +
+	"If a catch-all or other category exists, choose it only when no other category clearly applies.";
 
 /** Clamp a value to the probability range. */
 function clampProbability(value: number): number {
