@@ -65,7 +65,7 @@ export default function BulkActionBar({
 			</span>
 
 			<div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-				<Tooltip content="Mark read" asChild>
+				<Tooltip side="bottom" content="Mark read" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -76,7 +76,7 @@ export default function BulkActionBar({
 						aria-label="Mark read"
 					/>
 				</Tooltip>
-				<Tooltip content="Mark unread" asChild>
+				<Tooltip side="bottom" content="Mark unread" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -87,7 +87,7 @@ export default function BulkActionBar({
 						aria-label="Mark unread"
 					/>
 				</Tooltip>
-				<Tooltip content="Star" asChild>
+				<Tooltip side="bottom" content="Star" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -98,7 +98,7 @@ export default function BulkActionBar({
 						aria-label="Star"
 					/>
 				</Tooltip>
-				<Tooltip content="Remove star" asChild>
+				<Tooltip side="bottom" content="Remove star" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -112,7 +112,7 @@ export default function BulkActionBar({
 
 				<span className="mx-1 h-4 w-px shrink-0 bg-kumo-line" aria-hidden="true" />
 
-				<Tooltip content="Archive" asChild>
+				<Tooltip side="bottom" content="Archive" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -124,7 +124,7 @@ export default function BulkActionBar({
 					/>
 				</Tooltip>
 				<DropdownMenu>
-					<Tooltip content="Move to folder" asChild>
+					<Tooltip side="bottom" content="Move to folder" asChild>
 						<DropdownMenu.Trigger
 							render={
 								<Button
@@ -159,7 +159,7 @@ export default function BulkActionBar({
 						</DropdownMenu.Group>
 					</DropdownMenu.Content>
 				</DropdownMenu>
-				<Tooltip content="Mark as spam" asChild>
+				<Tooltip side="bottom" content="Mark as spam" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -173,7 +173,7 @@ export default function BulkActionBar({
 
 				<span className="mx-1 h-4 w-px shrink-0 bg-kumo-line" aria-hidden="true" />
 
-				<Tooltip content="Delete" asChild>
+				<Tooltip side="bottom" content="Delete" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
@@ -186,7 +186,7 @@ export default function BulkActionBar({
 				</Tooltip>
 			</div>
 
-			<Tooltip content="Clear selection" asChild>
+			<Tooltip side="bottom" content="Clear selection" asChild>
 				<Button
 					variant="ghost"
 					shape="square"
