@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Pagination, Select, Tooltip } from "@cloudflare/kumo";
+import { Button, Checkbox, Pagination, Select, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
@@ -20,13 +20,16 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
-import { Folders } from "shared/folders";
+import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { mergeCategorizationCategories } from "shared/categories";
 import { formatListDate } from "shared/dates";
+import BulkActionBar from "~/components/BulkActionBar";
 import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
+import SelectionCheckbox from "~/components/SelectionCheckbox";
 import { getSnippetText } from "~/lib/utils";
 import {
+	useBulkEmailAction,
 	useDeleteEmail,
 	useEmails,
 	useMarkThreadRead,
@@ -36,8 +39,9 @@ import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
 import { queryKeys } from "~/queries/keys";
+import { useEmailSelection } from "~/hooks/useEmailSelection";
 import { useUIStore } from "~/hooks/useUIStore";
-import type { Email } from "~/types";
+import type { BulkEmailAction, Email } from "~/types";
 
 const PAGE_SIZE = 25;
 const CATEGORY_FILTER_ALL = "__all__";
@@ -204,6 +208,74 @@ export default function EmailListRoute() {
 
 	const { data: folders = [] } = useFolders(mailboxId);
 
+	const pageKeys = useMemo(() => emails.map((email) => email.id), [emails]);
+	const {
+		selectedKeys,
+		count: selectedCount,
+		isSelected: isRowSelected,
+		allSelected,
+		toggle,
+		selectAll,
+		clear,
+	} = useEmailSelection(pageKeys);
+	const bulkAction = useBulkEmailAction();
+
+	const selectedEmails = useMemo(
+		() => emails.filter((email) => selectedKeys.has(email.id)),
+		[emails, selectedKeys],
+	);
+
+	/** Folders offered by the toolbar's move menu (system order first, no sent/drafts). */
+	const moveFolders = useMemo(() => {
+		const systemOrder = SYSTEM_FOLDER_IDS as readonly string[];
+		return folders
+			.filter(
+				(f) =>
+					f.id !== folder && f.id !== Folders.SENT && f.id !== Folders.DRAFT,
+			)
+			.sort((a, b) => {
+				const ai = systemOrder.indexOf(a.id);
+				const bi = systemOrder.indexOf(b.id);
+				if (ai !== -1 && bi !== -1) return ai - bi;
+				if (ai !== -1) return -1;
+				if (bi !== -1) return 1;
+				return a.name.localeCompare(b.name);
+			})
+			.map((f) => ({ id: f.id, name: f.name }));
+	}, [folders, folder]);
+
+	const runBulkAction = (
+		action: BulkEmailAction,
+		options?: { folderId?: string; confirm?: string },
+	) => {
+		if (!mailboxId || selectedEmails.length === 0) return;
+		if (options?.confirm && !window.confirm(options.confirm)) return;
+
+		bulkAction.mutate(
+			{
+				action,
+				targets: selectedEmails.map((email) => ({
+					mailboxId,
+					id: email.id,
+					threadId: email.thread_id,
+					threadCount: email.thread_count,
+				})),
+				folderId: options?.folderId,
+			},
+			{
+				onSuccess: () => {
+					if (
+						action === "delete" &&
+						selectedEmails.some((email) => email.id === selectedEmailId)
+					) {
+						closePanel();
+					}
+					clear();
+				},
+			},
+		);
+	};
+
 	const folderName = useMemo(() => {
 		const found = folders.find((f) => f.id === folder);
 		if (found) return found.name;
@@ -223,8 +295,9 @@ export default function EmailListRoute() {
 			closePanel();
 			setPage(1);
 			setCategoryFilter("");
+			clear();
 		}
-	}, [mailboxId, folder, closePanel]);
+	}, [mailboxId, folder, closePanel, clear]);
 
 	const toggleStar = (e: React.MouseEvent, email: Email) => {
 		e.preventDefault();
@@ -266,6 +339,12 @@ export default function EmailListRoute() {
 	};
 
 	const handleRowClick = (email: Email) => {
+		// While a selection is active, clicking a row toggles it instead of
+		// opening the email, matching common mail-client behavior.
+		if (selectedCount > 0) {
+			toggle(email.id);
+			return;
+		}
 		selectEmail(email.id, mailboxId);
 		if (mailboxId && hasUnread(email)) {
 			if (email.thread_id && email.thread_count && email.thread_count > 1) {
@@ -301,59 +380,91 @@ export default function EmailListRoute() {
 			isComposing={isComposing}
 		>
 				{/* Folder header */}
-				<div className="flex items-center justify-between px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
-					<h1 className="text-lg font-semibold text-kumo-default">
-						{folderName}
-					</h1>
-					<div className="flex items-center gap-1">
-						{categories.length > 0 && (
-							<Select
-								aria-label="Filter by category"
-								size="sm"
-								value={categoryFilter || CATEGORY_FILTER_ALL}
-								onValueChange={(value) => {
-									const next =
-										value && value !== CATEGORY_FILTER_ALL
-											? String(value)
-											: "";
-									setCategoryFilter(next);
-									setPage(1);
-								}}
-							>
-								<Select.Option value={CATEGORY_FILTER_ALL}>All categories</Select.Option>
-								{categories.map((category) => (
-									<Select.Option key={category.id} value={category.id}>
-										{category.name}
-									</Select.Option>
-								))}
-							</Select>
-						)}
-						{totalCount > 0 && (
-							<span className="text-sm text-kumo-subtle mr-2 hidden sm:inline">
-								{totalCount} conversation{totalCount !== 1 ? "s" : ""}
-							</span>
-						)}
-						<Tooltip
-							content={isRefreshing ? "Refreshing..." : "Refresh"}
-							side="bottom"
-							asChild
-						>
-							<Button
-								variant="ghost"
-								shape="square"
-								size="sm"
-								icon={
-									<ArrowsClockwiseIcon
-										size={18}
-										className={isRefreshing ? "animate-spin" : ""}
+				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
+					<Checkbox
+						checked={allSelected}
+						indeterminate={selectedCount > 0 && !allSelected}
+						onCheckedChange={(checked) => (checked ? selectAll() : clear())}
+						aria-label="Select all conversations on this page"
+						className="shrink-0"
+					/>
+					{selectedCount > 0 ? (
+						<BulkActionBar
+							count={selectedCount}
+							isPending={bulkAction.isPending}
+							folders={moveFolders}
+							onMarkRead={() => runBulkAction("mark_read")}
+							onMarkUnread={() => runBulkAction("mark_unread")}
+							onStar={() => runBulkAction("star")}
+							onUnstar={() => runBulkAction("unstar")}
+							onArchive={() =>
+								runBulkAction("move", { folderId: Folders.ARCHIVE })
+							}
+							onSpam={() => runBulkAction("move", { folderId: Folders.SPAM })}
+							onMove={(folderId) => runBulkAction("move", { folderId })}
+							onDelete={() =>
+								runBulkAction("delete", {
+									confirm: `Delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? This cannot be undone.`,
+								})
+							}
+							onClear={clear}
+						/>
+					) : (
+						<>
+							<h1 className="truncate text-lg font-semibold text-kumo-default">
+								{folderName}
+							</h1>
+							<div className="ml-auto flex items-center gap-1">
+								{categories.length > 0 && (
+									<Select
+										aria-label="Filter by category"
+										size="sm"
+										value={categoryFilter || CATEGORY_FILTER_ALL}
+										onValueChange={(value) => {
+											const next =
+												value && value !== CATEGORY_FILTER_ALL
+													? String(value)
+													: "";
+											setCategoryFilter(next);
+											setPage(1);
+										}}
+									>
+										<Select.Option value={CATEGORY_FILTER_ALL}>All categories</Select.Option>
+										{categories.map((category) => (
+											<Select.Option key={category.id} value={category.id}>
+												{category.name}
+											</Select.Option>
+										))}
+									</Select>
+								)}
+								{totalCount > 0 && (
+									<span className="text-sm text-kumo-subtle mr-2 hidden sm:inline">
+										{totalCount} conversation{totalCount !== 1 ? "s" : ""}
+									</span>
+								)}
+								<Tooltip
+									content={isRefreshing ? "Refreshing..." : "Refresh"}
+									side="bottom"
+									asChild
+								>
+									<Button
+										variant="ghost"
+										shape="square"
+										size="sm"
+										icon={
+											<ArrowsClockwiseIcon
+												size={18}
+												className={isRefreshing ? "animate-spin" : ""}
+											/>
+										}
+										onClick={handleRefresh}
+										disabled={isRefreshing}
+										aria-label="Refresh"
 									/>
-								}
-								onClick={handleRefresh}
-								disabled={isRefreshing}
-								aria-label="Refresh"
-							/>
-						</Tooltip>
-					</div>
+								</Tooltip>
+							</div>
+						</>
+					)}
 				</div>
 
 				{/* Email rows */}
@@ -364,6 +475,7 @@ export default function EmailListRoute() {
 						<div>
 							{emails.map((email) => {
 								const isSelected = selectedEmailId === email.id;
+								const isRowChecked = isRowSelected(email.id);
 								const snippet = getSnippetText(email.snippet);
 								return (
 									<div
@@ -379,8 +491,23 @@ export default function EmailListRoute() {
 										}}
 										className={`group flex items-center gap-3 w-full text-left cursor-pointer transition-colors border-b border-kumo-line px-4 py-2.5 md:px-6 md:py-3 ${
 											isPanelOpen ? "md:px-4 md:py-2.5" : ""
-										} ${isSelected ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
+										} ${isSelected || isRowChecked ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
 									>
+										{/* Selection checkbox (always visible in selection mode) */}
+										<div
+											className={`shrink-0 ${
+												selectedCount > 0
+													? ""
+													: "invisible group-hover:visible group-focus-within:visible"
+											}`}
+										>
+											<SelectionCheckbox
+												checked={isRowChecked}
+												onToggle={(shiftKey) => toggle(email.id, shiftKey)}
+												label={`${isRowChecked ? "Deselect" : "Select"} ${email.subject}`}
+											/>
+										</div>
+
 										{/* Unread dot */}
 										<div className="w-2.5 shrink-0 flex justify-center">
 											{hasUnread(email) && (
@@ -503,7 +630,10 @@ export default function EmailListRoute() {
 					<div className="flex justify-center py-3 border-t border-kumo-line shrink-0">
 						<Pagination
 							page={page}
-							setPage={setPage}
+							setPage={(next) => {
+								clear();
+								setPage(next);
+							}}
 							perPage={PAGE_SIZE}
 							totalCount={totalCount}
 						/>

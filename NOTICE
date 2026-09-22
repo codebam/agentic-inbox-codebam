@@ -16,6 +16,8 @@ Changes in this fork include, among others:
   - Added per-domain catch-all mailbox routing.
   - Added global and per-mailbox AI email categorization using TypeSafe Jev.
   - Added the combined All Accounts email view.
+  - Added multi-select bulk actions (mark read/unread, star, archive, move,
+    mark spam, delete) to the mailbox folder list and the All Accounts view.
   - Added agent-first MCP authentication using Wrangler login credentials.
   - Added Markdown support to the email composer and split heavy composer
     chunks so they are lazy-loaded.

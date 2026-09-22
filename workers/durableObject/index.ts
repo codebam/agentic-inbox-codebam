@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -715,6 +715,91 @@ export class MailboxDO extends DurableObject<Env> {
 			.run();
 
 		return true;
+	}
+
+	// ── Bulk actions (list-view multi-select) ──────────────────────
+
+	/**
+	 * Apply read/starred flags to multiple emails in one statement.
+	 *
+	 * When `threadIds` is supplied, a read/unread change also extends to every
+	 * message in those conversations — threaded list rows represent a whole
+	 * conversation, so toggling only the latest message would leave the row's
+	 * unread badge out of sync.
+	 */
+	async bulkUpdateEmails(
+		ids: string[],
+		{ read, starred }: { read?: boolean; starred?: boolean },
+		threadIds: string[] = [],
+	) {
+		const data: { read?: number; starred?: number } = {};
+		if (read !== undefined) data.read = read ? 1 : 0;
+		if (starred !== undefined) data.starred = starred ? 1 : 0;
+
+		if (ids.length > 0 && Object.keys(data).length > 0) {
+			this.db
+				.update(schema.emails)
+				.set(data)
+				.where(inArray(schema.emails.id, ids))
+				.run();
+		}
+
+		if (read !== undefined && threadIds.length > 0) {
+			this.db
+				.update(schema.emails)
+				.set({ read: read ? 1 : 0 })
+				.where(inArray(schema.emails.thread_id, threadIds))
+				.run();
+		}
+
+		return { updated: ids.length };
+	}
+
+	/** Move multiple emails into an existing folder. Returns false when the folder is unknown. */
+	async bulkMoveEmails(ids: string[], folderId: string) {
+		if (ids.length === 0) return false;
+
+		const folder = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(eq(schema.folders.id, folderId))
+			.get();
+
+		if (!folder) return false;
+
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: folderId })
+			.where(inArray(schema.emails.id, ids))
+			.run();
+
+		return true;
+	}
+
+	/**
+	 * Delete multiple emails. Returns any attachments that belonged to them so
+	 * the Worker can remove the corresponding R2 objects (attachments rows
+	 * cascade away with the email).
+	 */
+	async bulkDeleteEmails(ids: string[]) {
+		if (ids.length === 0) return [];
+
+		const emailAttachments = this.db
+			.select({
+				id: schema.attachments.id,
+				email_id: schema.attachments.email_id,
+				filename: schema.attachments.filename,
+			})
+			.from(schema.attachments)
+			.where(inArray(schema.attachments.email_id, ids))
+			.all();
+
+		this.db
+			.delete(schema.emails)
+			.where(inArray(schema.emails.id, ids))
+			.run();
+
+		return emailAttachments;
 	}
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────

@@ -74,3 +74,24 @@ export interface Folder {
 	name: string;
 	unreadCount: number;
 }
+
+/** Batch actions offered by the list-view multi-select toolbar. */
+export type BulkEmailAction =
+	| "mark_read"
+	| "mark_unread"
+	| "star"
+	| "unstar"
+	| "move"
+	| "delete";
+
+/**
+ * One selected list row, tagged with the mailbox that owns it so the All
+ * Accounts view can group a batch into one request per mailbox.
+ */
+export interface BulkEmailTarget {
+	mailboxId: string;
+	id: string;
+	/** Thread fields from the list row, used to expand read/unread to conversations. */
+	threadId?: string | null;
+	threadCount?: number;
+}

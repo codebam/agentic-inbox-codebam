@@ -3,7 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { GlobalCategorizationSettings } from "shared/categories";
-import type { Email, Folder, Mailbox } from "~/types";
+import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -137,6 +137,19 @@ const api = {
 		del<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`),
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
+	bulkEmailAction: (
+		mailboxId: string,
+		body: {
+			action: BulkEmailAction;
+			ids: string[];
+			threadIds?: string[];
+			folderId?: string;
+		},
+	) =>
+		post<{ updated?: number; deleted?: number }>(
+			`/api/v1/mailboxes/${mailboxId}/emails/bulk`,
+			body,
+		),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>

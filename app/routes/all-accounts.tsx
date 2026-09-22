@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Pagination, Tooltip } from "@cloudflare/kumo";
+import { Badge, Button, Checkbox, Pagination, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowLeftIcon,
@@ -23,17 +23,38 @@ import { useNavigate, useSearchParams } from "react-router";
 import { formatListDate } from "shared/dates";
 import { Folders, getFolderDisplayName } from "shared/folders";
 import AgentSidebar from "~/components/AgentSidebar";
+import BulkActionBar from "~/components/BulkActionBar";
 import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
+import SelectionCheckbox from "~/components/SelectionCheckbox";
 import { getSnippetText } from "~/lib/utils";
 import { useAllEmails } from "~/queries/all-emails";
-import { useDeleteEmail, useMarkThreadRead, useUpdateEmail } from "~/queries/emails";
+import {
+	useBulkEmailAction,
+	useDeleteEmail,
+	useMarkThreadRead,
+	useUpdateEmail,
+} from "~/queries/emails";
 import { useMailboxes } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
+import { useEmailSelection } from "~/hooks/useEmailSelection";
 import { useUIStore } from "~/hooks/useUIStore";
-import type { Email } from "~/types";
+import type { BulkEmailAction, Email } from "~/types";
 
 const PAGE_SIZE = 25;
+
+/** Folders every mailbox shares, so they are safe batch move targets here. */
+const MOVE_FOLDER_IDS: readonly string[] = [
+	Folders.INBOX,
+	Folders.ARCHIVE,
+	Folders.SPAM,
+	Folders.TRASH,
+];
+
+/** Selection keys are mailbox-scoped because ids repeat across mailboxes. */
+function selectionKey(email: Email): string {
+	return `${email.mailboxId ?? "unknown"}::${email.id}`;
+}
 
 const FOLDER_TABS = [
 	{ id: "all", label: "All Mail", icon: <StackIcon size={15} weight="bold" /> },
@@ -102,13 +123,6 @@ export default function AllAccountsRoute() {
 	}, [closePanel]);
 
 	const prevFolderRef = useRef(folder);
-	useEffect(() => {
-		if (prevFolderRef.current !== folder) {
-			prevFolderRef.current = folder;
-			setPage(1);
-			closePanel();
-		}
-	}, [folder, closePanel]);
 
 	const params = useMemo(() => {
 		const next: Record<string, string> = {
@@ -127,6 +141,85 @@ export default function AllAccountsRoute() {
 	const isPanelOpen = selectedEmailId !== null || isComposing;
 	const accountCountLabel = `${mailboxes.length} account${mailboxes.length === 1 ? "" : "s"}`;
 
+	const pageKeys = useMemo(() => emails.map(selectionKey), [emails]);
+	const {
+		selectedKeys,
+		count: selectedCount,
+		isSelected: isRowSelected,
+		allSelected,
+		toggle,
+		selectAll,
+		clear,
+	} = useEmailSelection(pageKeys);
+	const bulkAction = useBulkEmailAction();
+
+	const selectedEmails = useMemo(
+		() => emails.filter((email) => selectedKeys.has(selectionKey(email))),
+		[emails, selectedKeys],
+	);
+
+	/** Only shared system folders can be batch move targets across mailboxes. */
+	const moveFolders = useMemo(
+		() =>
+			MOVE_FOLDER_IDS.filter((id) => id !== folder).map((id) => ({
+				id,
+				name: getFolderDisplayName(id),
+			})),
+		[folder],
+	);
+
+	const runBulkAction = (
+		action: BulkEmailAction,
+		options?: { folderId?: string; confirm?: string },
+	) => {
+		if (selectedEmails.length === 0) return;
+		if (options?.confirm && !window.confirm(options.confirm)) return;
+
+		bulkAction.mutate(
+			{
+				action,
+				targets: selectedEmails.flatMap((email) =>
+					email.mailboxId
+						? [
+								{
+									mailboxId: email.mailboxId,
+									id: email.id,
+									threadId: email.thread_id,
+									threadCount: email.thread_count,
+								},
+							]
+						: [],
+				),
+				folderId: options?.folderId,
+			},
+			{
+				onSuccess: () => {
+					if (
+						action === "delete" &&
+						selectedEmails.some(
+							(email) =>
+								email.id === selectedEmailId &&
+								email.mailboxId === selectedMailboxId,
+						)
+					) {
+						closePanel();
+					}
+					clear();
+				},
+			},
+		);
+	};
+
+	// Changing folders resets paging and any in-progress selection.
+	useEffect(() => {
+		if (prevFolderRef.current !== folder) {
+			prevFolderRef.current = folder;
+			setPage(1);
+			closePanel();
+			clear();
+		}
+	}, [folder, closePanel, clear]);
+
 	const handleFolderChange = (id: string) => {
 		setSearchParams(id === "all" ? {} : { folder: id }, { replace: true });
 	};
@@ -136,6 +229,12 @@ export default function AllAccountsRoute() {
 	};
 
 	const handleRowClick = (email: Email) => {
+		// While a selection is active, clicking a row toggles it instead of
+		// opening the email, matching common mail-client behavior.
+		if (selectedCount > 0) {
+			toggle(selectionKey(email));
+			return;
+		}
 		selectEmail(email.id, email.mailboxId);
 		if (email.mailboxId && hasUnread(email)) {
 			if (email.thread_id && (email.thread_count ?? 1) > 1) {
@@ -198,40 +297,72 @@ export default function AllAccountsRoute() {
 							aria-label="Back to mailboxes"
 						/>
 					</Tooltip>
-					<div className="min-w-0 flex-1">
-						<h1 className="text-lg font-semibold text-kumo-default truncate">All Accounts</h1>
-						<p className="text-sm text-kumo-subtle truncate">
-							{accountCountLabel}
-							{!isLoading &&
-								` · ${totalCount} ${folder === "all" ? "email" : "conversation"}${totalCount === 1 ? "" : "s"}`}
-						</p>
-					</div>
-					<Tooltip content={isFetching ? "Refreshing..." : "Refresh"} side="bottom" asChild>
-						<Button
-							variant="ghost"
-							shape="square"
-							size="sm"
-							icon={<ArrowsClockwiseIcon size={18} className={isFetching ? "animate-spin" : ""} />}
-							onClick={handleRefresh}
-							disabled={isFetching}
-							aria-label="Refresh"
+					<Checkbox
+						checked={allSelected}
+						indeterminate={selectedCount > 0 && !allSelected}
+						onCheckedChange={(checked) => (checked ? selectAll() : clear())}
+						aria-label="Select all emails on this page"
+						className="shrink-0"
+					/>
+					{selectedCount > 0 ? (
+						<BulkActionBar
+							count={selectedCount}
+							isPending={bulkAction.isPending}
+							folders={moveFolders}
+							onMarkRead={() => runBulkAction("mark_read")}
+							onMarkUnread={() => runBulkAction("mark_unread")}
+							onStar={() => runBulkAction("star")}
+							onUnstar={() => runBulkAction("unstar")}
+							onArchive={() =>
+								runBulkAction("move", { folderId: Folders.ARCHIVE })
+							}
+							onSpam={() => runBulkAction("move", { folderId: Folders.SPAM })}
+							onMove={(folderId) => runBulkAction("move", { folderId })}
+							onDelete={() =>
+								runBulkAction("delete", {
+									confirm: `Delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? This cannot be undone.`,
+								})
+							}
+							onClear={clear}
 						/>
-					</Tooltip>
-					<Tooltip
-						content={isAgentPanelOpen ? "Hide agent panel" : "Show all-mailbox agent"}
-						side="bottom"
-						asChild
-					>
-						<Button
-							variant={isAgentPanelOpen ? "secondary" : "ghost"}
-							shape="square"
-							size="sm"
-							icon={<RobotIcon size={18} />}
-							onClick={toggleAgentPanel}
-							aria-label="Toggle all-mailbox agent panel"
-							className="hidden lg:inline-flex"
-						/>
-					</Tooltip>
+					) : (
+						<>
+							<div className="min-w-0 flex-1">
+								<h1 className="text-lg font-semibold text-kumo-default truncate">All Accounts</h1>
+								<p className="text-sm text-kumo-subtle truncate">
+									{accountCountLabel}
+									{!isLoading &&
+										` · ${totalCount} ${folder === "all" ? "email" : "conversation"}${totalCount === 1 ? "" : "s"}`}
+								</p>
+							</div>
+							<Tooltip content={isFetching ? "Refreshing..." : "Refresh"} side="bottom" asChild>
+								<Button
+									variant="ghost"
+									shape="square"
+									size="sm"
+									icon={<ArrowsClockwiseIcon size={18} className={isFetching ? "animate-spin" : ""} />}
+									onClick={handleRefresh}
+									disabled={isFetching}
+									aria-label="Refresh"
+								/>
+							</Tooltip>
+							<Tooltip
+								content={isAgentPanelOpen ? "Hide agent panel" : "Show all-mailbox agent"}
+								side="bottom"
+								asChild
+							>
+								<Button
+									variant={isAgentPanelOpen ? "secondary" : "ghost"}
+									shape="square"
+									size="sm"
+									icon={<RobotIcon size={18} />}
+									onClick={toggleAgentPanel}
+									aria-label="Toggle all-mailbox agent panel"
+									className="hidden lg:inline-flex"
+								/>
+							</Tooltip>
+						</>
+					)}
 				</div>
 
 				{/* Folder filter */}
@@ -270,6 +401,7 @@ export default function AllAccountsRoute() {
 								<div>
 									{emails.map((email) => {
 										const isSelected = selectedEmailId === email.id && selectedMailboxId === email.mailboxId;
+										const isRowChecked = isRowSelected(selectionKey(email));
 										const snippet = getSnippetText(email.snippet);
 										const accountLabel = email.mailboxId?.split("@")[0] || "unknown";
 										return (
@@ -286,8 +418,25 @@ export default function AllAccountsRoute() {
 												}}
 												className={`group flex items-center gap-3 w-full text-left cursor-pointer transition-colors border-b border-kumo-line px-4 py-2.5 md:px-6 md:py-3 ${
 													isPanelOpen ? "md:px-4 md:py-2.5" : ""
-												} ${isSelected ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
+												} ${isSelected || isRowChecked ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
 											>
+												{/* Selection checkbox (always visible in selection mode) */}
+												<div
+													className={`shrink-0 ${
+														selectedCount > 0
+															? ""
+															: "invisible group-hover:visible group-focus-within:visible"
+													}`}
+												>
+													<SelectionCheckbox
+														checked={isRowChecked}
+														onToggle={(shiftKey) =>
+															toggle(selectionKey(email), shiftKey)
+														}
+														label={`${isRowChecked ? "Deselect" : "Select"} ${email.subject}`}
+													/>
+												</div>
+
 												{/* Unread dot */}
 												<div className="w-2.5 shrink-0 flex justify-center">
 													{hasUnread(email) && <div className="h-2 w-2 rounded-full bg-kumo-brand" />}
@@ -391,7 +540,15 @@ export default function AllAccountsRoute() {
 						{/* Pagination */}
 						{totalCount > PAGE_SIZE && (
 							<div className="flex justify-center py-3 border-t border-kumo-line shrink-0">
-								<Pagination page={page} setPage={setPage} perPage={PAGE_SIZE} totalCount={totalCount} />
+								<Pagination
+									page={page}
+									setPage={(next) => {
+										clear();
+										setPage(next);
+									}}
+									perPage={PAGE_SIZE}
+									totalCount={totalCount}
+								/>
 							</div>
 						)}
 					</MailboxSplitView>

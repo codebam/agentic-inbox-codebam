@@ -15,7 +15,7 @@ import {
 	buildThreadingHeaders,
 	listMailboxes,
 } from "./lib/email-helpers";
-import { SendEmailRequestSchema } from "./lib/schemas";
+import { SendEmailRequestSchema, BulkEmailActionSchema } from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
@@ -472,6 +472,51 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) =
 	const { folderId } = (await c.req.json()) as { folderId: string };
 	const success = await c.var.mailboxStub.moveEmail(c.req.param("id")!, folderId);
 	return success ? c.json({ status: "moved" }) : c.json({ error: "Folder not found" }, 400);
+});
+
+// -- Bulk actions (list-view multi-select) --------------------------
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
+	const parsed = BulkEmailActionSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) {
+		return c.json({ error: "Invalid bulk action request" }, 400);
+	}
+	const { action, ids, threadIds, folderId } = parsed.data;
+	const stub = c.var.mailboxStub as any;
+
+	switch (action) {
+		case "mark_read":
+		case "mark_unread": {
+			await stub.bulkUpdateEmails(ids, { read: action === "mark_read" }, threadIds ?? []);
+			return c.json({ updated: ids.length });
+		}
+		case "star":
+		case "unstar": {
+			await stub.bulkUpdateEmails(ids, { starred: action === "star" });
+			return c.json({ updated: ids.length });
+		}
+		case "move": {
+			const moved = await stub.bulkMoveEmails(ids, folderId!);
+			return moved
+				? c.json({ updated: ids.length })
+				: c.json({ error: "Folder not found" }, 400);
+		}
+		case "delete": {
+			const attachments = (await stub.bulkDeleteEmails(ids)) as Array<{
+				id: string;
+				email_id: string;
+				filename: string;
+			}>;
+			if (attachments.length > 0) {
+				await c.env.BUCKET.delete(
+					attachments.map(
+						(att) => `attachments/${att.email_id}/${att.id}/${att.filename}`,
+					),
+				);
+			}
+			return c.json({ deleted: ids.length });
+		}
+	}
 });
 
 // -- Threads --------------------------------------------------------
