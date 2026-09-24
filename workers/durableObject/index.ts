@@ -89,6 +89,16 @@ import {
 	type ScheduledSendRow,
 	type ScheduleSendInput,
 } from "../lib/scheduled-sends";
+import {
+	DIGEST_CATEGORY_LIMIT,
+	DIGEST_NEEDS_REPLY_LIMIT,
+	DIGEST_RECENT_LIMIT,
+	DIGEST_REMINDER_LIMIT,
+	MAX_DIGEST_DELIVERIES,
+	type Digest,
+	type DigestDeliveryResult,
+	type DigestEmailRef,
+} from "../lib/digest";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -101,6 +111,126 @@ const NORMALIZED_SUBJECT_SQL = `LOWER(TRIM(
 		'aw: ', ''), 'wg: ', ''), 'réf: ', ''), 'sv: ', ''),
 		're: ', ''), 'fwd: ', ''), 'fw: ', '')
 ))`;
+
+/**
+ * SQL predicate marking a spam-marked row, mirroring `getSpamEmails`: the
+ * Spam folder, the built-in `spam` category, or a classifier audit trail
+ * that recorded `is_spam: true`. Takes the table alias the predicate applies
+ * to; the caller binds the spam folder name and category id as ?1 and ?2
+ * (place them first among its parameters).
+ */
+function spamMarkedSql(alias: string): string {
+	return `(${alias}.folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+					OR ${alias}.category = ?2
+					OR (json_valid(${alias}.classification)
+						AND json_extract(${alias}.classification, '$.is_spam') = 1))`;
+}
+
+/**
+ * NULL-safe negation of `spamMarkedSql` for WHERE clauses: its
+ * `json_valid(classification)` arm evaluates to NULL for the common case of
+ * an unclassified row, and `NOT NULL` is NULL — which silently drops every
+ * such row. The CASE collapses that arm to 0, so "not spam" keeps rows the
+ * predicate cannot positively identify as spam.
+ */
+function notSpamSql(alias: string): string {
+	return `(CASE WHEN ${spamMarkedSql(alias)} THEN 1 ELSE 0 END) = 0`;
+}
+
+/**
+ * The list query's Sent/Draft exclusion (`folder_id != (SELECT id FROM
+ * folders WHERE name = 'sent' LIMIT 1)`), written with the id fallback this
+ * file already uses for folder lookups. The bare name lookup matches nothing
+ * against the capitalized seeded folders ('Sent'), and a `!= NULL` comparison
+ * is NULL — which quietly zeroes needs_reply inside the list query's CASE and
+ * would drop every row from a WHERE clause — so the fallback keeps the
+ * predicate's intent. `column` is the folder_id column or alias to test.
+ */
+function notSentSql(column: string): string {
+	return `${column} != (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)`;
+}
+
+function notDraftSql(column: string): string {
+	return `${column} != (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1)`;
+}
+
+/**
+ * The threaded conversation CTE the digest's needs-reply count and list
+ * share. It mirrors the non-draft list query's conversation grouping and its
+ * `needs_reply` predicate exactly (see getThreadedEmails): a conversation
+ * needs a reply when its newest message is not in Sent or Draft and the
+ * conversation contains at least one read message.
+ *
+ * `digest_candidates` holds the window arrivals with the conversation
+ * aggregates that predicate reads; the callers filter `rn = 1` (newest in
+ * the window per conversation) plus the predicate itself. Bindings: ?1 spam
+ * folder name, ?2 spam category id, ?3 window from, ?4 window to.
+ */
+const DIGEST_NEEDS_REPLY_CTE = `WITH
+	folder_emails AS (
+		SELECT *,
+			COALESCE(thread_id, id) as raw_thread_id,
+			${NORMALIZED_SUBJECT_SQL} as normalized_subject
+		FROM emails
+	),
+	thread_to_conversation AS (
+		SELECT
+			raw_thread_id,
+			normalized_subject,
+			CASE
+				WHEN thread_id IS NOT NULL THEN raw_thread_id
+				ELSE MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
+			END as conversation_id
+		FROM folder_emails
+		GROUP BY raw_thread_id, normalized_subject, thread_id
+	),
+	all_emails_with_conversation AS (
+		SELECT
+			e.*,
+			COALESCE(tc.conversation_id, COALESCE(e.thread_id, e.id)) as conversation_id
+		FROM emails e
+		LEFT JOIN thread_to_conversation tc
+			ON COALESCE(e.thread_id, e.id) = tc.raw_thread_id
+	),
+	conversation_stats AS (
+		SELECT
+			conversation_id,
+			SUM(CASE WHEN read = 1 THEN 1 ELSE 0 END) as thread_read_count
+		FROM all_emails_with_conversation
+		GROUP BY conversation_id
+	),
+	latest_message_per_conversation AS (
+		SELECT
+			conversation_id,
+			folder_id,
+			ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY date DESC, id DESC) as rn
+		FROM all_emails_with_conversation
+	),
+	digest_candidates AS (
+		SELECT
+			a.*,
+			cs.thread_read_count,
+			lmc.folder_id as latest_folder_id,
+			ROW_NUMBER() OVER (PARTITION BY a.conversation_id ORDER BY a.date DESC, a.id DESC) as rn
+		FROM all_emails_with_conversation a
+		JOIN conversation_stats cs ON cs.conversation_id = a.conversation_id
+		LEFT JOIN latest_message_per_conversation lmc
+			ON lmc.conversation_id = a.conversation_id AND lmc.rn = 1
+		WHERE a.date >= ?3 AND a.date <= ?4
+			AND ${notSentSql("a.folder_id")}
+			AND ${notDraftSql("a.folder_id")}
+			AND ${notSpamSql("a")}
+	)`;
+
+/**
+ * The list-query predicate itself, over `digest_candidates`: newest window
+ * arrival of a conversation that still expects a reply.
+ */
+const DIGEST_NEEDS_REPLY_WHERE = `WHERE rn = 1
+		AND ${notSentSql("latest_folder_id")}
+		AND ${notDraftSql("latest_folder_id")}
+		AND thread_read_count > 0`;
+
 
 const ALLOWED_SORT_COLUMNS = [
 	"id",
@@ -3188,6 +3318,229 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 
+	// ── Morning digest (built for the cron sweep and the digest route) ──
+
+	/**
+	 * The mailbox's morning brief over `window`: what arrived, what still
+	 * needs a reply, how the arrivals break down by category and which
+	 * follow-up reminders fired. Read-only — it writes nothing, never
+	 * touches the alarm and never sends mail; the caller decides whether to
+	 * deliver it (see workers/lib/digest-sweep.ts).
+	 *
+	 * An "arrival" is a stored message whose receive `date` falls in the
+	 * window and whose folder is neither Sent nor Draft (a sent copy and a
+	 * draft are not mail that arrived). Spam-marked arrivals are counted in
+	 * `counts.spam` but excluded from `recent` and `needs_reply`, matching
+	 * the new-mail notifier, which never notifies for spam.
+	 *
+	 * `needs_reply` mirrors the list query's predicate exactly
+	 * (getThreadedEmails): the newest window arrival of a conversation whose
+	 * overall newest message is not in Sent or Draft and whose conversation
+	 * contains at least one read message. Its count is not capped; the ref
+	 * list is.
+	 */
+	buildDigest(window: { from: string; to: string }): Digest {
+		// The mailbox's own address is the DO's name (see requireMailbox).
+		const mailboxId = this.ctx.id.name ?? "";
+		// ?1 spam folder name, ?2 spam category id — the order every query
+		// below binds them in, because spamMarkedSql() references them.
+		const spamArgs: (string | number)[] = [Folders.SPAM, SPAM_CATEGORY_ID];
+
+		const countsRow = [
+			...this.ctx.storage.sql.exec(
+				`SELECT
+					COUNT(*) as received,
+					SUM(CASE WHEN e.read = 0 THEN 1 ELSE 0 END) as unread,
+					SUM(CASE WHEN e.starred = 1 THEN 1 ELSE 0 END) as starred,
+					SUM(CASE WHEN ${spamMarkedSql("e")} THEN 1 ELSE 0 END) as spam
+				 FROM emails e
+				 WHERE e.date >= ?3 AND e.date <= ?4
+				   AND ${notSentSql("e.folder_id")}
+				   AND ${notDraftSql("e.folder_id")}`,
+				...spamArgs,
+				window.from,
+				window.to,
+			),
+		][0] as
+			| {
+					received: number | null;
+					unread: number | null;
+					starred: number | null;
+					spam: number | null;
+			  }
+			| undefined;
+
+		const needsReplyCountRow = [
+			...this.ctx.storage.sql.exec(
+				`${DIGEST_NEEDS_REPLY_CTE}
+				 SELECT COUNT(*) as total
+				 FROM digest_candidates
+				 ${DIGEST_NEEDS_REPLY_WHERE}`,
+				...spamArgs,
+				window.from,
+				window.to,
+			),
+		][0] as { total: number | null } | undefined;
+
+		const needsReplyRows = [
+			...this.ctx.storage.sql.exec(
+				`${DIGEST_NEEDS_REPLY_CTE}
+				 SELECT c.id, c.subject, c.sender, c.date, c.category, c.folder_id,
+					COALESCE(f.name, c.folder_id) as folder_name
+				 FROM digest_candidates c
+				 LEFT JOIN folders f ON f.id = c.folder_id
+				 ${DIGEST_NEEDS_REPLY_WHERE}
+				 ORDER BY c.date DESC, c.id DESC
+				 LIMIT ?5`,
+				...spamArgs,
+				window.from,
+				window.to,
+				DIGEST_NEEDS_REPLY_LIMIT,
+			),
+		] as unknown as DigestRefRow[];
+
+		const recentRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT e.id, e.subject, e.sender, e.date, e.category, e.folder_id,
+					COALESCE(f.name, e.folder_id) as folder_name
+				 FROM emails e
+				 LEFT JOIN folders f ON f.id = e.folder_id
+				 WHERE e.date >= ?3 AND e.date <= ?4
+				   AND ${notSentSql("e.folder_id")}
+				   AND ${notDraftSql("e.folder_id")}
+				   AND ${notSpamSql("e")}
+				 ORDER BY e.date DESC, e.id DESC
+				 LIMIT ?5`,
+				...spamArgs,
+				window.from,
+				window.to,
+				DIGEST_RECENT_LIMIT,
+			),
+		] as unknown as DigestRefRow[];
+
+		const categoryRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT e.category as category, COUNT(*) as count
+				 FROM emails e
+				 WHERE e.date >= ?3 AND e.date <= ?4
+				   AND ${notSentSql("e.folder_id")}
+				   AND ${notDraftSql("e.folder_id")}
+				   AND e.category IS NOT NULL
+				 GROUP BY e.category
+				 ORDER BY count DESC, category ASC
+				 LIMIT ?5`,
+				...spamArgs,
+				window.from,
+				window.to,
+				DIGEST_CATEGORY_LIMIT,
+			),
+		] as unknown as { category: string; count: number }[];
+
+		// Fired reminders are not windowed: `reminded_at` stays set until the
+		// thread is answered or the reminder dismissed, so the newest ones
+		// are exactly the nudges that are still outstanding.
+		const reminderRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT e.id, e.subject, e.sender, e.reminded_at as fired_at
+				 FROM emails e
+				 WHERE e.reminded_at IS NOT NULL
+				 ORDER BY e.reminded_at DESC, e.id DESC
+				 LIMIT ?1`,
+				DIGEST_REMINDER_LIMIT,
+			),
+		] as unknown as {
+			id: string;
+			subject: string | null;
+			sender: string | null;
+			fired_at: string | null;
+		}[];
+
+		const toRef = (row: DigestRefRow): DigestEmailRef => ({
+			id: row.id,
+			subject: row.subject ?? "",
+			sender: row.sender ?? "",
+			date: row.date ?? "",
+			folder: row.folder_name ?? row.folder_id,
+			category: row.category ?? null,
+		});
+
+		return {
+			mailbox: mailboxId,
+			generated_at: new Date().toISOString(),
+			window: { from: window.from, to: window.to },
+			counts: {
+				received: countsRow?.received ?? 0,
+				unread: countsRow?.unread ?? 0,
+				starred: countsRow?.starred ?? 0,
+				spam: countsRow?.spam ?? 0,
+				needs_reply: needsReplyCountRow?.total ?? 0,
+			},
+			by_category: categoryRows.map((row) => ({
+				category: String(row.category),
+				count: Number(row.count) || 0,
+			})),
+			needs_reply: needsReplyRows.map(toRef),
+			recent: recentRows.map(toRef),
+			reminders: reminderRows.map((row) => ({
+				id: String(row.id),
+				subject: row.subject ?? "",
+				sender: row.sender ?? "",
+				fired_at: row.fired_at ?? "",
+			})),
+		};
+	}
+
+	/**
+	 * Claim the mailbox's digest for one UTC day (`YYYY-MM-DD`).
+	 *
+	 * Insert-or-ignore on the `day` primary key: only the call that actually
+	 * inserted the row answers `true`, so a retried or duplicated cron run —
+	 * or a manual invocation after the cron already ran — can never deliver
+	 * the same day's digest twice. The row starts pending (`ok = 0`) and is
+	 * settled by recordDigestDelivery. Prunes the mailbox back to its newest
+	 * MAX_DIGEST_DELIVERIES days whenever a claim lands.
+	 */
+	claimDigestDay(day: string): boolean {
+		const cursor = this.ctx.storage.sql.exec(
+			`INSERT OR IGNORE INTO digest_deliveries (day, delivered_at, ok)
+			 VALUES (?1, ?2, 0)`,
+			day,
+			new Date().toISOString(),
+		);
+		if (cursor.rowsWritten === 0) return false;
+
+		this.ctx.storage.sql.exec(
+			`DELETE FROM digest_deliveries
+			 WHERE day NOT IN (
+				SELECT day FROM digest_deliveries
+				ORDER BY day DESC
+				LIMIT ?1
+			 )`,
+			MAX_DIGEST_DELIVERIES,
+		);
+		return true;
+	}
+
+	/**
+	 * Settle one claimed digest day with the delivery outcome. Best-effort:
+	 * an unknown or already-pruned day updates nothing. `status` is the
+	 * upstream HTTP status (null when the request never got a response) and
+	 * `error` the failure reason (null on success).
+	 */
+	recordDigestDelivery(day: string, result: DigestDeliveryResult): void {
+		this.ctx.storage.sql.exec(
+			`UPDATE digest_deliveries
+			 SET delivered_at = ?1, ok = ?2, status = ?3, error = ?4
+			 WHERE day = ?5`,
+			new Date().toISOString(),
+			result.ok ? 1 : 0,
+			result.status,
+			result.error,
+			day,
+		);
+	}
+
+
 	// ── Sender policy CRUD (per-mailbox allow/block list) ──────────
 
 
@@ -3429,6 +3782,18 @@ interface SearchEmailRow {
 	category: string | null;
 	category_confidence: number | null;
 	snippet: string | null;
+	folder_name: string | null;
+}
+
+
+/** Raw row shape for a digest message reference (folder name resolved). */
+interface DigestRefRow {
+	id: string;
+	subject: string | null;
+	sender: string | null;
+	date: string | null;
+	category: string | null;
+	folder_id: string;
 	folder_name: string | null;
 }
 

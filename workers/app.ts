@@ -11,6 +11,7 @@ import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import { authenticateMcpRequest, type McpAuthFailure } from "./lib/mcp-auth";
 import { sweepDueMail } from "./lib/mail-sweep";
+import { DIGEST_CRON, sweepDigests } from "./lib/digest-sweep";
 import { sweepImageProxyCache } from "./lib/image-proxy";
 import { sweepTrash } from "./lib/trash-retention";
 import type { Env } from "./types";
@@ -250,18 +251,32 @@ export default {
 		}
 	},
 	/**
-	 * Cron entry point for automatic Trash retention, the remote-image proxy
-	 * cache sweep and the due-mail backstop (snoozes, reminders and scheduled
-	 * sends; see the `triggers` block in wrangler.jsonc). Every sweep logs its
-	 * own summary and tolerates a single failure; the extra catch only guards
-	 * its own listing. They run as separate waitUntils so a failure in one
-	 * never delays or cancels the others.
+	 * Cron entry point. The trigger that fired decides what runs (see the
+	 * `triggers` block in wrangler.jsonc): the morning-digest cron builds and
+	 * delivers every opted-in mailbox's digest, and every other trigger runs
+	 * the housekeeping sweeps — automatic Trash retention, the remote-image
+	 * proxy cache sweep and the due-mail backstop (snoozes, reminders and
+	 * scheduled sends). Every sweep logs its own summary and tolerates a
+	 * single failure; the extra catch only guards its own listing. They run
+	 * as separate waitUntils so a failure in one never delays or cancels the
+	 * others.
 	 */
 	scheduled(
-		_event: ScheduledController,
+		event: ScheduledController,
 		env: Env,
 		ctx: ExecutionContext,
 	) {
+		// The digest is its own daily trigger: it neither needs nor waits on
+		// the housekeeping sweeps below, so it returns here.
+		if (event.cron === DIGEST_CRON) {
+			ctx.waitUntil(
+				sweepDigests(env).catch((e) =>
+					console.error("Digest sweep failed:", (e as Error).message),
+				),
+			);
+			return;
+		}
+
 		ctx.waitUntil(
 			sweepTrash(env).catch((e) =>
 				console.error("Trash retention sweep failed:", (e as Error).message),
