@@ -182,7 +182,7 @@ describe("MailboxDO search", () => {
 		const measured = await runInDurableObject(stub, async (_instance, state) => {
 			const accepts = (pattern: string) => {
 				try {
-					[...state.storage.sql.exec("SELECT 1 WHERE 'abc' LIKE ?1", pattern)];
+					state.storage.sql.exec("SELECT 1 WHERE 'abc' LIKE ?1", pattern).toArray();
 					return true;
 				} catch {
 					return false;
