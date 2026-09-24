@@ -28,8 +28,9 @@ import {
 } from "~/lib/attachments";
 import { getNonInlineAttachments, splitEmailList, toEmailListValue } from "~/lib/utils";
 import { useSessionEmailViewMode, setSessionEmailViewMode } from "~/lib/email-view-mode";
+import { formatSnoozeTime, SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import api from "~/services/api";
-import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useRestoreEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
+import { useClearReminder, useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useRestoreEmail, useSendEmail, useSetReminder, useSnoozeEmail, useThreadReplies, useUnsnoozeEmail, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
@@ -66,6 +67,10 @@ export default function EmailPanel({
 	const deleteEmailMut = useDeleteEmail();
 	const restoreEmailMut = useRestoreEmail();
 	const moveEmailMut = useMoveEmail();
+	const snoozeEmailMut = useSnoozeEmail();
+	const unsnoozeEmailMut = useUnsnoozeEmail();
+	const setReminderMut = useSetReminder();
+	const clearReminderMut = useClearReminder();
 	const sendEmailMut = useSendEmail();
 	const replyMut = useReplyToEmail();
 	const { data: folders = [] } = useFolders(mailboxId) as { data?: Folder[] };
@@ -89,6 +94,10 @@ export default function EmailPanel({
 	// delete purges for good and Restore is offered instead.
 	const isTrash =
 		folder === Folders.TRASH || email?.folder_id === Folders.TRASH;
+	// Snoozed messages live in their own folder; the panel closes when the
+	// message moves out of the folder currently on screen.
+	const isSnoozedFolder =
+		folder === SNOOZE_FOLDER_ID || email?.folder_id === SNOOZE_FOLDER_ID;
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
@@ -126,7 +135,7 @@ export default function EmailPanel({
 		return nonDrafts.length > 0 ? nonDrafts[0] : email;
 	}, [allMessages, draftMessageIds, currentMailbox?.email, email]);
 
-	const moveToFolders = useMemo(() => { const cur = folder || email?.folder_id; return folders.filter((f) => f.id !== cur); }, [folders, folder, email?.folder_id]);
+	const moveToFolders = useMemo(() => { const cur = folder || email?.folder_id; return folders.filter((f) => f.id !== cur && f.id !== SNOOZE_FOLDER_ID); }, [folders, folder, email?.folder_id]);
 
 	const categoryNames = useMemo(
 		() =>
@@ -176,6 +185,89 @@ export default function EmailPanel({
 			},
 		);
 		closePanel();
+	};
+
+	const handleSnooze = (untilIso: string) => {
+		if (!mailboxId) return;
+		snoozeEmailMut.mutate(
+			{ mailboxId, id: email.id, until: untilIso },
+			{
+				onSuccess: () => {
+					toastManager.add({
+						title: `Snoozed until ${formatSnoozeTime(untilIso)}`,
+					});
+					// The message leaves the folder on screen unless that folder
+					// is the snoozed list itself.
+					if (!isSnoozedFolder) closePanel();
+				},
+				onError: (err) => {
+					toastManager.add({
+						title: err.message || "Could not snooze this message.",
+						variant: "error",
+					});
+				},
+			},
+		);
+	};
+
+	const handleUnsnooze = () => {
+		if (!mailboxId) return;
+		unsnoozeEmailMut.mutate(
+			{ mailboxId, id: email.id },
+			{
+				onSuccess: () => {
+					toastManager.add({ title: "Unsnoozed" });
+					// It wakes into its original folder, so leave the snoozed list.
+					if (isSnoozedFolder) closePanel();
+				},
+				onError: (err) => {
+					toastManager.add({
+						title: err.message || "Could not unsnooze this message.",
+						variant: "error",
+					});
+				},
+			},
+		);
+	};
+
+	const handleRemind = (atIso: string) => {
+		if (!mailboxId) return;
+		setReminderMut.mutate(
+			{ mailboxId, id: email.id, at: atIso },
+			{
+				onSuccess: () =>
+					toastManager.add({
+						title: `Reminder set for ${formatSnoozeTime(atIso)}`,
+					}),
+				onError: (err) => {
+					toastManager.add({
+						title: err.message || "Could not set the reminder.",
+						variant: "error",
+					});
+				},
+			},
+		);
+	};
+
+	/** Dismiss a fired nudge, or cancel a reminder that has not fired yet. */
+	const handleDismissReminder = () => {
+		if (!mailboxId) return;
+		const wasFired = Boolean(email.reminded_at);
+		clearReminderMut.mutate(
+			{ mailboxId, id: email.id },
+			{
+				onSuccess: () =>
+					toastManager.add({
+						title: wasFired ? "Reminder dismissed" : "Reminder cleared",
+					}),
+				onError: (err) => {
+					toastManager.add({
+						title: err.message || "Could not clear the reminder.",
+						variant: "error",
+					});
+				},
+			},
+		);
 	};
 
 	const handleEditDraft = (draftMsg?: Email) => {
@@ -282,6 +374,10 @@ export default function EmailPanel({
 				onViewSource={() => setSourceViewEmail(email)}
 				onDelete={handleDelete}
 				onRestore={handleRestore}
+				onSnooze={handleSnooze}
+				onUnsnooze={handleUnsnooze}
+				onRemind={handleRemind}
+				onDismissReminder={handleDismissReminder}
 			/>
 
 			<EmailPanelHeader
