@@ -450,8 +450,11 @@ export function hasOutboundActions(actions: RuleActions): boolean {
  * only ever shape mail, never send it.
  */
 export function stripOutboundActions(actions: RuleActions): RuleActions {
-	const { forward_to: _forwardTo, auto_reply_text: _autoReplyText, ...rest } =
-		actions;
+	// Copy first, then drop the outbound actions: a rest-destructure would
+	// leave the two names unused, and `delete` removes the keys outright.
+	const rest = { ...actions };
+	delete rest.forward_to;
+	delete rest.auto_reply_text;
 	return rest;
 }
 

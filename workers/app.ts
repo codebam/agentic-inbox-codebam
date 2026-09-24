@@ -94,7 +94,14 @@ function isMcpPath(pathname: string) {
 	return pathname === "/mcp" || pathname.startsWith("/mcp/");
 }
 
-function mcpAuthErrorResponse(c: Context, result: McpAuthFailure) {
+/**
+ * Context of the top-level auth middleware. It is only mounted on "*" and
+ * reads no route params, so the path type is pinned here rather than carrying
+ * the router's inferred `any` input type into the auth helper.
+ */
+type AuthContext = Context<{ Bindings: Env }, "*">;
+
+function mcpAuthErrorResponse(c: AuthContext, result: McpAuthFailure) {
 	c.header("WWW-Authenticate", `Bearer realm="agentic-inbox-codebam-mcp", error="${result.error}"`);
 	c.header("Access-Control-Allow-Origin", "*");
 	c.header("Access-Control-Expose-Headers", "WWW-Authenticate");
@@ -120,7 +127,7 @@ const app = new Hono<{ Bindings: Env }>();
 //   `Authorization: Bearer <wrangler auth token>`. Cloudflare Access JWTs are
 //   accepted as a fallback for clients already inside the Access boundary.
 // * All other routes keep the original Cloudflare Access gate.
-app.use("*", async (c, next) => {
+app.use("*", async (c: AuthContext, next) => {
 	// Skip validation in development. Local MCP and UI traffic is already
 	// loopback-only in `wrangler dev`.
 	if (import.meta.env.DEV) {
@@ -245,7 +252,7 @@ export default {
 	 * in wrangler.jsonc). The sweep logs its own summary and tolerates a single
 	 * failing mailbox; the extra catch only guards the mailbox listing.
 	 */
-	async scheduled(
+	scheduled(
 		_event: ScheduledController,
 		env: Env,
 		ctx: ExecutionContext,

@@ -27,7 +27,6 @@ import {
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
 } from "../lib/tools";
-import type { RuleDraft, RulePatch } from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -154,6 +153,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		},
 	);
 
+	// eslint-disable-next-line @typescript-eslint/require-await -- McpAgent declares init(): Promise<void>, and this body only registers tools.
 	async init() {
 		const env = this.env;
 
@@ -568,8 +568,8 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			async ({ mailboxId, ...draft }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolCreateRule(env, mailboxId, draft as RuleDraft);
-				return mcpResult(result as unknown as Record<string, unknown>);
+				const result = await toolCreateRule(env, mailboxId, draft);
+				return mcpResult(result);
 			},
 		);
 
@@ -594,9 +594,9 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					env,
 					mailboxId,
 					ruleId,
-					patch as RulePatch,
+					patch,
 				);
-				return mcpResult(result as unknown as Record<string, unknown>);
+				return mcpResult(result);
 			},
 		);
 	}

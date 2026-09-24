@@ -30,6 +30,25 @@ export interface SendEmailParams {
 }
 
 /**
+ * Map a stored attachment onto the binding's discriminated attachment type.
+ * An inline part is referenced by its Content-ID, so a stored inline part that
+ * carries none is sent as a regular attachment instead of an unreferenceable
+ * inline part.
+ */
+function toBindingAttachment(
+	att: NonNullable<SendEmailParams["attachments"]>[number],
+): EmailAttachment {
+	const base = {
+		content: att.content,
+		filename: att.filename,
+		type: att.type,
+	};
+	return att.disposition === "inline" && att.contentId
+		? { ...base, disposition: "inline", contentId: att.contentId }
+		: { ...base, disposition: "attachment" };
+}
+
+/**
  * Send an email using the Cloudflare Email Service binding.
  *
  * @param binding  - The `EMAIL` SendEmail binding from env
@@ -41,32 +60,26 @@ export async function sendEmail(
 	binding: SendEmail,
 	params: SendEmailParams,
 ): Promise<{ messageId: string }> {
-	const message: Record<string, unknown> = {
+	// Built as the binding's own message shape (EmailMessageBuilder) instead of
+	// a loose record: the send API validates every field, and the optional ones
+	// must be absent rather than present-and-undefined.
+	const message: EmailMessageBuilder = {
 		to: params.to,
 		from: params.from,
 		subject: params.subject,
+		...(params.html ? { html: params.html } : {}),
+		...(params.text ? { text: params.text } : {}),
+		...(params.cc ? { cc: params.cc } : {}),
+		...(params.bcc ? { bcc: params.bcc } : {}),
+		...(params.replyTo ? { replyTo: params.replyTo } : {}),
+		...(params.headers && Object.keys(params.headers).length > 0
+			? { headers: params.headers }
+			: {}),
+		...(params.attachments && params.attachments.length > 0
+			? { attachments: params.attachments.map(toBindingAttachment) }
+			: {}),
 	};
 
-	if (params.html) message["html"] = params.html;
-	if (params.text) message["text"] = params.text;
-	if (params.cc) message["cc"] = params.cc;
-	if (params.bcc) message["bcc"] = params.bcc;
-	if (params.replyTo) message["replyTo"] = params.replyTo;
-
-	if (params.headers && Object.keys(params.headers).length > 0) {
-		message["headers"] = params.headers;
-	}
-
-	if (params.attachments && params.attachments.length > 0) {
-		message["attachments"] = params.attachments.map((att) => ({
-			content: att.content,
-			filename: att.filename,
-			type: att.type,
-			disposition: att.disposition,
-			...(att.contentId ? { contentId: att.contentId } : {}),
-		}));
-	}
-
-	const result = await binding.send(message as any);
+	const result = await binding.send(message);
 	return { messageId: result.messageId };
 }

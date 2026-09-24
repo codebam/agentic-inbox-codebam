@@ -75,9 +75,7 @@ async function deleteEmailWithAttachments(
 	emailId: string,
 ): Promise<{ id: string; filename: string }[] | null> {
 	const stub = getMailboxStub(env, mailboxId);
-	const attachments = (await stub.deleteEmail(emailId)) as
-		| { id: string; filename: string }[]
-		| null;
+	const attachments = await stub.deleteEmail(emailId);
 	if (attachments === null) return null;
 	if (attachments.length > 0) {
 		await env.BUCKET.delete(
@@ -1019,7 +1017,7 @@ type MailboxRuleStub = {
 
 
 function mailboxRuleStub(env: Env, mailboxId: string): MailboxRuleStub {
-	return getMailboxStub(env, mailboxId) as unknown as MailboxRuleStub;
+	return getMailboxStub(env, mailboxId);
 }
 
 
