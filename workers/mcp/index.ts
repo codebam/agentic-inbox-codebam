@@ -322,15 +322,21 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── delete_email ───────────────────────────────────────────
 		this.server.tool(
 			"delete_email",
-			"Permanently delete an email by ID.",
+			"Delete an email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible.",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				emailId: z.string().describe("The email ID to delete"),
+				permanent: z
+					.boolean()
+					.optional()
+					.describe(
+						"true to permanently delete (irreversible); omit or false to move the email to Trash",
+					),
 			},
-			async ({ mailboxId, emailId }) => {
+			async ({ mailboxId, emailId, permanent }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolDeleteEmail(env, mailboxId, emailId);
+				const result = await toolDeleteEmail(env, mailboxId, emailId, permanent === true);
 				return mcpResult(result);
 			},
 		);

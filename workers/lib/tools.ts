@@ -52,7 +52,8 @@ type RateLimitStub = {
  *
  * Returns the deleted attachment rows, or null when the email did not exist.
  * The API route already cleans up R2; agent/MCP tool paths use this helper so
- * delete_email and discard_draft cannot orphan attachment objects.
+ * the permanent paths of delete_email and discard_draft cannot orphan
+ * attachment objects.
  */
 async function deleteEmailWithAttachments(
 	env: Env,
@@ -541,16 +542,31 @@ export async function toolDiscardDraft(
 
 // ── delete_email ───────────────────────────────────────────────────
 
+/**
+ * Delete an email.
+ *
+ * Without `permanent` the email is moved to the Trash folder and can still be
+ * restored; an email already in Trash is left there. With `permanent: true`
+ * the row and its R2 attachment blobs are removed irreversibly.
+ */
 export async function toolDeleteEmail(
 	env: Env,
 	mailboxId: string,
 	emailId: string,
+	permanent = false,
 ) {
+	const stub = getMailboxStub(env, mailboxId);
+	if (!permanent) {
+		const { trashed, alreadyInTrash } = await stub.trashEmails([emailId]);
+		if (trashed.length > 0) return { status: "trashed", emailId };
+		if (alreadyInTrash.length > 0) return { status: "already_in_trash", emailId };
+		return { error: "Email not found", emailId };
+	}
 	const result = await deleteEmailWithAttachments(env, mailboxId, emailId);
 	if (result === null) {
 		return { error: "Email not found", emailId };
 	}
-	return { status: "deleted", emailId };
+	return { status: "deleted_permanently", emailId };
 }
 
 // ── delete_spam_emails ─────────────────────────────────────────────

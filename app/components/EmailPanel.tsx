@@ -23,7 +23,7 @@ import {
 } from "~/lib/attachments";
 import { getNonInlineAttachments, splitEmailList, toEmailListValue } from "~/lib/utils";
 import api from "~/services/api";
-import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
+import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useRestoreEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
@@ -57,6 +57,7 @@ export default function EmailPanel({
 	};
 	const updateEmail = useUpdateEmail();
 	const deleteEmailMut = useDeleteEmail();
+	const restoreEmailMut = useRestoreEmail();
 	const moveEmailMut = useMoveEmail();
 	const sendEmailMut = useSendEmail();
 	const replyMut = useReplyToEmail();
@@ -75,6 +76,10 @@ export default function EmailPanel({
 	// the selected email's own folder when deciding draft behaviour.
 	const isDraftFolder =
 		folder === Folders.DRAFT || email?.folder_id === Folders.DRAFT;
+	// Same fallback for Trash: the panel is showing a trashed message, so
+	// delete purges for good and Restore is offered instead.
+	const isTrash =
+		folder === Folders.TRASH || email?.folder_id === Folders.TRASH;
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
@@ -126,7 +131,33 @@ export default function EmailPanel({
 
 	const toggleStar = () => { if (mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { starred: !email.starred } }); };
 	const handleMove = (folderId: string) => { if (mailboxId) { moveEmailMut.mutate({ mailboxId, id: email.id, folderId }); closePanel(); } };
-	const handleDelete = () => { if (mailboxId) { if (!window.confirm("Are you sure you want to delete this email?")) return; deleteEmailMut.mutate({ mailboxId, id: email.id }); closePanel(); } };
+	const handleDelete = () => {
+		if (!mailboxId) return;
+		const confirmed = isTrash
+			? window.confirm("Delete this email forever? This cannot be undone.")
+			: window.confirm("Move this email to Trash?");
+		if (!confirmed) return;
+		deleteEmailMut.mutate(
+			{ mailboxId, id: email.id, permanent: isTrash },
+			{
+				onSuccess: () =>
+					toastManager.add({
+						title: isTrash ? "Deleted forever" : "Moved to Trash",
+					}),
+			},
+		);
+		closePanel();
+	};
+	const handleRestore = () => {
+		if (!mailboxId) return;
+		restoreEmailMut.mutate(
+			{ mailboxId, id: email.id },
+			{
+				onSuccess: () => toastManager.add({ title: "Restored to inbox" }),
+			},
+		);
+		closePanel();
+	};
 
 	const handleEditDraft = (draftMsg?: Email) => {
 		const target = draftMsg || email;
@@ -138,7 +169,8 @@ export default function EmailPanel({
 		const target = draftMsg || email;
 		if (!mailboxId) return;
 		if (!window.confirm("Discard this draft?")) return;
-		deleteEmailMut.mutate({ mailboxId, id: target.id });
+		// Discarding a draft is permanent — drafts are not moved to Trash.
+		deleteEmailMut.mutate({ mailboxId, id: target.id, permanent: true });
 		toastManager.add({ title: "Draft discarded" });
 		if (target.id === emailId) closePanel();
 	};
@@ -176,7 +208,8 @@ export default function EmailPanel({
 				attachments: attachments.length > 0 ? attachments : undefined,
 			};
 			if (originalEmail) await replyMut.mutateAsync({ mailboxId, emailId: originalEmail.id, email: emailData }); else await sendEmailMut.mutateAsync({ mailboxId, email: emailData });
-			await deleteEmailMut.mutateAsync({ mailboxId, id: target.id });
+			// The sent draft is removed for good, not parked in Trash.
+			await deleteEmailMut.mutateAsync({ mailboxId, id: target.id, permanent: true });
 			toastManager.add({ title: "Email sent!" });
 			if (isDraftFolder) closePanel();
 		} catch (err) {
@@ -193,6 +226,7 @@ export default function EmailPanel({
 				email={email}
 				mailboxId={mailboxId}
 				isDraftFolder={isDraftFolder}
+				isTrash={isTrash}
 				isSending={isSending}
 				moveToFolders={moveToFolders}
 				onBack={closePanel}
@@ -221,6 +255,7 @@ export default function EmailPanel({
 				onMove={handleMove}
 				onViewSource={() => setSourceViewEmail(email)}
 				onDelete={handleDelete}
+				onRestore={handleRestore}
 			/>
 
 			<EmailPanelHeader

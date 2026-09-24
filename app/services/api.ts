@@ -134,8 +134,16 @@ const api = {
 		get<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`, { signal: opts?.signal }),
 	updateEmail: (mailboxId: string, id: string, data: unknown) =>
 		put<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`, data),
-	deleteEmail: (mailboxId: string, id: string) =>
-		del<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`),
+	/**
+	 * Delete an email. A plain delete moves the message to Trash; an email
+	 * already in Trash — or `permanent: true` — is deleted for good.
+	 */
+	deleteEmail: (mailboxId: string, id: string, opts?: { permanent?: boolean }) =>
+		del<{ status: string; trashed: number; purged: number }>(
+			`/api/v1/mailboxes/${mailboxId}/emails/${id}${opts?.permanent ? "?permanent=true" : ""}`,
+		),
+	restoreEmail: (mailboxId: string, id: string) =>
+		post<{ restored: number }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/restore`),
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
 	bulkEmailAction: (
@@ -147,10 +155,13 @@ const api = {
 			folderId?: string;
 		},
 	) =>
-		post<{ updated?: number; deleted?: number }>(
+		post<{ updated?: number; trashed?: number; purged?: number; restored?: number }>(
 			`/api/v1/mailboxes/${mailboxId}/emails/bulk`,
 			body,
 		),
+	/** Permanently delete every message in the Trash folder. */
+	emptyTrash: (mailboxId: string) =>
+		post<{ purged: number }>(`/api/v1/mailboxes/${mailboxId}/trash/empty`),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>

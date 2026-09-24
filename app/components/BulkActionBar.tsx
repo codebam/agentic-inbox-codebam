@@ -5,6 +5,7 @@
 import { Button, DropdownMenu, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
+	ArrowUUpLeftIcon,
 	CaretDownIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
@@ -22,6 +23,11 @@ interface BulkActionBarProps {
 	isPending?: boolean;
 	/** Folders offered by the "Move to folder" menu. */
 	folders: Array<{ id: string; name: string }>;
+	/**
+	 * Selected rows live in the Trash folder: the destructive action purges
+	 * them for good and Restore is offered.
+	 */
+	inTrash?: boolean;
 	onMarkRead: () => void;
 	onMarkUnread: () => void;
 	onStar: () => void;
@@ -29,6 +35,10 @@ interface BulkActionBarProps {
 	onArchive: () => void;
 	onSpam: () => void;
 	onMove: (folderId: string) => void;
+	/** Move the selection to Trash. Without it the destructive button keeps the legacy delete action. */
+	onTrash?: () => void;
+	/** Move the selection from Trash back to the inbox. */
+	onRestore?: () => void;
 	onDelete: () => void;
 	onClear: () => void;
 }
@@ -36,11 +46,17 @@ interface BulkActionBarProps {
 /**
  * Toolbar shown in place of a list header while rows are selected. Actions
  * are icon buttons with tooltips so the bar fits the narrow list column.
+ *
+ * The destructive slot is trash-aware: outside Trash it moves the selection
+ * to Trash (bulk action "trash"), inside Trash it deletes for good (bulk
+ * action "delete", which purges messages that are already in Trash). Restore
+ * is only offered while viewing Trash.
  */
 export default function BulkActionBar({
 	count,
 	isPending = false,
 	folders,
+	inTrash = false,
 	onMarkRead,
 	onMarkUnread,
 	onStar,
@@ -48,9 +64,17 @@ export default function BulkActionBar({
 	onArchive,
 	onSpam,
 	onMove,
+	onTrash,
+	onRestore,
 	onDelete,
 	onClear,
 }: BulkActionBarProps) {
+	const destructiveLabel = inTrash
+		? "Delete forever"
+		: onTrash
+			? "Move to Trash"
+			: "Delete";
+	const onDestructive = inTrash ? onDelete : (onTrash ?? onDelete);
 	return (
 		<div
 			role="toolbar"
@@ -173,15 +197,28 @@ export default function BulkActionBar({
 
 				<span className="mx-1 h-4 w-px shrink-0 bg-kumo-line" aria-hidden="true" />
 
-				<Tooltip side="bottom" content="Delete" asChild>
+				{inTrash && onRestore && (
+					<Tooltip side="bottom" content="Restore to Inbox" asChild>
+						<Button
+							variant="ghost"
+							shape="square"
+							size="sm"
+							icon={<ArrowUUpLeftIcon size={16} />}
+							onClick={onRestore}
+							disabled={isPending}
+							aria-label="Restore to Inbox"
+						/>
+					</Tooltip>
+				)}
+				<Tooltip side="bottom" content={destructiveLabel} asChild>
 					<Button
 						variant="ghost"
 						shape="square"
 						size="sm"
 						icon={<TrashIcon size={16} />}
-						onClick={onDelete}
+						onClick={onDestructive}
 						disabled={isPending}
-						aria-label="Delete"
+						aria-label={destructiveLabel}
 					/>
 				</Tooltip>
 			</div>

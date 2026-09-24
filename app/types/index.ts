@@ -82,6 +82,8 @@ export type BulkEmailAction =
 	| "star"
 	| "unstar"
 	| "move"
+	| "trash"
+	| "restore"
 	| "delete";
 
 /**

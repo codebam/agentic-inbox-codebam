@@ -219,11 +219,35 @@ export function useDeleteEmail() {
 		mutationFn: ({
 			mailboxId,
 			id,
-		}: { mailboxId: string; id: string }) =>
-			api.deleteEmail(mailboxId, id),
+			permanent,
+		}: { mailboxId: string; id: string; permanent?: boolean }) =>
+			api.deleteEmail(mailboxId, id, { permanent }),
 		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
 	});
 }
+
+
+/** Move a trashed email back to the inbox. */
+export function useRestoreEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.restoreEmail(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+
+/** Permanently delete every message in the Trash folder. */
+export function useEmptyTrash() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId }: { mailboxId: string }) =>
+			api.emptyTrash(mailboxId),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
 
 export function useMoveEmail() {
 	const invalidate = useInvalidateEmailData();
@@ -256,13 +280,14 @@ function groupTargetsByMailbox(targets: BulkEmailTarget[]) {
 }
 
 /**
- * Apply one batch action — mark read/unread, star/unstar, move, or delete —
- * to every selected row. The All Accounts view selects rows from several
- * mailboxes, so the batch is split into one request per mailbox.
+ * Apply one batch action — mark read/unread, star/unstar, move, trash,
+ * restore, or delete — to every selected row. The All Accounts view selects
+ * rows from several mailboxes, so the batch is split into one request per
+ * mailbox.
  *
  * Read/starred changes are patched optimistically into the list caches;
- * move/delete wait for the server and then invalidate, since rows leave the
- * current folder.
+ * move/trash/restore/delete wait for the server and then invalidate, since
+ * rows leave the current folder.
  */
 export function useBulkEmailAction() {
 	const qc = useQueryClient();
@@ -271,7 +296,9 @@ export function useBulkEmailAction() {
 		mutationFn: async ({ action, targets, folderId }: BulkEmailActionVars) => {
 			const byMailbox = groupTargetsByMailbox(targets);
 
-			await Promise.all(
+			// Return the per-mailbox responses so callers can report what the
+			// server actually did (trashed / purged / restored counts).
+			return Promise.all(
 				[...byMailbox].map(([mailboxId, mailboxTargets]) => {
 					// Expand read/unread to whole conversations so threaded rows
 					// don't keep showing an unread badge.
@@ -301,7 +328,12 @@ export function useBulkEmailAction() {
 		onMutate: async ({ action, targets }) => {
 			const snapshots: Array<[readonly unknown[], { emails: Email[]; totalCount: number }]> = [];
 
-			if (action === "move" || action === "delete") {
+			if (
+				action === "move" ||
+				action === "trash" ||
+				action === "restore" ||
+				action === "delete"
+			) {
 				return { snapshots };
 			}
 

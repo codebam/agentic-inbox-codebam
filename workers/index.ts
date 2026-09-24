@@ -476,18 +476,45 @@ app.put("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 	return email ? c.json(email) : c.json({ error: "Email not found" }, 404);
 });
 
+/**
+ * Delete an email.
+ *
+ * Trash semantics: a plain DELETE moves the message to the Trash folder;
+ * deleting a message that already sits in Trash removes it permanently
+ * (row + R2 blobs). `?permanent=true` forces permanent deletion from any
+ * folder.
+ */
 app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 	const id = c.req.param("id")!;
-	const attachments = await c.var.mailboxStub.deleteEmail(id);
+	const stub = c.var.mailboxStub;
+
+	if (!boolQuery(c, "permanent")) {
+		const { trashed } = (await stub.trashEmails([id])) as {
+			trashed: string[];
+			alreadyInTrash: string[];
+		};
+		if (trashed.length > 0) return c.json({ status: "trashed", trashed: 1, purged: 0 });
+	}
+
+	const attachments = await stub.deleteEmail(id);
 	if (attachments === null) return c.json({ error: "Not found" }, 404);
 	if (attachments.length > 0) await c.env.BUCKET.delete(attachments.map((att: any) => `attachments/${id}/${att.id}/${att.filename}`));
-	return c.body(null, 204);
+	return c.json({ status: "deleted", trashed: 0, purged: 1 });
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) => {
 	const { folderId } = (await c.req.json()) as { folderId: string };
 	const success = await c.var.mailboxStub.moveEmail(c.req.param("id")!, folderId);
 	return success ? c.json({ status: "moved" }) : c.json({ error: "Folder not found" }, 400);
+});
+
+
+/** Move a trashed email back to the inbox. */
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/restore", async (c: AppContext) => {
+	const restored = (await c.var.mailboxStub.restoreEmails([
+		c.req.param("id")!,
+	])) as string[];
+	return c.json({ restored: restored.length });
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------
@@ -517,23 +544,70 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 				? c.json({ updated: ids.length })
 				: c.json({ error: "Folder not found" }, 400);
 		}
+		// Trash semantics, per action:
+		//   trash   — always move to the Trash folder
+		//   restore — move Trash messages back to the inbox
+		//   delete  — trash-aware: messages already in Trash are purged for
+		//             good, everything else moves to Trash. Only the purge
+		//             path touches R2.
+		case "trash": {
+			const { trashed } = (await stub.trashEmails(ids)) as {
+				trashed: string[];
+				alreadyInTrash: string[];
+			};
+			return c.json({ trashed: trashed.length, purged: 0, restored: 0 });
+		}
+		case "restore": {
+			const restored = (await stub.restoreEmails(ids)) as string[];
+			return c.json({ trashed: 0, purged: 0, restored: restored.length });
+		}
 		case "delete": {
-			const attachments = (await stub.bulkDeleteEmails(ids)) as Array<{
-				id: string;
-				email_id: string;
-				filename: string;
-			}>;
-			if (attachments.length > 0) {
-				await c.env.BUCKET.delete(
-					attachments.map(
-						(att) => `attachments/${att.email_id}/${att.id}/${att.filename}`,
-					),
-				);
+			const { trashed, alreadyInTrash } = (await stub.trashEmails(ids)) as {
+				trashed: string[];
+				alreadyInTrash: string[];
+			};
+			if (alreadyInTrash.length > 0) {
+				const attachments = (await stub.bulkDeleteEmails(alreadyInTrash)) as Array<{
+					id: string;
+					email_id: string;
+					filename: string;
+				}>;
+				if (attachments.length > 0) {
+					await c.env.BUCKET.delete(
+						attachments.map(
+							(att) => `attachments/${att.email_id}/${att.id}/${att.filename}`,
+						),
+					);
+				}
 			}
-			return c.json({ deleted: ids.length });
+			return c.json({ trashed: trashed.length, purged: alreadyInTrash.length, restored: 0 });
 		}
 	}
 });
+
+
+// -- Trash ----------------------------------------------------------
+
+/**
+ * Permanently delete every message in the Trash folder, including its R2
+ * attachment blobs. Exposed as an explicit endpoint so emptying Trash is
+ * always a deliberate action, never a side effect of a plain delete.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/trash/empty", async (c: AppContext) => {
+	const { purged, attachments } = (await c.var.mailboxStub.emptyTrash()) as {
+		purged: number;
+		attachments: { id: string; email_id: string; filename: string }[];
+	};
+	if (attachments.length > 0) {
+		await c.env.BUCKET.delete(
+			attachments.map(
+				(att) => `attachments/${att.email_id}/${att.id}/${att.filename}`,
+			),
+		);
+	}
+	return c.json({ purged });
+});
+
 
 // -- Threads --------------------------------------------------------
 

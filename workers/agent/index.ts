@@ -385,21 +385,27 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		delete_email: defineTool({
 			description:
-				"Permanently delete one email by ID. Only call this when the operator explicitly asks to delete that email.",
+				"Delete one email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible — only use it when the operator explicitly asks to delete the email forever.",
 			parameters: z.object({
 				...mailboxIdField,
 				emailId: z.string().describe("The email ID to delete"),
+				permanent: z
+					.boolean()
+					.optional()
+					.describe(
+						"true to permanently delete (irreversible); omit or false to move the email to Trash",
+					),
 			}),
 			execute: async (args: any): Promise<unknown> => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
-				return toolDeleteEmail(env, mailboxId, args.emailId);
+				return toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true);
 			},
 		}),
 
 		delete_spam_emails: defineTool({
 			description:
-				"Permanently delete every email marked as spam (Spam folder, category 'spam', or classifier audit is_spam: true). In all-mailbox mode, omit mailboxId to clear spam from every mailbox. Only call this when the operator explicitly asks to delete spam; never delete non-spam mail with it.",
+				"Permanently delete every email marked as spam (Spam folder, category 'spam', or classifier audit is_spam: true). Permanent deletion is irreversible — spam mail is not moved to Trash. In all-mailbox mode, omit mailboxId to clear spam from every mailbox. Only call this when the operator explicitly asks to delete spam; never delete non-spam mail with it.",
 			parameters: z.object({
 				...optionalMailboxIdField,
 			}).strict(),
@@ -420,7 +426,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		discard_draft: defineTool({
 			description:
-				"Delete a draft email. Use this to discard drafts that are no longer needed or were rejected by the operator.",
+				"Permanently delete a draft email — drafts are not moved to Trash and cannot be restored. Use this to discard drafts that are no longer needed or were rejected by the operator.",
 			parameters: z.object({
 				...mailboxIdField,
 				draftId: z.string().describe("The ID of the draft to delete"),

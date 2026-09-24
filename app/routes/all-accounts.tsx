@@ -320,7 +320,7 @@ export default function AllAccountsRoute() {
 							onMove={(folderId) => runBulkAction("move", { folderId })}
 							onDelete={() =>
 								runBulkAction("delete", {
-									confirm: `Delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? This cannot be undone.`,
+									confirm: `Delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? Messages already in Trash are deleted forever; everything else moves to Trash.`,
 								})
 							}
 							onClear={clear}
