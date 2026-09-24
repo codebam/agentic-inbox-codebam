@@ -197,3 +197,22 @@ export const templates = sqliteTable("templates", {
 	created_at: text("created_at").notNull(),
 	updated_at: text("updated_at").notNull(),
 });
+
+
+/**
+ * Daily morning-digest deliveries (migration 25_add_digest_deliveries): one
+ * row per UTC day a mailbox's digest was claimed, keyed by `day`
+ * (YYYY-MM-DD), so a retried or duplicated cron run can never POST the same
+ * day's digest twice. `ok` stays 0 while the delivery is pending; the
+ * outcome lands with `status` (upstream HTTP status, null when the request
+ * never got a response) and `error`. Bookkeeping only — never message
+ * content. MailboxDO.claimDigestDay prunes each mailbox back to its newest
+ * MAX_DIGEST_DELIVERIES days on every claim (workers/lib/digest.ts).
+ */
+export const digestDeliveries = sqliteTable("digest_deliveries", {
+	day: text("day").primaryKey(),
+	delivered_at: text("delivered_at").notNull(),
+	ok: integer("ok").notNull(),
+	status: integer("status"),
+	error: text("error"),
+});

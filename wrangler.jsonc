@@ -9,8 +9,10 @@
 	},
 	// Daily Trash retention sweep at 03:00 UTC; the handler lives in
 	// workers/app.ts and the sweep in workers/lib/trash-retention.ts.
+	// The second trigger is the morning digest at 11:00 UTC
+	// (workers/lib/digest-sweep.ts): each trigger runs only its own sweep.
 	"triggers": {
-		"crons": ["0 3 * * *"]
+		"crons": ["0 3 * * *", "0 11 * * *"]
 	},
 	"compatibility_flags": [
 		"nodejs_compat"

@@ -20,6 +20,8 @@ export interface MailboxSettings {
 	agentSystemPrompt?: string;
 	/** Whether new mail triggers an automatic draft reply. Defaults to on. */
 	autoDraft?: boolean;
+	/** Whether the daily morning digest is POSTed to the notification webhook. */
+	digestEnabled?: boolean;
 	categorization?: CategorizationSettings;
 	/** Mailbox-level AI model overrides; blank fields inherit. */
 	models?: ModelConfig;
@@ -204,4 +206,69 @@ export interface ScheduledSend {
 	created_at: string;
 	/** ISO 8601 time the queue actually sent the message; null until it has. */
 	sent_at: string | null;
+}
+
+
+/** One message referenced by a morning digest. */
+export interface DigestEmailRef {
+	id: string;
+	subject: string;
+	sender: string;
+	/** ISO 8601 receive time. */
+	date: string;
+	/** Folder display name. */
+	folder: string;
+	category: string | null;
+}
+
+
+/** One follow-up reminder that already fired, as the digest lists it. */
+export interface DigestReminderRef {
+	id: string;
+	subject: string;
+	sender: string;
+	/** ISO 8601 instant the reminder fired. */
+	fired_at: string;
+}
+
+
+/** Arrival counts over the digest window. */
+export interface DigestCounts {
+	received: number;
+	unread: number;
+	starred: number;
+	spam: number;
+	needs_reply: number;
+}
+
+
+/** One `by_category` row: a category id and how many arrivals carry it. */
+export interface DigestCategoryCount {
+	category: string;
+	count: number;
+}
+
+
+/**
+ * One mailbox's morning brief, as returned by
+ * `GET /api/v1/mailboxes/:mailboxId/digest`. Mirrors the frozen wire shape in
+ * workers/lib/digest.ts field for field — the same shape (plus a
+ * `type: "digest"` discriminator) is what the daily cron POSTs to the
+ * mailbox's notification webhook.
+ */
+export interface Digest {
+	mailbox: string;
+	/** ISO 8601 instant the digest was built. */
+	generated_at: string;
+	/** Trailing 24 hours, ISO 8601. */
+	window: { from: string; to: string };
+	counts: DigestCounts;
+	/** At most 20 rows, largest count first. */
+	by_category: DigestCategoryCount[];
+	/** At most 10 conversations, newest first. */
+	needs_reply: DigestEmailRef[];
+	/** At most 10 newest non-spam arrivals. */
+	recent: DigestEmailRef[];
+	/** At most 10 most recently fired follow-ups. */
+	reminders: DigestReminderRef[];
 }

@@ -39,6 +39,7 @@ import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { normalizeImageAllowlist } from "../shared/remote-images";
 import { normalizeAutoDraft } from "../shared/auto-draft";
 import { normalizeDigestEnabled } from "../shared/digest";
+import { digestWindow } from "./lib/digest";
 import { normalizeItemsSettings } from "../shared/items";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
@@ -1581,6 +1582,19 @@ app.post("/api/v1/mailboxes/:mailboxId/sender-policy/feedback", async (c: AppCon
 		throw e;
 	}
 });
+// -- Morning digest -------------------------------------------------
+
+/**
+ * The mailbox's morning brief for the trailing 24 hours: arrivals, what
+ * still needs a reply, the category breakdown and fired reminders. Read-only
+ * and built on demand by the Durable Object; the same digest (with a
+ * `type: "digest"` discriminator) is what the daily cron POSTs to the
+ * mailbox's notification webhook (workers/lib/digest-sweep.ts).
+ */
+app.get("/api/v1/mailboxes/:mailboxId/digest", async (c: AppContext) => {
+	return c.json({ digest: await c.var.mailboxStub.buildDigest(digestWindow(new Date())) });
+});
+
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {

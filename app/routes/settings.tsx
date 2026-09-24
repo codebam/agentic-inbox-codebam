@@ -16,6 +16,7 @@ import AiModelsCard from "~/components/AiModelsCard";
 import EmailViewCard from "~/components/EmailViewCard";
 import WebhookCard from "~/components/WebhookCard";
 import SenderPolicyCard from "~/components/SenderPolicyCard";
+import DigestCard from "~/components/DigestCard";
 import { normalizeAutoDraft } from "shared/auto-draft";
 import {
 	defaultCategorizationSettings,
@@ -367,6 +368,7 @@ export default function SettingsRoute() {
 					secret={webhook.secret}
 					onChange={setWebhook}
 				/>
+				<DigestCard mailboxId={mailboxId} />
 
 
 				{/* Save */}

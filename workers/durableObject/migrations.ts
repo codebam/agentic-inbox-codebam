@@ -469,4 +469,27 @@ export const mailboxMigrations: Migration[] = [
             );
         `),
 	},
+	{
+		// Daily morning-digest deliveries (workers/lib/digest.ts and
+		// workers/lib/digest-sweep.ts): one row per UTC day the mailbox's
+		// digest was claimed, so a retried or duplicated cron run can never
+		// POST the same day's digest twice. `day` is the UTC date
+		// (YYYY-MM-DD) and the primary key; `delivered_at` is stamped when
+		// the row is claimed and re-stamped when the outcome is recorded;
+		// `ok` stays 0 while the delivery is pending and becomes 1 or 0
+		// once `recordDigestDelivery` settles it, with the upstream status
+		// and error alongside. Bookkeeping only — never message content.
+		// MailboxDO.claimDigestDay prunes each mailbox back to its newest
+		// MAX_DIGEST_DELIVERIES days on every claim.
+		name: "25_add_digest_deliveries",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS digest_deliveries (
+                day TEXT PRIMARY KEY,
+                delivered_at TEXT NOT NULL,
+                ok INTEGER NOT NULL,
+                status INTEGER,
+                error TEXT
+            );
+        `),
+	},
 ];

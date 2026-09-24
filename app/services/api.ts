@@ -17,7 +17,7 @@ import type {
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
 import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
-import type { AgentAction, BulkEmailAction, Contact, Email, Folder, Mailbox, ScheduledSend } from "~/types";
+import type { AgentAction, BulkEmailAction, Contact, Digest, Email, Folder, Mailbox, ScheduledSend } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -163,6 +163,12 @@ const api = {
 		put<Mailbox>(`/api/v1/mailboxes/${mailboxId}`, { settings }),
 	deleteMailbox: (mailboxId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
+
+	// Morning digest — the trailing-24-hour brief. Read-only: delivery goes
+	// through the mailbox webhook and the daily cron, never this route.
+	/** The mailbox's morning brief for the trailing 24 hours. */
+	getDigest: (mailboxId: string) =>
+		get<{ digest: Digest }>(`/api/v1/mailboxes/${mailboxId}/digest`),
 
 	// Outbound webhook notifications (notification only — never sends mail)
 	/** Send a sample payload to the mailbox webhook and report the upstream result. */
