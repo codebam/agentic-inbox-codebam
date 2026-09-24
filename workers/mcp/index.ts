@@ -29,13 +29,16 @@ import {
 	toolSetReminder,
 	toolClearReminder,
 	toolListSnoozed,
+	toolListAgentActions,
 	toolListRules,
 	toolCreateRule,
 	toolUpdateRule,
+	toolUndoAgentAction,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
 } from "../lib/tools";
+import { runAudited } from "../lib/agent-actions";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -431,7 +434,17 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			async ({ mailboxId, emailId, permanent }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolDeleteEmail(env, mailboxId, emailId, permanent === true);
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "delete_email",
+						mailboxId,
+						emailId,
+						args: { emailId, permanent: permanent === true },
+					},
+					() => toolDeleteEmail(env, mailboxId, emailId, permanent === true),
+				);
 				return mcpResult(result);
 			},
 		);
@@ -557,7 +570,17 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			async ({ mailboxId, emailId, read }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolMarkEmailRead(env, mailboxId, emailId, read);
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "mark_email_read",
+						mailboxId,
+						emailId,
+						args: { emailId, read },
+					},
+					() => toolMarkEmailRead(env, mailboxId, emailId, read),
+				);
 				return mcpText(result);
 			},
 		);
@@ -574,7 +597,17 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			async ({ mailboxId, emailId, starred }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolStarEmail(env, mailboxId, emailId, starred);
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "star_email",
+						mailboxId,
+						emailId,
+						args: { emailId, starred },
+					},
+					() => toolStarEmail(env, mailboxId, emailId, starred),
+				);
 				return mcpResult(result);
 			},
 		);
@@ -593,7 +626,17 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			async ({ mailboxId, emailId, folderId }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolMoveEmail(env, mailboxId, emailId, folderId);
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "move_email",
+						mailboxId,
+						emailId,
+						args: { emailId, folderId },
+					},
+					() => toolMoveEmail(env, mailboxId, emailId, folderId),
+				);
 				if ("error" in result) {
 					return {
 						content: [
@@ -770,6 +813,46 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					patch,
 				);
 				return mcpResult(result);
+			},
+		);
+
+
+		// ── list_agent_actions ─────────────────────────────────────
+		this.server.tool(
+			"list_agent_actions",
+			"List the most recent mutating tool calls made through the agent or the MCP server for this mailbox, newest first, with the total number recorded. Read-only: it changes nothing. The log holds metadata only (tool, message id, subject, thread id, folder/read/star state) — never message bodies.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(200)
+					.optional()
+					.describe("How many recent actions to return (default 50, max 200)"),
+			},
+			async ({ mailboxId, limit }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListAgentActions(env, mailboxId, limit ?? 50));
+			},
+		);
+
+
+		// ── undo_action ────────────────────────────────────────────
+		this.server.tool(
+			"undo_action",
+			"Undo one recorded mutating tool call by its action id: restores the message's read state, star state and folder from the state recorded before the call. It never sends and never deletes mail; only actions flagged undoable (move, star, mark read) can be undone, and each action can be undone once. Get the action id from list_agent_actions.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				actionId: z
+					.string()
+					.describe("The action id from list_agent_actions"),
+			},
+			async ({ mailboxId, actionId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolUndoAgentAction(env, mailboxId, actionId));
 			},
 		);
 	}

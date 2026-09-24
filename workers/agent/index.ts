@@ -45,13 +45,16 @@ import {
 	toolSetReminder,
 	toolClearReminder,
 	toolListSnoozed,
+	toolListAgentActions,
 	toolListRules,
 	toolCreateRule,
 	toolUpdateRule,
+	toolUndoAgentAction,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
 } from "../lib/tools";
+import { runAudited } from "../lib/agent-actions";
 import type { RulePatch } from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { isAllMailboxesAgentId } from "../../shared/mailboxes";
@@ -593,7 +596,17 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
-				return toolMarkEmailRead(env, mailboxId, args.emailId, args.read);
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "mark_email_read",
+						mailboxId,
+						emailId: args.emailId,
+						args: { emailId: args.emailId, read: args.read },
+					},
+					() => toolMarkEmailRead(env, mailboxId, args.emailId, args.read),
+				);
 			},
 		}),
 
@@ -607,7 +620,17 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
-				return toolStarEmail(env, mailboxId, args.emailId, args.starred);
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "star_email",
+						mailboxId,
+						emailId: args.emailId,
+						args: { emailId: args.emailId, starred: args.starred },
+					},
+					() => toolStarEmail(env, mailboxId, args.emailId, args.starred),
+				);
 			},
 		}),
 
@@ -669,7 +692,17 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
-				return toolMoveEmail(env, mailboxId, args.emailId, args.folderId);
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "move_email",
+						mailboxId,
+						emailId: args.emailId,
+						args: { emailId: args.emailId, folderId: args.folderId },
+					},
+					() => toolMoveEmail(env, mailboxId, args.emailId, args.folderId),
+				);
 			},
 		}),
 
@@ -692,7 +725,20 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
-				return toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true);
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "delete_email",
+						mailboxId,
+						emailId: args.emailId,
+						args: {
+							emailId: args.emailId,
+							permanent: args.permanent === true,
+						},
+					},
+					() => toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true),
+				);
 			},
 		}),
 
@@ -893,6 +939,44 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					}).filter(([, value]) => value !== undefined),
 				) as RulePatch;
 				return toolUpdateRule(env, mailboxId, args.ruleId, patch);
+			},
+		}),
+
+
+		list_agent_actions: defineTool({
+			description:
+				"List the most recent mutating tool calls made through the agent or the MCP server for this mailbox, newest first, with the total number recorded. Read-only: it changes nothing. The log holds metadata only (tool, message id, subject, thread id, folder/read/star state) — never message bodies.",
+			parameters: z.object({
+				...mailboxIdField,
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(200)
+					.optional()
+					.describe("How many recent actions to return (default 50, max 200)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListAgentActions(env, mailboxId, args.limit ?? 50);
+			},
+		}),
+
+
+		undo_action: defineTool({
+			description:
+				"Undo one recorded mutating tool call by its action id: restores the message's read state, star state and folder from the state recorded before the call. It never sends and never deletes mail; only actions flagged undoable (move, star, mark read) can be undone, and each action can be undone once. Get the action id from list_agent_actions.",
+			parameters: z.object({
+				...mailboxIdField,
+				actionId: z
+					.string()
+					.describe("The action id from list_agent_actions"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUndoAgentAction(env, mailboxId, args.actionId);
 			},
 		}),
 	};
