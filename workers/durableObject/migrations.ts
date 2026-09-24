@@ -375,4 +375,30 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_contacts_last_seen_at ON contacts(last_seen_at);
         `),
 	},
+	{
+		// Outbound mail queued for later (workers/lib/scheduled-sends.ts).
+		// `payload` is bounded JSON of the send parameters — the send route's
+		// body minus attachment bytes, which a queued send never stores — and
+		// `send_at` is the instant the send becomes due. `status` is one of
+		// pending | sent | failed | cancelled; a failed row keeps its payload
+		// and records why in `last_error`, and `attempts` counts the failed
+		// attempts. `sent_at` is stamped when the send actually went out. The
+		// index backs the alarm's due lookup and the terminal-row prune.
+		name: "22_add_scheduled_sends",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS scheduled_sends (
+                id TEXT PRIMARY KEY,
+                draft_id TEXT,
+                send_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                sent_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_scheduled_sends_send_at ON scheduled_sends(send_at);
+        `),
+	},
 ];

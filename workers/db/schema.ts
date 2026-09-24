@@ -155,3 +155,26 @@ export const contacts = sqliteTable("contacts", {
 	first_seen_at: text("first_seen_at").notNull(),
 	last_seen_at: text("last_seen_at").notNull(),
 });
+
+
+/**
+ * Outbound mail queued for later (migration 22_add_scheduled_sends).
+ * `payload` is bounded JSON of the send parameters — never attachment
+ * bytes — and `send_at` is the instant the send becomes due. `status` is
+ * one of pending | sent | failed | cancelled; a failed row keeps its
+ * payload and records the reason in `last_error`. MailboxDO prunes the
+ * terminal rows back to its newest 200 on every insert; pending rows are
+ * never pruned (workers/lib/scheduled-sends.ts).
+ */
+export const scheduledSends = sqliteTable("scheduled_sends", {
+	id: text("id").primaryKey(),
+	/** The draft this send was queued from, when the caller recorded one. */
+	draft_id: text("draft_id"),
+	send_at: text("send_at").notNull(),
+	status: text("status").notNull(),
+	payload: text("payload").notNull(),
+	attempts: integer("attempts").notNull().default(0),
+	last_error: text("last_error"),
+	created_at: text("created_at").notNull(),
+	sent_at: text("sent_at"),
+});

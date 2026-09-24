@@ -51,6 +51,26 @@ import {
 	MAX_CONTACT_SEARCH_LIMIT,
 	DEFAULT_CONTACT_SEARCH_LIMIT,
 } from "../lib/contacts";
+import {
+	generateMessageId,
+	validateSender,
+} from "../lib/email-helpers";
+import { verifyDraft } from "../lib/ai";
+import { isSpamMarkedEmail } from "../../shared/spam";
+import {
+	DEFAULT_SCHEDULED_SEND_LIMIT,
+	MAX_SCHEDULED_SENDS,
+	SCHEDULED_SEND_NOT_FOUND,
+	buildScheduledSendParams,
+	parseScheduledSendPayload,
+	resolveScheduledSendSender,
+	scheduledSendRow,
+	type ScheduledSendActionResult,
+	type ScheduledSendDbRow,
+	type ScheduledSendPayload,
+	type ScheduledSendRow,
+	type ScheduleSendInput,
+} from "../lib/scheduled-sends";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -1380,22 +1400,410 @@ export class MailboxDO extends DurableObject<Env> {
 		return fired;
 	}
 
+	// ── Scheduled sends (queue outbound mail for later) ────────────
+
+	/**
+	 * Queue one outbound message for a future instant: insert a pending row,
+	 * stamp `created_at` and arm the alarm for `send_at`. `payload` is the
+	 * bounded JSON of the send parameters (workers/lib/scheduled-sends.ts) —
+	 * never attachment bytes. Nothing is sent here: the alarm (or the cron
+	 * sweep) fires it when it comes due. Returns the stored row.
+	 */
+	async scheduleSend(input: ScheduleSendInput): Promise<ScheduledSendRow> {
+		const id = crypto.randomUUID();
+		this.db
+			.insert(schema.scheduledSends)
+			.values({
+				id,
+				draft_id: input.draft_id ?? null,
+				send_at: input.sendAt,
+				status: "pending",
+				payload: input.payload,
+				attempts: 0,
+				last_error: null,
+				created_at: new Date().toISOString(),
+				sent_at: null,
+			})
+			.run();
+
+		// Keep only the newest terminal rows; pending rows are never pruned
+		// (a queued send must survive any number of later ones). Ties on
+		// created_at fall back to rowid (insertion order) so the prune is
+		// deterministic.
+		this.ctx.storage.sql.exec(
+			`DELETE FROM scheduled_sends
+			 WHERE status != 'pending'
+			   AND id NOT IN (
+				SELECT id FROM scheduled_sends
+				WHERE status != 'pending'
+				ORDER BY created_at DESC, rowid DESC
+				LIMIT ?1
+			   )`,
+			MAX_SCHEDULED_SENDS,
+		);
+
+		await this.#armAlarm();
+
+		const stored = this.#scheduledSendById(id);
+		if (!stored) {
+			throw new Error("scheduleSend: the inserted row could not be read back.");
+		}
+		return stored;
+	}
+
+	/**
+	 * The mailbox's scheduled sends, newest first. Terminal rows (sent,
+	 * failed, cancelled) are listed too, so the operator can see what
+	 * happened to a queued send. `limit` defaults to 50 and is capped at
+	 * MAX_SCHEDULED_SENDS.
+	 */
+	listScheduledSends(limit = DEFAULT_SCHEDULED_SEND_LIMIT): ScheduledSendRow[] {
+		const capped = Math.min(Math.max(Math.trunc(limit), 1), MAX_SCHEDULED_SENDS);
+		return this.db
+			.select()
+			.from(schema.scheduledSends)
+			.orderBy(desc(schema.scheduledSends.created_at), sql`rowid DESC`)
+			.limit(capped)
+			.all()
+			.map((row) => scheduledSendRow(row));
+	}
+
+	/** How many scheduled sends this mailbox currently stores. */
+	countScheduledSends(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.scheduledSends)
+			.get();
+		return row?.total ?? 0;
+	}
+
+	/**
+	 * Cancel a pending scheduled send: the row becomes `cancelled` and will
+	 * never fire. Nothing is sent and nothing is deleted — the row stays for
+	 * the operator to see. Returns `{ ok: true, send }` with the updated row,
+	 * or `{ ok: false, error }` when the id is unknown or the row is no
+	 * longer pending.
+	 */
+	cancelScheduledSend(id: string): ScheduledSendActionResult {
+		const row = this.#scheduledSendDbRow(id);
+		if (!row) return { ok: false as const, error: SCHEDULED_SEND_NOT_FOUND };
+		if (row.status !== "pending") {
+			return {
+				ok: false as const,
+				error: `Only a pending send can be cancelled; this one is ${row.status}.`,
+			};
+		}
+
+		this.ctx.storage.sql.exec(
+			`UPDATE scheduled_sends SET status = 'cancelled' WHERE id = ?1`,
+			id,
+		);
+
+		const cancelled = this.#scheduledSendById(id);
+		if (!cancelled) return { ok: false as const, error: SCHEDULED_SEND_NOT_FOUND };
+		return { ok: true as const, send: cancelled };
+	}
+
+	/**
+	 * Re-arm a failed scheduled send: the row goes back to `pending` with
+	 * `send_at = now` (due immediately) and the alarm is armed, so the next
+	 * alarm fires it again. The payload is untouched — a retry resends what
+	 * was queued — and `attempts` keeps counting. Returns `{ ok: true, send }`
+	 * with the updated row, or `{ ok: false, error }` when the id is unknown
+	 * or the row is not failed.
+	 */
+	async retryScheduledSend(id: string): Promise<ScheduledSendActionResult> {
+		const row = this.#scheduledSendDbRow(id);
+		if (!row) return { ok: false as const, error: SCHEDULED_SEND_NOT_FOUND };
+		if (row.status !== "failed") {
+			return {
+				ok: false as const,
+				error: `Only a failed send can be retried; this one is ${row.status}.`,
+			};
+		}
+
+		this.ctx.storage.sql.exec(
+			`UPDATE scheduled_sends
+			 SET status = 'pending', send_at = ?1, last_error = NULL
+			 WHERE id = ?2`,
+			new Date().toISOString(),
+			id,
+		);
+		await this.#armAlarm();
+
+		const pending = this.#scheduledSendById(id);
+		if (!pending) return { ok: false as const, error: SCHEDULED_SEND_NOT_FOUND };
+		return { ok: true as const, send: pending };
+	}
+
+	/**
+	 * Fire every pending scheduled send whose time has come: rebuild the
+	 * stored parameters, re-run the guards the immediate send path runs
+	 * (sender validation, the mailbox rate limit, the spam-marked reply
+	 * target check, `verifyDraft`), deliver through the EMAIL binding and
+	 * store the Sent copy exactly like the immediate path does. A row that
+	 * fails a guard or the send itself is recorded `failed` with its reason
+	 * in `last_error` and an incremented `attempts` — its payload is never
+	 * touched, and nothing is silently dropped. Returns how many due rows
+	 * were fired (delivered or recorded failed). Idempotent: every processed
+	 * row leaves `pending`, so a second run finds nothing due.
+	 */
+	async fireDueSends(now: string): Promise<number> {
+		const due = this.db
+			.select()
+			.from(schema.scheduledSends)
+			.where(
+				and(
+					eq(schema.scheduledSends.status, "pending"),
+					lte(schema.scheduledSends.send_at, now),
+				),
+			)
+			.orderBy(
+				asc(schema.scheduledSends.send_at),
+				asc(schema.scheduledSends.created_at),
+				sql`rowid ASC`,
+			)
+			.all();
+
+		let fired = 0;
+		for (const row of due) {
+			await this.#fireScheduledSend(row, now);
+			fired += 1;
+		}
+		return fired;
+	}
+
+	/**
+	 * Fire one due row. Never throws: every failure — an unreadable payload,
+	 * a failed guard, a missing EMAIL binding, a rejected send — is recorded
+	 * on the row as `failed` with its reason, so the operator can see it and
+	 * retry it. A row that goes out is marked `sent` with `sent_at`.
+	 */
+	async #fireScheduledSend(row: ScheduledSendDbRow, now: string): Promise<void> {
+		const markFailed = (reason: string): void => {
+			this.ctx.storage.sql.exec(
+				`UPDATE scheduled_sends
+				 SET status = 'failed', attempts = attempts + 1, last_error = ?1
+				 WHERE id = ?2`,
+				reason,
+				row.id,
+			);
+		};
+
+		const payload = parseScheduledSendPayload(row.payload);
+		if (!payload) {
+			markFailed("The stored send payload could not be read; nothing was sent.");
+			return;
+		}
+
+		// The mailbox's own address is the DO's name (see requireMailbox).
+		const mailboxId = this.ctx.id.name;
+		if (!mailboxId) {
+			markFailed("This mailbox has no address, so the sender cannot be validated.");
+			return;
+		}
+
+		// Guard 1: the sender must be the mailbox itself, exactly like the
+		// immediate send route.
+		let toStr: string;
+		let fromEmail: string;
+		let fromDomain: string;
+		try {
+			({ toStr, fromEmail, fromDomain } = validateSender(
+				payload.to,
+				payload.from,
+				mailboxId,
+			));
+		} catch (e) {
+			markFailed((e as Error).message);
+			return;
+		}
+
+		// Guard 2: the mailbox send rate limit.
+		const rateLimitError = this.checkSendRateLimit();
+		if (rateLimitError) {
+			markFailed(rateLimitError);
+			return;
+		}
+
+		// Guard 3: a reply to a spam-marked message — or into a spam-marked
+		// thread — is refused, mirroring the draft route's spam guard.
+		const replyTarget = payload.in_reply_to ?? null;
+		const threadTarget = payload.thread_id ?? null;
+		if (replyTarget) {
+			const original = this.getEmail(replyTarget);
+			if (!original) {
+				markFailed("Original email not found");
+				return;
+			}
+			if (isSpamMarkedEmail(original)) {
+				markFailed(
+					"Cannot send a reply to an email marked as spam. Move the original out of Spam or remove the spam category first.",
+				);
+				return;
+			}
+		} else if (threadTarget) {
+			const threadEmails = this.getThreadEmails(threadTarget);
+			if (threadEmails.some((email) => isSpamMarkedEmail(email))) {
+				markFailed(
+					"Cannot send a reply into a spam-marked thread. Move the original out of Spam or remove the spam category first.",
+				);
+				return;
+			}
+		}
+
+		// Guard 4: verifyDraft, exactly like the agent/MCP send paths — the
+		// body that goes out is the verified one.
+		let html = payload.html;
+		let text = payload.text;
+		if (html !== undefined) {
+			html = await verifyDraft(this.env.AI, html);
+		} else if (text !== undefined) {
+			text = await verifyDraft(this.env.AI, text);
+		}
+		if (html === undefined && text === undefined) {
+			markFailed("The stored send has no body; nothing was sent.");
+			return;
+		}
+		if (html === "" || text === "") {
+			markFailed(
+				"Draft verification failed — refusing to send unverified content. Please try again.",
+			);
+			return;
+		}
+
+		// Deliver through the EMAIL binding (or the injected test seam).
+		const sender = resolveScheduledSendSender(this.env);
+		if (!sender) {
+			markFailed("no EMAIL binding configured");
+			return;
+		}
+
+		const verified: ScheduledSendPayload = { ...payload };
+		if (html !== undefined) verified.html = html;
+		if (text !== undefined) verified.text = text;
+		const params = buildScheduledSendParams(verified);
+
+		try {
+			await sender.send(params);
+		} catch (e) {
+			markFailed(`Send failed: ${(e as Error).message}`);
+			return;
+		}
+
+		// Store the Sent copy exactly as the immediate path does. Best-effort
+		// on purpose: the message has already gone out, so a storage failure
+		// must not flip the row to `failed` and let a retry send it twice.
+		const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
+		try {
+			this.createEmail(
+				Folders.SENT,
+				{
+					id: messageId,
+					subject: payload.subject,
+					sender: fromEmail,
+					recipient: toStr,
+					cc: payload.cc
+						? (Array.isArray(payload.cc) ? payload.cc.join(", ") : payload.cc).toLowerCase()
+						: null,
+					bcc: payload.bcc
+						? (Array.isArray(payload.bcc) ? payload.bcc.join(", ") : payload.bcc).toLowerCase()
+						: null,
+					date: new Date().toISOString(),
+					body: html || text || "",
+					in_reply_to: payload.in_reply_to ?? null,
+					email_references: payload.references
+						? JSON.stringify(payload.references)
+						: null,
+					thread_id: payload.thread_id || payload.in_reply_to || messageId,
+					message_id: outgoingMessageId,
+					raw_headers: JSON.stringify([
+						{
+							key: "from",
+							value:
+								typeof payload.from === "string"
+									? payload.from
+									: `${payload.from.name} <${payload.from.email}>`,
+						},
+						{
+							key: "to",
+							value: Array.isArray(payload.to) ? payload.to.join(", ") : payload.to,
+						},
+						...(payload.cc
+							? [
+									{
+										key: "cc",
+										value: Array.isArray(payload.cc)
+											? payload.cc.join(", ")
+											: payload.cc,
+									},
+								]
+							: []),
+						...(payload.bcc
+							? [
+									{
+										key: "bcc",
+										value: Array.isArray(payload.bcc)
+											? payload.bcc.join(", ")
+											: payload.bcc,
+									},
+								]
+							: []),
+						{ key: "subject", value: payload.subject },
+						{ key: "date", value: new Date().toISOString() },
+						{ key: "message-id", value: `<${outgoingMessageId}>` },
+					]),
+				},
+				[],
+			);
+		} catch (e) {
+			console.error(
+				`Storing the Sent copy of scheduled send ${row.id} failed:`,
+				(e as Error).message,
+			);
+		}
+
+		this.ctx.storage.sql.exec(
+			`UPDATE scheduled_sends SET status = 'sent', sent_at = ?1, last_error = NULL WHERE id = ?2`,
+			now,
+			row.id,
+		);
+	}
+
+	/** One stored row of the queue, or null when the id is unknown. */
+	#scheduledSendDbRow(id: string): ScheduledSendDbRow | null {
+		return (
+			this.db
+				.select()
+				.from(schema.scheduledSends)
+				.where(eq(schema.scheduledSends.id, id))
+				.get() ?? null
+		);
+	}
+
+	/** One stored row in the API shape, or null when the id is unknown. */
+	#scheduledSendById(id: string): ScheduledSendRow | null {
+		const row = this.#scheduledSendDbRow(id);
+		return row ? scheduledSendRow(row) : null;
+	}
+
 	/**
 	 * Durable Object alarm: drain everything that is due — snoozes first,
-	 * then reminders — and re-arm for whatever is still pending. Idempotent:
-	 * a duplicate or early run finds nothing due and leaves the alarm unset
-	 * when there is nothing left to wait for.
+	 * then reminders and scheduled sends — and re-arm for whatever is still
+	 * pending. Idempotent: a duplicate or early run finds nothing due and
+	 * leaves the alarm unset when there is nothing left to wait for.
 	 */
 	override async alarm(): Promise<void> {
 		const now = new Date().toISOString();
 		this.wakeDueSnoozes(now);
 		this.fireDueReminders(now);
+		await this.fireDueSends(now);
 		await this.#armAlarm();
 	}
 
 	/**
-	 * Arm the Durable Object alarm for the earliest pending snooze or
-	 * reminder.
+	 * Arm the Durable Object alarm for the earliest pending snooze, reminder
+	 * or scheduled send.
 	 *
 	 * Only ever moves the alarm EARLIER: an alarm already set for a sooner
 	 * instant is left alone (it re-arms for whatever is still pending when it
@@ -1412,22 +1820,28 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Epoch-ms of the earliest pending due time, or null when nothing is
-	 * scheduled. A MIN() per column is enough: every stored value is an ISO
-	 * 8601 UTC string, which sorts chronologically.
+	 * Epoch-ms of the earliest pending due time — the soonest of a snooze, a
+	 * reminder and a scheduled send — or null when nothing is scheduled. A
+	 * MIN() per column is enough: every stored value is an ISO 8601 UTC
+	 * string, which sorts chronologically.
 	 */
 	#nextDueAtMs(): number | null {
 		const row = [
 			...this.ctx.storage.sql.exec(
 				`SELECT
 					(SELECT MIN(snooze_until) FROM emails WHERE snooze_until IS NOT NULL) AS next_snooze,
-					(SELECT MIN(remind_at) FROM emails WHERE remind_at IS NOT NULL AND reminded_at IS NULL) AS next_reminder`,
+					(SELECT MIN(remind_at) FROM emails WHERE remind_at IS NOT NULL AND reminded_at IS NULL) AS next_reminder,
+					(SELECT MIN(send_at) FROM scheduled_sends WHERE status = 'pending') AS next_send`,
 			),
 		][0] as
-			| { next_snooze: string | null; next_reminder: string | null }
+			| {
+					next_snooze: string | null;
+					next_reminder: string | null;
+					next_send: string | null;
+			  }
 			| undefined;
 
-		const due = [row?.next_snooze, row?.next_reminder]
+		const due = [row?.next_snooze, row?.next_reminder, row?.next_send]
 			.map((iso) => (typeof iso === "string" ? Date.parse(iso) : Number.NaN))
 			.filter((ms) => !Number.isNaN(ms));
 

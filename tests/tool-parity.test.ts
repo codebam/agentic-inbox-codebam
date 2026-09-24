@@ -7,6 +7,7 @@ import { toolSetSenderPolicy, toolStarEmail } from "../workers/lib/tools";
 
 /** Every tool the MCP server exposes, as a contract for the surface. */
 const MCP_TOOLS = [
+	"cancel_scheduled_send",
 	"clear_reminder",
 	"create_draft",
 	"create_rule",
@@ -20,6 +21,7 @@ const MCP_TOOLS = [
 	"list_emails",
 	"list_mailboxes",
 	"list_rules",
+	"list_scheduled_sends",
 	"list_snoozed",
 	"mark_email_read",
 	"move_email",
@@ -40,6 +42,7 @@ const MCP_TOOLS = [
 
 /** Agent tool names for a chat scoped to a single mailbox. */
 const AGENT_SCOPED_TOOLS = [
+	"cancel_scheduled_send",
 	"clear_reminder",
 	"create_rule",
 	"delete_email",
@@ -52,6 +55,7 @@ const AGENT_SCOPED_TOOLS = [
 	"list_agent_actions",
 	"list_emails",
 	"list_rules",
+	"list_scheduled_sends",
 	"list_snoozed",
 	"mark_email_read",
 	"move_email",
