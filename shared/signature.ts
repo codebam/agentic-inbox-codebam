@@ -114,6 +114,8 @@ function codePointToString(code: number): string {
 /** Reject `javascript:`, `vbscript:` and friends, including entity-smuggled forms. */
 function isSafeUrl(value: string): boolean {
 	const normalized = decodeEntitiesForCheck(value)
+		// Deliberate: entity-smuggled `javascript:` URLs hide behind control characters.
+		// eslint-disable-next-line no-control-regex -- deliberate control-character match
 		.replace(/[\u0000-\u0020\u007f]+/g, "")
 		.toLowerCase();
 	return !/^(?:javascript|vbscript|data|blob|file):/.test(normalized);

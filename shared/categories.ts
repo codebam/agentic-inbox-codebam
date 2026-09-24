@@ -149,11 +149,22 @@ export function mergeCategorizationCategories(
 }
 
 /**
+ * The fields a stored category may carry. Values arrive as arbitrary JSON, so
+ * every field stays `unknown` until the type test below accepts it.
+ */
+interface RawCategoryFields {
+	id?: unknown;
+	name?: unknown;
+	description?: unknown;
+}
+
+
+/**
  * Turn arbitrary category JSON into bounded, unique category definitions.
  * Shared by per-mailbox settings and the global settings file.
  */
 function normalizeCategoryList(rawCategories: unknown): EmailCategory[] {
-	const list = Array.isArray(rawCategories) ? rawCategories : [];
+	const list: unknown[] = Array.isArray(rawCategories) ? rawCategories : [];
 	const categories: EmailCategory[] = [];
 	const seenIds = new Set<string>();
 
@@ -164,20 +175,21 @@ function normalizeCategoryList(rawCategories: unknown): EmailCategory[] {
 	) {
 		const candidate = list[index];
 		if (!candidate || typeof candidate !== "object") continue;
+		const record = candidate as RawCategoryFields;
 
 		const name =
-			typeof candidate.name === "string"
-				? candidate.name.trim().slice(0, MAX_CATEGORY_NAME_LENGTH)
+			typeof record.name === "string"
+				? record.name.trim().slice(0, MAX_CATEGORY_NAME_LENGTH)
 				: "";
 		if (!name) continue;
 
 		const description =
-			typeof candidate.description === "string"
-				? candidate.description.trim().slice(0, MAX_CATEGORY_DESCRIPTION_LENGTH)
+			typeof record.description === "string"
+				? record.description.trim().slice(0, MAX_CATEGORY_DESCRIPTION_LENGTH)
 				: "";
 
 		let id =
-			typeof candidate.id === "string" ? slugifyCategoryId(candidate.id) : "";
+			typeof record.id === "string" ? slugifyCategoryId(record.id) : "";
 		if (!id) id = slugifyCategoryId(name) || `category-${index + 1}`;
 
 		// `spam` is reserved for the built-in spam classification.
