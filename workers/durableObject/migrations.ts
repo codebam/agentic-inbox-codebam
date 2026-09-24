@@ -447,4 +447,26 @@ export const mailboxMigrations: Migration[] = [
             END;
         `),
 	},
+	{
+		// Per-mailbox message templates (workers/lib/templates.ts): reusable
+		// snippets the composer inserts into a draft and the agent can read.
+		// Operator content only — `subject` is optional, the body is
+		// required, and every write is bounded (name 1..120 characters,
+		// subject <= 500, body 1..100000). A mailbox holds at most 200;
+		// createTemplate refuses beyond the cap instead of pruning, because
+		// a template is content the operator chose to keep. The agent/MCP
+		// surfaces expose one read-only tool (list_templates) and no write
+		// path.
+		name: "24_add_templates",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                subject TEXT,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        `),
+	},
 ];

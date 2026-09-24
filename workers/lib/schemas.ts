@@ -25,6 +25,11 @@ import {
 	RULE_MATCH_MODES,
 } from "./rules";
 import { SENDER_POLICIES } from "./sender-policy";
+import {
+	MAX_TEMPLATE_BODY_LENGTH,
+	MAX_TEMPLATE_NAME_LENGTH,
+	MAX_TEMPLATE_SUBJECT_LENGTH,
+} from "./templates";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -342,6 +347,52 @@ export const DraftBodySchema = z.object({
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),
 	applySignature: z.boolean().optional(),
+});
+
+
+// ── Templates (per-mailbox reusable snippets) ──────────────────────
+
+
+/**
+ * Body for POST /api/v1/mailboxes/:mailboxId/templates. The same bounds are
+ * enforced again by the Durable Object (workers/lib/templates.ts), so a
+ * direct RPC caller cannot store an unbounded row: the route rejects with a
+ * 400 first, the DO refuses as a second line of defence.
+ */
+export const CreateTemplateSchema = z.object({
+	name: z.string().trim().min(1).max(MAX_TEMPLATE_NAME_LENGTH),
+	subject: z
+		.string()
+		.trim()
+		.max(MAX_TEMPLATE_SUBJECT_LENGTH)
+		.nullish(),
+	body: z.string().trim().min(1).max(MAX_TEMPLATE_BODY_LENGTH),
+});
+
+
+/**
+ * Body for PUT /api/v1/mailboxes/:mailboxId/templates/:templateId: a partial
+ * change. Omitted fields keep their stored value; an explicit null (or a
+ * blank string) subject clears it. The DO validates whatever is present.
+ */
+export const UpdateTemplateSchema = z.object({
+	name: z
+		.string()
+		.trim()
+		.min(1)
+		.max(MAX_TEMPLATE_NAME_LENGTH)
+		.optional(),
+	subject: z
+		.string()
+		.trim()
+		.max(MAX_TEMPLATE_SUBJECT_LENGTH)
+		.nullish(),
+	body: z
+		.string()
+		.trim()
+		.min(1)
+		.max(MAX_TEMPLATE_BODY_LENGTH)
+		.optional(),
 });
 
 

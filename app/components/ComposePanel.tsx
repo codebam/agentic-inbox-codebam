@@ -9,6 +9,7 @@ import { useComposeForm } from "~/hooks/useComposeForm";
 import AttachmentPicker from "./AttachmentPicker";
 import ComposeBodyEditor from "./ComposeBodyEditor";
 import SnoozeMenu from "./email-panel/SnoozeMenu";
+import TemplatePicker from "./TemplatePicker";
 
 export default function ComposePanel({
 	mailboxId: mailboxIdProp,
@@ -51,6 +52,10 @@ export default function ComposePanel({
 		isEncodingAttachments,
 		handleAddAttachments,
 		handleRemoveAttachment,
+		handleInsertTemplate,
+		handleSaveTemplate,
+		canSaveTemplate,
+		isSavingTemplate,
 	} = useComposeForm(mailboxId);
 
 	return (
@@ -60,6 +65,16 @@ export default function ComposePanel({
 					{formTitle}
 				</h2>
 				<div className="flex items-center gap-1">
+					{/* Snippets sit beside the composer's own actions: picking one
+					    inserts its body at the top of the message. */}
+					<TemplatePicker
+						mailboxId={mailboxId}
+						onInsert={handleInsertTemplate}
+						onSave={() => { void handleSaveTemplate(); }}
+						canSave={canSaveTemplate}
+						isSaving={isSavingTemplate}
+						disabled={isScheduling}
+					/>
 					<Button
 						variant="ghost"
 						shape="square"

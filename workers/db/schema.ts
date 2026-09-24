@@ -178,3 +178,22 @@ export const scheduledSends = sqliteTable("scheduled_sends", {
 	created_at: text("created_at").notNull(),
 	sent_at: text("sent_at"),
 });
+
+
+/**
+ * Per-mailbox message templates (migration 24_add_templates): reusable
+ * snippets the composer inserts into a draft. Operator-authored content
+ * only — `subject` is optional, the body is required, and every field is
+ * bounded on every write (workers/lib/templates.ts); MailboxDO holds each
+ * mailbox to at most 200 rows by refusing a create past the cap. The
+ * agent/MCP surfaces read this table through one read-only tool
+ * (list_templates) and have no write path.
+ */
+export const templates = sqliteTable("templates", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	subject: text("subject"),
+	body: text("body").notNull(),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
