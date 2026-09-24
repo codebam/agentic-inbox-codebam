@@ -9,6 +9,7 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "strict": true,
+    "exactOptionalPropertyTypes": true,
     "isolatedModules": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
