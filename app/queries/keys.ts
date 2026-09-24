@@ -22,6 +22,9 @@ export const queryKeys = {
 	rules: {
 		list: (mailboxId: string) => ["rules", mailboxId] as const,
 	},
+	senderPolicy: {
+		list: (mailboxId: string) => ["sender-policy", mailboxId] as const,
+	},
 	allEmails: {
 		list: (params: Record<string, string>) =>
 			["all-emails", params] as const,

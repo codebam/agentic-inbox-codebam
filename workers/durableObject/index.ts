@@ -24,6 +24,13 @@ import {
 	type RuleMatchSpec,
 	type RulePatch,
 } from "../lib/rules";
+import {
+	isSenderPolicy,
+	normalizeSenderAddress,
+	SenderPolicyValidationError,
+	type SenderPolicy,
+	type SenderPolicyEntry,
+} from "../lib/sender-policy";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { likePatternsFor } from "../lib/like-terms";
@@ -1328,6 +1335,130 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 
+
+
+	// ── Sender policy CRUD (per-mailbox allow/block list) ──────────
+
+
+	/**
+	 * Every sender-policy entry, oldest first (ties broken by address) so the
+	 * settings card lists entries in the order they were added. Rows whose
+	 * stored policy is not a known value are ignored rather than trusted.
+	 */
+	async listSenderPolicy(): Promise<SenderPolicyEntry[]> {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT address, policy, created_at
+				 FROM sender_policy
+				 ORDER BY created_at ASC, address ASC`,
+			),
+		] as unknown as SenderPolicyRow[];
+		return rows
+			.map(parseSenderPolicyRow)
+			.filter((entry): entry is SenderPolicyEntry => entry !== null);
+	}
+
+
+	/** One entry by address (trimmed + lowercased), or null when absent. */
+	async getSenderPolicy(address: string): Promise<SenderPolicyEntry | null> {
+		const normalized = normalizeSenderAddress(address);
+		if (!normalized) return null;
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT address, policy, created_at
+				 FROM sender_policy WHERE address = ?1`,
+				normalized,
+			),
+		] as unknown as SenderPolicyRow[];
+		return rows.length > 0 ? parseSenderPolicyRow(rows[0]) : null;
+	}
+
+
+	/**
+	 * Insert or replace the policy for one sender address. The address is
+	 * stored trimmed + lowercased; an update keeps the original created_at so
+	 * the list order stays stable. Throws SenderPolicyValidationError for an
+	 * empty address or an unknown policy so routes can answer with a 400.
+	 */
+	async setSenderPolicy(
+		address: string,
+		policy: SenderPolicy,
+	): Promise<SenderPolicyEntry> {
+		const normalized = normalizeSenderAddress(address);
+		if (!normalized) {
+			throw new SenderPolicyValidationError("A sender address is required");
+		}
+		if (!isSenderPolicy(policy)) {
+			throw new SenderPolicyValidationError(
+				`Unknown sender policy: ${String(policy)}`,
+			);
+		}
+		const existing = await this.getSenderPolicy(normalized);
+		const createdAt = existing?.created_at ?? new Date().toISOString();
+		this.ctx.storage.sql.exec(
+			`INSERT INTO sender_policy (address, policy, created_at)
+			 VALUES (?1, ?2, ?3)
+			 ON CONFLICT(address) DO UPDATE SET policy = excluded.policy`,
+			normalized,
+			policy,
+			createdAt,
+		);
+		return { address: normalized, policy, created_at: createdAt };
+	}
+
+
+	/** Remove an entry. Returns false when the address has no entry. */
+	async removeSenderPolicy(address: string): Promise<boolean> {
+		const normalized = normalizeSenderAddress(address);
+		if (!normalized) return false;
+		if (!(await this.getSenderPolicy(normalized))) return false;
+		this.ctx.storage.sql.exec(
+			`DELETE FROM sender_policy WHERE address = ?1`,
+			normalized,
+		);
+		return true;
+	}
+
+
+	/**
+	 * One-click feedback from the message panel.
+	 *
+	 * Records the sender's policy and re-files the message in one pass:
+	 *   - `allow` ("Not spam"): the sender is allowed, the message moves back
+	 *     to the Inbox, and its spam category/classification is cleared.
+	 *   - `block` ("Block sender"): the sender is blocked, the message moves
+	 *     to Spam and is stamped with the spam category (still undraftable,
+	 *     never deleted).
+	 *
+	 * Returns the stored entry, or null when the email id is unknown.
+	 */
+	async applySenderPolicyFeedback(
+		id: string,
+		policy: SenderPolicy,
+	): Promise<SenderPolicyEntry | null> {
+		const email = await this.getEmail(id);
+		if (!email) return null;
+		const entry = await this.setSenderPolicy(email.sender ?? "", policy);
+		if (policy === "allow") {
+			this.ctx.storage.sql.exec(
+				`UPDATE emails
+				 SET folder_id = ?1, category = NULL, category_confidence = NULL, classification = NULL
+				 WHERE id = ?2`,
+				Folders.INBOX,
+				id,
+			);
+		} else {
+			this.ctx.storage.sql.exec(
+				`UPDATE emails SET folder_id = ?1, category = ?2 WHERE id = ?3`,
+				Folders.SPAM,
+				SPAM_CATEGORY_ID,
+				id,
+			);
+		}
+		return entry;
+	}
+
+
 	#normalizeRuleName(name: string): string {
 		const trimmed =
 			typeof name === "string" ? name.trim().slice(0, MAX_RULE_NAME_LENGTH) : "";
@@ -1424,4 +1555,30 @@ function safeJsonParse(value: unknown): unknown {
 	} catch {
 		return null;
 	}
+}
+
+
+/** Raw `sender_policy` row shape. */
+interface SenderPolicyRow {
+	address: string;
+	policy: string;
+	created_at: string;
+}
+
+
+/**
+ * Parse a `sender_policy` row into the shared shape, or null for a row that
+ * is unusable (no address, or a policy value the enum does not know). Unknown
+ * rows are ignored — treated as "none" at ingest — rather than trusted, so
+ * hand-edited data can never drop mail or bypass classification unexpectedly.
+ */
+function parseSenderPolicyRow(row: SenderPolicyRow): SenderPolicyEntry | null {
+	const address = normalizeSenderAddress(row.address);
+	if (!address) return null;
+	if (!isSenderPolicy(row.policy)) return null;
+	return {
+		address,
+		policy: row.policy,
+		created_at: String(row.created_at ?? ""),
+	};
 }
