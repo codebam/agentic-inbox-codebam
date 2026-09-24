@@ -267,12 +267,15 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		search_emails: defineTool({
 			description:
-				"Search for emails matching a query across subject and body fields. Optionally filter by folder or Jev category.",
+				"Search for emails in one mailbox. Free text matches subject, body, sender and recipient; Gmail-style operators (from:bob is:unread has:attachment before:2025-01-01) are accepted in the query or as separate filters.",
 			parameters: z.object({
 				...mailboxIdField,
 				query: z
 					.string()
-					.describe("Search query to match against subject and body"),
+					.optional()
+					.describe(
+						"Search text matched against subject, body, sender and recipient. May also contain Gmail-style operators (from:bob, is:unread, has:attachment, before:2025-01-01).",
+					),
 				folder: z
 					.string()
 					.optional()
@@ -281,6 +284,46 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.string()
 					.optional()
 					.describe("Optional category ID to restrict search to"),
+				from: z
+					.string()
+					.optional()
+					.describe("Only emails whose sender matches this text"),
+				to: z
+					.string()
+					.optional()
+					.describe("Only emails whose recipient (to/cc/bcc) matches this text"),
+				subject: z
+					.string()
+					.optional()
+					.describe("Only emails whose subject matches this text"),
+				isRead: z
+					.boolean()
+					.optional()
+					.describe("true = only read emails, false = only unread emails"),
+				isStarred: z
+					.boolean()
+					.optional()
+					.describe("true = only starred emails, false = only unstarred emails"),
+				hasAttachment: z
+					.boolean()
+					.optional()
+					.describe("true = only emails with attachments"),
+				before: z
+					.string()
+					.optional()
+					.describe("Only emails dated before this date (YYYY-MM-DD or ISO 8601)"),
+				after: z
+					.string()
+					.optional()
+					.describe("Only emails dated after this date (YYYY-MM-DD or ISO 8601)"),
+				page: z.number().int().min(1).optional().describe("Page number (default 1)"),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(100)
+					.optional()
+					.describe("Results per page (default 25, max 100)"),
 			}),
 			execute: async (args: any): Promise<unknown> => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
@@ -289,6 +332,16 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					query: args.query,
 					folder: args.folder,
 					category: args.category,
+					from: args.from,
+					to: args.to,
+					subject: args.subject,
+					isRead: args.isRead,
+					isStarred: args.isStarred,
+					hasAttachment: args.hasAttachment,
+					before: args.before,
+					after: args.after,
+					page: args.page,
+					limit: args.limit,
 				});
 			},
 		}),
