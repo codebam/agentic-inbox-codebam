@@ -280,4 +280,27 @@ export const mailboxMigrations: Migration[] = [
 		name: "17_add_reply_to",
 		sql: txn(`ALTER TABLE emails ADD COLUMN reply_to TEXT;`),
 	},
+	{
+		// Snooze + follow-up reminders (workers/durableObject/index.ts).
+		// `snooze_until` holds the wake time while a message sits in the
+		// Snoozed folder; `snoozed_from_folder` remembers where it came from
+		// so waking restores the original folder and never the Snoozed
+		// folder itself. `remind_at` is the pending follow-up time and
+		// `reminded_at` the instant it fired (cleared whenever the reminder
+		// is re-set or cancelled), so a fired reminder can be listed without
+		// re-arming the alarm. The folder row is seeded here the same way
+		// migration 3 seeds Drafts, so every mailbox DO gets it on boot.
+		name: "18_add_snooze_and_reminders",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN snooze_until TEXT;
+            ALTER TABLE emails ADD COLUMN snoozed_from_folder TEXT;
+            ALTER TABLE emails ADD COLUMN remind_at TEXT;
+            ALTER TABLE emails ADD COLUMN reminded_at TEXT;
+
+            CREATE INDEX idx_emails_snooze_until ON emails(snooze_until);
+            CREATE INDEX idx_emails_remind_at ON emails(remind_at);
+
+            INSERT INTO folders (id, name, is_deletable) VALUES ('snoozed', 'Snoozed', 0);
+        `),
+	},
 ];

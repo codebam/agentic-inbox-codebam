@@ -15,6 +15,7 @@ export const Folders = {
 	SENT: "sent",
 	DRAFT: "draft",
 	ARCHIVE: "archive",
+	SNOOZED: "snoozed",
 	TRASH: "trash",
 	SPAM: "spam",
 } as const;
@@ -30,6 +31,7 @@ export const SYSTEM_FOLDER_IDS: readonly FolderId[] = [
 	Folders.SENT,
 	Folders.DRAFT,
 	Folders.ARCHIVE,
+	Folders.SNOOZED,
 	Folders.SPAM,
 	Folders.TRASH,
 ];
@@ -43,17 +45,18 @@ export const FOLDER_DISPLAY_NAMES: Record<string, string> = {
 	[Folders.SENT]: "Sent",
 	[Folders.DRAFT]: "Drafts",
 	[Folders.ARCHIVE]: "Archive",
+	[Folders.SNOOZED]: "Snoozed",
 	[Folders.TRASH]: "Trash",
 	[Folders.SPAM]: "Spam",
 };
 
 /** Formatted string for tool parameter descriptions (agent + MCP). */
 export const FOLDER_TOOL_DESCRIPTION =
-	"Folder to list: inbox, sent, draft, archive, spam, trash";
+	"Folder to list: inbox, sent, draft, archive, snoozed, spam, trash";
 
 /** Formatted string for move-email tool descriptions. */
 export const MOVE_FOLDER_TOOL_DESCRIPTION =
-	"Target folder: inbox, sent, draft, archive, spam, trash";
+	"Target folder: inbox, sent, draft, archive, snoozed, spam, trash";
 
 /**
  * Look up a display name for a folder ID, falling back to the raw ID

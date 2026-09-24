@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, lt } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, isNull, lt, lte } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -173,6 +173,37 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Email CRUD (Drizzle) ───────────────────────────────────────
 
+	/**
+	 * The column set every list row carries: the list-card fields plus the
+	 * snooze/reminder state, so a row can render its badge from any listing
+	 * (folder, Snoozed, Reminders). `getEmail` returns the whole row instead.
+	 */
+	#listRowSelection() {
+		return {
+			id: schema.emails.id,
+			subject: schema.emails.subject,
+			sender: schema.emails.sender,
+			recipient: schema.emails.recipient,
+			envelope_recipient: schema.emails.envelope_recipient,
+			cc: schema.emails.cc,
+			bcc: schema.emails.bcc,
+			date: schema.emails.date,
+			read: schema.emails.read,
+			starred: schema.emails.starred,
+			in_reply_to: schema.emails.in_reply_to,
+			email_references: schema.emails.email_references,
+			thread_id: schema.emails.thread_id,
+			folder_id: schema.emails.folder_id,
+			category: schema.emails.category,
+			category_confidence: schema.emails.category_confidence,
+			snooze_until: schema.emails.snooze_until,
+			snoozed_from_folder: schema.emails.snoozed_from_folder,
+			remind_at: schema.emails.remind_at,
+			reminded_at: schema.emails.reminded_at,
+			snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
+		};
+	}
+
 	getEmails(options: GetEmailsOptions = {}) {
 		const {
 			folder,
@@ -210,25 +241,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const orderDir = sortDirection === "ASC" ? asc(orderCol) : desc(orderCol);
 
 		const result = this.db
-			.select({
-				id: schema.emails.id,
-				subject: schema.emails.subject,
-				sender: schema.emails.sender,
-				recipient: schema.emails.recipient,
-				envelope_recipient: schema.emails.envelope_recipient,
-				cc: schema.emails.cc,
-				bcc: schema.emails.bcc,
-				date: schema.emails.date,
-				read: schema.emails.read,
-				starred: schema.emails.starred,
-				in_reply_to: schema.emails.in_reply_to,
-				email_references: schema.emails.email_references,
-				thread_id: schema.emails.thread_id,
-				folder_id: schema.emails.folder_id,
-				category: schema.emails.category,
-				category_confidence: schema.emails.category_confidence,
-				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
-			})
+			.select(this.#listRowSelection())
 			.from(schema.emails)
 			.where(conditions.length > 0 ? and(...conditions) : undefined)
 			.orderBy(orderDir)
@@ -1055,6 +1068,401 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 
+	// ── Snooze & reminders (alarm-driven) ──────────────────────────
+
+	/**
+	 * Messages currently snoozed, earliest wake time first. Rows carry the
+	 * same fields as a folder listing so the UI can render them like any
+	 * other message.
+	 */
+	getSnoozed() {
+		const rows = this.db
+			.select(this.#listRowSelection())
+			.from(schema.emails)
+			.where(isNotNull(schema.emails.snooze_until))
+			.orderBy(asc(schema.emails.snooze_until), asc(schema.emails.id))
+			.all();
+
+		return rows.map((email) => ({
+			...email,
+			read: !!email.read,
+			starred: !!email.starred,
+		}));
+	}
+
+	/**
+	 * Follow-ups that already fired, newest message first. A pending reminder
+	 * is not listed here: until it fires it is just `remind_at` on its own
+	 * row, so a cancelled reminder can never leave a stale entry behind.
+	 */
+	getReminders() {
+		const rows = this.db
+			.select(this.#listRowSelection())
+			.from(schema.emails)
+			.where(isNotNull(schema.emails.reminded_at))
+			.orderBy(desc(schema.emails.date), desc(schema.emails.id))
+			.all();
+
+		return rows.map((email) => ({
+			...email,
+			read: !!email.read,
+			starred: !!email.starred,
+		}));
+	}
+
+	/**
+	 * Park a message in the Snoozed folder until `until` (ISO 8601 UTC) and
+	 * arm the alarm for that instant. The folder it came from is remembered
+	 * so waking restores it; re-snoozing a message that is already snoozed
+	 * keeps the original origin instead of recording Snoozed as the place to
+	 * return to. Returns the updated row, or null when the id is unknown.
+	 */
+	async setSnooze(id: string, until: string) {
+		const current = this.db
+			.select({
+				folder_id: schema.emails.folder_id,
+				snoozed_from_folder: schema.emails.snoozed_from_folder,
+			})
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!current) return null;
+
+		const origin =
+			current.folder_id === Folders.SNOOZED
+				? current.snoozed_from_folder ?? Folders.INBOX
+				: current.folder_id;
+
+		this.db
+			.update(schema.emails)
+			.set({
+				snooze_until: until,
+				snoozed_from_folder: origin,
+				...folderMoveFields(Folders.SNOOZED),
+			})
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.#armAlarm();
+		return this.getEmail(id);
+	}
+
+	/**
+	 * Cancel a snooze: clear both snooze columns and put the message back
+	 * where it came from (the Inbox when that is unknown or gone). Returns
+	 * the updated row, or null when the id is unknown.
+	 */
+	clearSnooze(id: string) {
+		const current = this.db
+			.select({
+				folder_id: schema.emails.folder_id,
+				snooze_until: schema.emails.snooze_until,
+				snoozed_from_folder: schema.emails.snoozed_from_folder,
+			})
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!current) return null;
+
+		// A message that was never snoozed has nothing to restore: leave its
+		// folder alone so an unsnooze call cannot yank it out of Archive,
+		// Spam or Trash.
+		if (current.folder_id === Folders.SNOOZED || current.snooze_until !== null) {
+			this.#restoreSnoozed(id, current.snoozed_from_folder);
+		}
+
+		return this.getEmail(id);
+	}
+
+	/**
+	 * Set (or re-set) a follow-up reminder at `at` (ISO 8601 UTC) and arm the
+	 * alarm. The message stays where it is until the reminder fires. Returns
+	 * the updated row, or null when the id is unknown.
+	 */
+	async setReminder(id: string, at: string) {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!email) return null;
+
+		this.db
+			.update(schema.emails)
+			.set({ remind_at: at, reminded_at: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.#armAlarm();
+		return this.getEmail(id);
+	}
+
+	/**
+	 * Cancel a follow-up reminder, pending or already fired. Returns the
+	 * updated row, or null when the id is unknown.
+	 */
+	clearReminder(id: string) {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!email) return null;
+
+		this.db
+			.update(schema.emails)
+			.set({ remind_at: null, reminded_at: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		return this.getEmail(id);
+	}
+
+	/**
+	 * Wake every snooze whose time has come: put the message back in the
+	 * folder it was snoozed from, clear the snooze columns and leave the read
+	 * state untouched. Returns how many messages woke. Idempotent — the
+	 * columns are cleared as part of the wake, so a second pass finds nothing.
+	 */
+	wakeDueSnoozes(now: string) {
+		const due = this.db
+			.select({
+				id: schema.emails.id,
+				snoozed_from_folder: schema.emails.snoozed_from_folder,
+			})
+			.from(schema.emails)
+			.where(
+				and(
+					isNotNull(schema.emails.snooze_until),
+					lte(schema.emails.snooze_until, now),
+				),
+			)
+			.all();
+
+		if (due.length === 0) return 0;
+
+		this.ctx.storage.transactionSync(() => {
+			for (const email of due) {
+				this.#restoreSnoozed(email.id, email.snoozed_from_folder, now);
+			}
+		});
+
+		return due.length;
+	}
+
+	/**
+	 * Fire every due follow-up. A reminder only fires when its thread still
+	 * expects a reply — the newest message in it is not in Sent — in which
+	 * case the message is pulled back to the Inbox and stamped with
+	 * `reminded_at`. A thread that already has a reply loses the reminder
+	 * silently, so answering before the follow-up lands never produces a
+	 * stale nudge. Returns how many reminders fired. Idempotent: `remind_at`
+	 * is cleared either way, so a second pass finds nothing due.
+	 */
+	fireDueReminders(now: string) {
+		const due = this.db
+			.select({
+				id: schema.emails.id,
+				thread_id: schema.emails.thread_id,
+				folder_id: schema.emails.folder_id,
+			})
+			.from(schema.emails)
+			.where(
+				and(
+					isNotNull(schema.emails.remind_at),
+					lte(schema.emails.remind_at, now),
+					isNull(schema.emails.reminded_at),
+				),
+			)
+			.all();
+
+		if (due.length === 0) return 0;
+
+		let fired = 0;
+		this.ctx.storage.transactionSync(() => {
+			for (const email of due) {
+				if (!this.#threadNeedsReply(email)) {
+					this.ctx.storage.sql.exec(
+						`UPDATE emails SET remind_at = NULL WHERE id = ?1`,
+						email.id,
+					);
+					continue;
+				}
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET remind_at = NULL, reminded_at = ?1, folder_id = ?2, trashed_at = NULL WHERE id = ?3`,
+					now,
+					Folders.INBOX,
+					email.id,
+				);
+				fired += 1;
+			}
+		});
+
+		return fired;
+	}
+
+	/**
+	 * Durable Object alarm: drain everything that is due — snoozes first,
+	 * then reminders — and re-arm for whatever is still pending. Idempotent:
+	 * a duplicate or early run finds nothing due and leaves the alarm unset
+	 * when there is nothing left to wait for.
+	 */
+	override async alarm(): Promise<void> {
+		const now = new Date().toISOString();
+		this.wakeDueSnoozes(now);
+		this.fireDueReminders(now);
+		await this.#armAlarm();
+	}
+
+	/**
+	 * Arm the Durable Object alarm for the earliest pending snooze or
+	 * reminder.
+	 *
+	 * Only ever moves the alarm EARLIER: an alarm already set for a sooner
+	 * instant is left alone (it re-arms for whatever is still pending when it
+	 * fires) and a later one is pulled forward. Together with the idempotent
+	 * alarm handler this makes every wake path self-healing — a stale alarm
+	 * that fires early finds nothing due and simply re-arms.
+	 */
+	async #armAlarm(): Promise<void> {
+		const next = this.#nextDueAtMs();
+		if (next === null) return;
+		const current = await this.ctx.storage.getAlarm();
+		if (current !== null && current <= next) return;
+		await this.ctx.storage.setAlarm(next);
+	}
+
+	/**
+	 * Epoch-ms of the earliest pending due time, or null when nothing is
+	 * scheduled. A MIN() per column is enough: every stored value is an ISO
+	 * 8601 UTC string, which sorts chronologically.
+	 */
+	#nextDueAtMs(): number | null {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT
+					(SELECT MIN(snooze_until) FROM emails WHERE snooze_until IS NOT NULL) AS next_snooze,
+					(SELECT MIN(remind_at) FROM emails WHERE remind_at IS NOT NULL AND reminded_at IS NULL) AS next_reminder`,
+			),
+		][0] as
+			| { next_snooze: string | null; next_reminder: string | null }
+			| undefined;
+
+		const due = [row?.next_snooze, row?.next_reminder]
+			.map((iso) => (typeof iso === "string" ? Date.parse(iso) : Number.NaN))
+			.filter((ms) => !Number.isNaN(ms));
+
+		return due.length > 0 ? Math.min(...due) : null;
+	}
+
+	/**
+	 * Put a snoozed message back where it came from and clear its snooze
+	 * columns. `now` only stamps `trashed_at` when the origin is Trash, so
+	 * every folder move keeps the retention invariant intact.
+	 */
+	#restoreSnoozed(
+		id: string,
+		fromFolder: string | null,
+		now: string = new Date().toISOString(),
+	): void {
+		const target = this.#restoreTargetFolder(fromFolder);
+		this.ctx.storage.sql.exec(
+			`UPDATE emails
+			 SET folder_id = ?1, trashed_at = ?2, snooze_until = NULL, snoozed_from_folder = NULL
+			 WHERE id = ?3`,
+			target,
+			target === Folders.TRASH ? now : null,
+			id,
+		);
+	}
+
+	/**
+	 * Folder a message snoozed from `fromFolder` lands in. Falls back to the
+	 * Inbox when nothing was recorded, when the recording is Snoozed itself
+	 * (a message must never wake back into Snoozed), or when the remembered
+	 * folder has since been deleted — the foreign key would otherwise reject
+	 * the move and the alarm would retry forever.
+	 */
+	#restoreTargetFolder(fromFolder: string | null): string {
+		if (fromFolder && fromFolder !== Folders.SNOOZED && this.#folderExists(fromFolder)) {
+			return fromFolder;
+		}
+		return Folders.INBOX;
+	}
+
+	/** Whether a folder row exists (see #restoreTargetFolder). */
+	#folderExists(folderId: string): boolean {
+		const row = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(eq(schema.folders.id, folderId))
+			.get();
+		return row !== undefined;
+	}
+
+	/**
+	 * Whether a thread still expects a reply: the newest message in it is not
+	 * in Sent. A message without a thread_id is its own thread, and equal
+	 * dates break by id so the answer is deterministic.
+	 */
+	#threadNeedsReply(email: {
+		id: string;
+		thread_id: string | null;
+		folder_id: string;
+	}): boolean {
+		if (!email.thread_id) return email.folder_id !== Folders.SENT;
+
+		const newest = this.db
+			.select({ folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.thread_id, email.thread_id))
+			.orderBy(desc(schema.emails.date), desc(schema.emails.id))
+			.limit(1)
+			.get();
+
+		return (newest?.folder_id ?? email.folder_id) !== Folders.SENT;
+	}
+
+	/** Wake every snoozed message in a thread because new mail arrived in it. */
+	#wakeSnoozedThread(threadId: string): void {
+		const snoozed = this.db
+			.select({
+				id: schema.emails.id,
+				snoozed_from_folder: schema.emails.snoozed_from_folder,
+			})
+			.from(schema.emails)
+			.where(
+				and(
+					eq(schema.emails.thread_id, threadId),
+					isNotNull(schema.emails.snooze_until),
+				),
+			)
+			.all();
+
+		if (snoozed.length === 0) return;
+
+		this.ctx.storage.transactionSync(() => {
+			for (const email of snoozed) {
+				this.#restoreSnoozed(email.id, email.snoozed_from_folder);
+			}
+		});
+	}
+
+	/** Drop every reminder on a thread: a reply answered the follow-up. */
+	#clearThreadReminder(threadId: string): void {
+		this.ctx.storage.sql.exec(
+			`UPDATE emails
+			 SET remind_at = NULL, reminded_at = NULL
+			 WHERE thread_id = ?1 AND (remind_at IS NOT NULL OR reminded_at IS NOT NULL)`,
+			threadId,
+		);
+	}
+
+
 	// ── Search (raw SQL — dynamic condition builder) ───────────────
 
 	/**
@@ -1306,6 +1714,18 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
+		}
+
+		// A message landing anywhere but Sent means the thread is active
+		// again: wake its snoozed messages right away so new mail is not
+		// hidden behind a snooze that was set before it arrived.
+		if (!isSent && email.thread_id) {
+			this.#wakeSnoozedThread(email.thread_id);
+		}
+		// A reply (stored in Sent) answers the thread: drop its follow-up so
+		// nobody is nudged about mail that has already been handled.
+		if (isSent && email.thread_id) {
+			this.#clearThreadReminder(email.thread_id);
 		}
 
 		return { id: email.id, duplicate: false };

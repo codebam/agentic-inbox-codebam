@@ -410,6 +410,20 @@ type MailboxSearchStub = {
 	countSearchResults: (options: SearchAllFilters & { query: string }) => Promise<number>;
 };
 
+/**
+ * The snooze/reminder RPCs the routes call. The mutators answer with the
+ * updated email (the shape getEmail returns) or null for an unknown id; the
+ * lists answer with rows in the same shape as a folder listing.
+ */
+type MailboxSnoozeStub = {
+	setSnooze: (id: string, until: string) => Promise<MailboxThreadEmailRow | null>;
+	clearSnooze: (id: string) => Promise<MailboxThreadEmailRow | null>;
+	setReminder: (id: string, at: string) => Promise<MailboxThreadEmailRow | null>;
+	clearReminder: (id: string) => Promise<MailboxThreadEmailRow | null>;
+	getSnoozed: () => Promise<MailboxEmailRow[]>;
+	getReminders: () => Promise<MailboxEmailRow[]>;
+};
+
 
 /**
  * Fetch the top `top` rows from one mailbox, chunking past the Durable
@@ -703,6 +717,74 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/restore", async (c: AppContext
 		c.req.param("id")!,
 	])) as string[];
 	return c.json({ restored: restored.length });
+});
+
+// -- Snooze & reminders ---------------------------------------------
+
+/** Narrow the mailbox stub to the snooze/reminder RPCs the routes use. */
+function snoozeStub(c: AppContext): MailboxSnoozeStub {
+	return c.var.mailboxStub;
+}
+
+/**
+ * Parse a caller-supplied due time into the canonical UTC instant stored on
+ * the row. Both snooze and reminder times must be valid ISO 8601 AND in the
+ * future: a time in the past would be due immediately, which reads as "the
+ * request did nothing", so it is rejected instead. Null marks unusable input.
+ */
+function futureTimestamp(value: unknown): string | null {
+	if (typeof value !== "string" || !value.trim()) return null;
+	const parsed = Date.parse(value);
+	if (Number.isNaN(parsed) || parsed <= Date.now()) return null;
+	return new Date(parsed).toISOString();
+}
+
+/** Snooze a message until `until`; it moves to Snoozed and comes back by itself. */
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/snooze", async (c: AppContext) => {
+	const body = await c.req
+		.json<{ until?: unknown }>()
+		.catch(() => null);
+	const until = futureTimestamp(body?.until);
+	if (!until) {
+		return c.json({ error: "`until` must be a future ISO 8601 timestamp" }, 400);
+	}
+	const email = await snoozeStub(c).setSnooze(c.req.param("id")!, until);
+	return email ? c.json(email) : c.json({ error: "Email not found" }, 404);
+});
+
+/** Wake a snoozed message now, back to the folder it came from. */
+app.delete("/api/v1/mailboxes/:mailboxId/emails/:id/snooze", async (c: AppContext) => {
+	const email = await snoozeStub(c).clearSnooze(c.req.param("id")!);
+	return email ? c.json(email) : c.json({ error: "Email not found" }, 404);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/reminder", async (c: AppContext) => {
+	const body = await c.req
+		.json<{ at?: unknown }>()
+		.catch(() => null);
+	const at = futureTimestamp(body?.at);
+	if (!at) {
+		return c.json({ error: "`at` must be a future ISO 8601 timestamp" }, 400);
+	}
+	const email = await snoozeStub(c).setReminder(c.req.param("id")!, at);
+	return email ? c.json(email) : c.json({ error: "Email not found" }, 404);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/emails/:id/reminder", async (c: AppContext) => {
+	const email = await snoozeStub(c).clearReminder(c.req.param("id")!);
+	return email ? c.json(email) : c.json({ error: "Email not found" }, 404);
+});
+
+/** Messages currently asleep in the Snoozed folder, earliest wake first. */
+app.get("/api/v1/mailboxes/:mailboxId/snoozed", async (c: AppContext) => {
+	const emails = await snoozeStub(c).getSnoozed();
+	return c.json({ emails, totalCount: emails.length });
+});
+
+/** Follow-ups that already fired and are waiting for an answer. */
+app.get("/api/v1/mailboxes/:mailboxId/reminders", async (c: AppContext) => {
+	const emails = await snoozeStub(c).getReminders();
+	return c.json({ emails, totalCount: emails.length });
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------

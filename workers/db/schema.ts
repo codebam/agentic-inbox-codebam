@@ -41,6 +41,14 @@ export const emails = sqliteTable("emails", {
 	/** Rule that routed or acted on this message (first one, evaluation order). */
 	matched_rule_id: text("matched_rule_id"),
 	matched_rule_name: text("matched_rule_name"),
+	/** Wake time while the message sits in the Snoozed folder; NULL otherwise. */
+	snooze_until: text("snooze_until"),
+	/** Folder the message was snoozed from, restored when the snooze wakes. */
+	snoozed_from_folder: text("snoozed_from_folder"),
+	/** Pending follow-up time; NULL when no reminder is set. */
+	remind_at: text("remind_at"),
+	/** When the follow-up fired; NULL when it has not (or the reminder was cancelled). */
+	reminded_at: text("reminded_at"),
 });
 
 
