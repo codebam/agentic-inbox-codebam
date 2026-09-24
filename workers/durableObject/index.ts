@@ -131,6 +131,7 @@ interface EmailData {
 	envelope_recipient?: string | null;
 	cc?: string | null;
 	bcc?: string | null;
+	reply_to?: string | null;
 	date: string;
 	body: string;
 	/** The message's text/plain alternative, when the sender included one. */
@@ -971,6 +972,40 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 	/**
+	 * Delete everything this mailbox owns and hand back its attachment rows so
+	 * the caller can remove the matching R2 blobs (a DO cannot touch R2).
+	 *
+	 * Storage is emptied outright and the migration list re-applied, so the
+	 * mailbox comes back pristine. The re-apply matters: the constructor runs
+	 * once per DO instance, so without it the still-live instance would keep
+	 * serving tables that no longer exist.
+	 */
+	async purgeAll(): Promise<{
+		emails: number;
+		attachments: { id: string; email_id: string; filename: string }[];
+	}> {
+		const emailCount = this.db
+			.select({ count: sql<number>`COUNT(*)` })
+			.from(schema.emails)
+			.get();
+
+		const emailAttachments = this.db
+			.select({
+				id: schema.attachments.id,
+				email_id: schema.attachments.email_id,
+				filename: schema.attachments.filename,
+			})
+			.from(schema.attachments)
+			.all();
+
+		await this.ctx.storage.deleteAll();
+		applyMigrations(this.ctx.storage.sql, mailboxMigrations, this.ctx.storage);
+
+		return { emails: emailCount?.count ?? 0, attachments: emailAttachments };
+	}
+
+
+	/**
 	 * Permanently delete Trash messages that entered Trash before `cutoffIso`.
 	 *
 	 * Only rows with an explicit `trashed_at` older than the cutoff are
@@ -1250,6 +1285,7 @@ export class MailboxDO extends DurableObject<Env> {
 				envelope_recipient: email.envelope_recipient ?? null,
 				cc: email.cc ?? null,
 				bcc: email.bcc ?? null,
+				reply_to: email.reply_to ?? null,
 				date: email.date,
 				read: isSent ? 1 : (email.read ? 1 : 0),
 				starred: email.starred ? 1 : 0,

@@ -16,6 +16,7 @@ import AiModelsCard from "~/components/AiModelsCard";
 import EmailViewCard from "~/components/EmailViewCard";
 import WebhookCard from "~/components/WebhookCard";
 import SenderPolicyCard from "~/components/SenderPolicyCard";
+import { normalizeAutoDraft } from "shared/auto-draft";
 import {
 	defaultCategorizationSettings,
 	normalizeCategorizationSettings,
@@ -61,6 +62,7 @@ export default function SettingsRoute() {
 
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
+	const [autoDraft, setAutoDraft] = useState(true);
 	const [categorization, setCategorization] = useState<CategorizationSettings>(
 		defaultCategorizationSettings,
 	);
@@ -86,6 +88,7 @@ export default function SettingsRoute() {
 		setSeededMailbox(mailbox);
 		setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
 		setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+		setAutoDraft(normalizeAutoDraft(mailbox.settings?.autoDraft));
 		setCategorization(
 			normalizeCategorizationSettings(mailbox.settings?.categorization),
 		);
@@ -128,6 +131,7 @@ export default function SettingsRoute() {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
+			autoDraft,
 			categorization: normalizeCategorizationSettings(categorization),
 			signature: normalizeSignatureSettings(signature),
 			models: normalizeModelConfig(models),
@@ -219,6 +223,15 @@ export default function SettingsRoute() {
 					<p className="text-xs text-kumo-subtle mb-3">
 						Customize how the AI agent behaves for this mailbox.
 						Leave empty to use the built-in default prompt.
+					</p>
+					<Switch
+						checked={autoDraft}
+						onCheckedChange={setAutoDraft}
+						label="Draft a reply automatically for each new message"
+					/>
+					<p className="text-xs text-kumo-subtle mt-2 mb-3">
+						With this off, new mail no longer creates a draft on its own — the agent
+						still drafts when asked in chat or over MCP.
 					</p>
 					<textarea
 						value={agentPrompt}

@@ -18,6 +18,8 @@ export interface MailboxSettings {
 	signature?: SignatureSettings;
 	autoReply?: { enabled: boolean; subject: string; message: string };
 	agentSystemPrompt?: string;
+	/** Whether new mail triggers an automatic draft reply. Defaults to on. */
+	autoDraft?: boolean;
 	categorization?: CategorizationSettings;
 	/** Mailbox-level AI model overrides; blank fields inherit. */
 	models?: ModelConfig;
@@ -54,6 +56,8 @@ export interface Email {
 	envelope_recipient?: string | null;
 	cc?: string | undefined;
 	bcc?: string | undefined;
+	/** Reply-To target(s) the sender set, when any. */
+	reply_to?: string | null;
 	date: string;
 	read: boolean;
 	starred: boolean;

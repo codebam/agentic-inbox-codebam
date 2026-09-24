@@ -33,6 +33,7 @@ import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-view";
 import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { normalizeImageAllowlist } from "../shared/remote-images";
+import { normalizeAutoDraft } from "../shared/auto-draft";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -68,6 +69,7 @@ import {
 	readMailboxSettings,
 	resolveMailboxModels,
 } from "./lib/mailbox-settings";
+import { purgeMailbox } from "./lib/mailbox-purge";
 import {
 	normalizeWebhookSecret,
 	normalizeWebhookUrl,
@@ -258,6 +260,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings?.["categorization"]),
 		imageAllowlist: normalizeImageAllowlist(settings?.["imageAllowlist"]),
+		autoDraft: normalizeAutoDraft(settings?.["autoDraft"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -298,6 +301,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		notifyWebhookUrl: normalizeWebhookUrl(settings["notifyWebhookUrl"]),
 		notifyWebhookSecret: normalizeWebhookSecret(settings["notifyWebhookSecret"]),
 		imageAllowlist: normalizeImageAllowlist(settings["imageAllowlist"]),
+		autoDraft: normalizeAutoDraft(settings["autoDraft"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
@@ -307,7 +311,13 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId");
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
+	// Purges the DO's SQLite state, its R2 attachment blobs and the agent's
+	// chat history; the settings marker goes last so a failure part-way
+	// leaves the mailbox listed and the delete can be retried.
+	const summary = await purgeMailbox(c.env, mailboxId);
+	console.log(
+		`Mailbox ${mailboxId} purged: ${summary.emails} email(s), ${summary.attachments} attachment(s), ${summary.blobsDeleted} blob(s)`,
+	);
 	return c.body(null, 204);
 });
 
@@ -1077,6 +1087,9 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const bccRecipients = (parsedEmail.bcc || [])
 		.map((recipient) => normalizeEmailAddress(recipient.address))
 		.filter((address): address is string => address !== null);
+	const replyToRecipients = (parsedEmail.replyTo || [])
+		.map((recipient) => normalizeEmailAddress(recipient.address))
+		.filter((address): address is string => address !== null);
 
 	const envelopeRecipient = normalizeEmailAddress(event.to);
 	// The SMTP envelope recipient is the routing source of truth. Fall back to
@@ -1334,6 +1347,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
 		envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
+		reply_to: replyToRecipients.join(", ") || null,
 		date: new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",
 		body_text: parsedEmail.text ?? null,
@@ -1411,8 +1425,8 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// Do not auto-draft replies to spam: neither AI-classified spam, mail a
 	// rule filed in Spam or stamped with the spam category, nor mail from a
 	// blocked sender (senderDecision.autoDraft). A discard rule has already
-	// returned above.
-	if (senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
+	// returned above. The mailbox switch turns this off entirely.
+	if (normalizeAutoDraft(mailboxSettings["autoDraft"]) && senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 			method: "POST", headers: { "Content-Type": "application/json" },

@@ -272,4 +272,12 @@ export const mailboxMigrations: Migration[] = [
 		name: "16_add_message_id_index",
 		sql: txn(`CREATE INDEX idx_emails_message_id ON emails(message_id);`),
 	},
+	{
+		// The Reply-To header as a lowercased comma-joined address list, the
+		// same shape as cc/bcc. Replies target it when present (mailing lists,
+		// ticketing systems) and fall back to the sender otherwise; NULL for
+		// messages that do not set the header.
+		name: "17_add_reply_to",
+		sql: txn(`ALTER TABLE emails ADD COLUMN reply_to TEXT;`),
+	},
 ];

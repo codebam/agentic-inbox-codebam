@@ -22,6 +22,7 @@ export const emails = sqliteTable("emails", {
 	envelope_recipient: text("envelope_recipient"),
 	cc: text("cc"),
 	bcc: text("bcc"),
+	reply_to: text("reply_to"),
 	date: text("date"),
 	read: integer("read").default(0),
 	starred: integer("starred").default(0),

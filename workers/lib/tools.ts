@@ -28,6 +28,10 @@ import {
 	type RulePatch,
 } from "./rules";
 import {
+	isSenderPolicyValidationError,
+	type SenderPolicy,
+} from "./sender-policy";
+import {
 	getMailboxStub,
 	getFullEmail,
 	getFullThread,
@@ -291,7 +295,8 @@ export async function toolDraftReply(
 	mailboxId: string,
 	params: {
 		originalEmailId: string;
-		to: string;
+		/** Reply target; defaults to the original's Reply-To, then its sender. */
+		to?: string | undefined;
 		subject: string;
 		body: string;
 		isPlainText?: boolean;
@@ -325,6 +330,14 @@ export async function toolDraftReply(
 		};
 	}
 
+	// Reply-To replaces the sender as the reply target when the message sets
+	// it (mailing lists, ticketing systems); an explicit `to` from the caller
+	// still wins over both.
+	const recipient = params.to?.trim() || original.reply_to?.trim() || original.sender;
+	if (!recipient) {
+		return { error: "Cannot draft a reply: no recipient address on the original email." };
+	}
+
 	// Model ids come from the mailbox settings, falling back to app-wide
 	// settings and the built-in defaults.
 	const models = await resolveMailboxModels(env, mailboxId);
@@ -351,7 +364,7 @@ export async function toolDraftReply(
 	const quotedBlock = original
 		? buildQuotedReplyBlock({
 				date: original.date,
-				sender: original.sender || params.to,
+				sender: original.sender || recipient,
 				body: original.body ?? undefined,
 			})
 		: "";
@@ -371,7 +384,7 @@ export async function toolDraftReply(
 			id: draftId,
 			subject: params.subject,
 			sender: mailboxId.toLowerCase(),
-			recipient: params.to.toLowerCase(),
+			recipient: recipient.toLowerCase(),
 			date: new Date().toISOString(),
 			body: bodyHtml,
 			in_reply_to: params.originalEmailId,
@@ -393,7 +406,7 @@ export async function toolDraftReply(
 			originalEmailId: params.originalEmailId,
 			in_reply_to: params.originalEmailId,
 			thread_id: threadId,
-			to: params.to,
+			to: recipient,
 			subject: params.subject,
 			body: params.isPlainText ? params.body.trim() : bodyHtml,
 		},
@@ -624,6 +637,45 @@ export async function toolMarkEmailRead(
 	const stub = getMailboxStub(env, mailboxId);
 	await stub.updateEmail(emailId, { read });
 	return { status: "updated", emailId, read };
+}
+
+// ── star_email ─────────────────────────────────────────────────────
+
+export async function toolStarEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	starred: boolean,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const email = await stub.updateEmail(emailId, { starred });
+	if (!email) return { error: "Email not found" };
+	return { status: "updated", emailId, starred };
+}
+
+// ── set_sender_policy ──────────────────────────────────────────────
+
+/**
+ * Record an allow/block decision for the sender of an email.
+ *
+ * `allow` also moves the message back to the Inbox and clears its spam
+ * markings; `block` moves it to Spam. Neither deletes anything.
+ */
+export async function toolSetSenderPolicy(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	policy: SenderPolicy,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	try {
+		const entry = await stub.applySenderPolicyFeedback(emailId, policy);
+		if (!entry) return { error: "Email not found" };
+		return { status: "updated", action: policy, entry };
+	} catch (e) {
+		if (isSenderPolicyValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
 }
 
 // ── move_email ─────────────────────────────────────────────────────
