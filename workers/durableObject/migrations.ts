@@ -208,4 +208,11 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX idx_rules_priority ON rules(priority, created_at);
         `),
 	},
+	{
+		// The text/plain alternative from the inbound message, kept alongside
+		// the HTML `body` so a reader can switch to a plain-text view without
+		// converting markup on the fly. NULL for messages with no text part.
+		name: "13_add_body_text",
+		sql: txn(`ALTER TABLE emails ADD COLUMN body_text TEXT;`),
+	},
 ];
