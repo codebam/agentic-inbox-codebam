@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { GlobalCategorizationSettings } from "shared/categories";
+import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -183,6 +184,19 @@ const api = {
 		put<Folder>(`/api/v1/mailboxes/${mailboxId}/folders/${id}`, { name }),
 	deleteFolder: (mailboxId: string, id: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}/folders/${id}`),
+
+
+	// Rules (deterministic per-mailbox filters, evaluated on arrival)
+	listRules: (mailboxId: string) =>
+		get<MailRule[]>(`/api/v1/mailboxes/${mailboxId}/rules`),
+	createRule: (mailboxId: string, rule: RuleDraft) =>
+		post<MailRule>(`/api/v1/mailboxes/${mailboxId}/rules`, rule),
+	updateRule: (mailboxId: string, ruleId: string, patch: RulePatch) =>
+		put<MailRule>(`/api/v1/mailboxes/${mailboxId}/rules/${ruleId}`, patch),
+	deleteRule: (mailboxId: string, ruleId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/rules/${ruleId}`),
+	reorderRules: (mailboxId: string, ids: string[]) =>
+		post<MailRule[]>(`/api/v1/mailboxes/${mailboxId}/rules/reorder`, { ids }),
 
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
