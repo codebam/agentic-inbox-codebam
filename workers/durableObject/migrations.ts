@@ -188,4 +188,24 @@ export const mailboxMigrations: Migration[] = [
 		name: "10_add_envelope_recipient",
 		sql: txn(`ALTER TABLE emails ADD COLUMN envelope_recipient TEXT;`),
 	},
+	{
+		// Deterministic per-mailbox rules (filters). `match` stores the
+		// JSON { mode, conditions } spec and `actions` the JSON action set;
+		// both are parsed by workers/lib/rules.ts. Lower `priority` runs
+		// first (see runRules for the full evaluation contract).
+		name: "11_add_rules",
+		sql: txn(`
+            CREATE TABLE rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 0,
+                match TEXT NOT NULL,
+                actions TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX idx_rules_priority ON rules(priority, created_at);
+        `),
+	},
 ];

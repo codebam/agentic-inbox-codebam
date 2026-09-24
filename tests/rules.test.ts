@@ -1,0 +1,487 @@
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+import { Folders } from "../shared/folders";
+import {
+	emptyRuleRunResult,
+	matchRule,
+	runRules,
+	type MailRule,
+	type RuleDraft,
+	type RuleEmail,
+} from "../workers/lib/rules";
+
+
+const MAILBOX = "rules@example.com";
+
+
+function stubFor(mailbox = MAILBOX) {
+	return env.MAILBOX.get(env.MAILBOX.idFromName(mailbox));
+}
+
+
+/** Build a complete rule from partial overrides (pure tests). */
+function makeRule(overrides: Partial<MailRule> = {}): MailRule {
+	return {
+		id: overrides.id ?? crypto.randomUUID(),
+		name: overrides.name ?? "rule",
+		enabled: overrides.enabled ?? true,
+		priority: overrides.priority ?? 0,
+		match: overrides.match ?? { mode: "all", conditions: {} },
+		actions: overrides.actions ?? {},
+		created_at: overrides.created_at ?? "2026-01-01T00:00:00.000Z",
+	};
+}
+
+
+const EMAIL: RuleEmail = {
+	sender: "Alice <alice@Corp.example>",
+	recipient: "me@example.com",
+	envelope_recipient: "me@example.com",
+	cc: null,
+	bcc: null,
+	subject: "Quarterly INVOICE for March",
+	body: "<p>Please find the invoice attached.</p>",
+	has_attachment: true,
+	category: null,
+};
+
+
+describe("matchRule", () => {
+	it("requires every condition in 'all' mode", () => {
+		const rule = makeRule({
+			match: {
+				mode: "all",
+				conditions: { from_contains: "corp.example", subject_contains: "invoice" },
+			},
+		});
+
+		expect(matchRule(rule, EMAIL)).toBe(true);
+		expect(
+			matchRule(rule, { ...EMAIL, subject: "Lunch on Friday?" }),
+		).toBe(false);
+		expect(
+			matchRule(rule, { ...EMAIL, sender: "bob@other.example" }),
+		).toBe(false);
+	});
+
+
+	it("matches on a single condition in 'any' mode", () => {
+		const rule = makeRule({
+			match: {
+				mode: "any",
+				conditions: { from_contains: "nobody@nowhere.example", subject_contains: "invoice" },
+			},
+		});
+
+		expect(matchRule(rule, EMAIL)).toBe(true);
+		expect(matchRule(rule, { ...EMAIL, subject: "hello" })).toBe(false);
+	});
+
+
+	it("compares case-insensitively and as substrings", () => {
+		expect(
+			matchRule(
+				makeRule({ match: { mode: "all", conditions: { from_contains: "ALICE@corp" } } }),
+				EMAIL,
+			),
+		).toBe(true);
+		expect(
+			matchRule(
+				makeRule({ match: { mode: "all", conditions: { subject_contains: "invoice" } } }),
+				EMAIL,
+			),
+		).toBe(true);
+		expect(
+			matchRule(
+				makeRule({ match: { mode: "all", conditions: { body_contains: "INVOICE ATTACHED" } } }),
+				EMAIL,
+			),
+		).toBe(true);
+		expect(
+			matchRule(
+				makeRule({ match: { mode: "all", conditions: { body_contains: "not present" } } }),
+				EMAIL,
+			),
+		).toBe(false);
+	});
+
+
+	it("tests has_attachment exactly", () => {
+		const withAttachment = makeRule({
+			match: { mode: "all", conditions: { has_attachment: true } },
+		});
+		const withoutAttachment = makeRule({
+			match: { mode: "all", conditions: { has_attachment: false } },
+		});
+
+		expect(matchRule(withAttachment, EMAIL)).toBe(true);
+		expect(matchRule(withoutAttachment, EMAIL)).toBe(false);
+		expect(matchRule(withAttachment, { ...EMAIL, has_attachment: false })).toBe(false);
+		expect(matchRule(withoutAttachment, { ...EMAIL, has_attachment: undefined })).toBe(true);
+	});
+
+
+	it("matches category_equals case-insensitively but not partially", () => {
+		const rule = makeRule({
+			match: { mode: "all", conditions: { category_equals: "Work" } },
+		});
+
+		expect(matchRule(rule, { ...EMAIL, category: "work" })).toBe(true);
+		expect(matchRule(rule, { ...EMAIL, category: "work-archive" })).toBe(false);
+		expect(matchRule(rule, { ...EMAIL, category: null })).toBe(false);
+	});
+
+
+	it("matches to_contains against envelope, cc, and bcc recipients", () => {
+		const rule = makeRule({
+			match: { mode: "all", conditions: { to_contains: "hidden@example.com" } },
+		});
+
+		expect(matchRule(rule, { ...EMAIL, bcc: "hidden@example.com" })).toBe(true);
+		expect(matchRule(rule, { ...EMAIL, cc: "Hidden@Example.com" })).toBe(true);
+		expect(matchRule(rule, { ...EMAIL, envelope_recipient: "hidden@example.com" })).toBe(true);
+		expect(matchRule(rule, EMAIL)).toBe(false);
+	});
+
+
+	it("never matches a rule without active conditions or when disabled", () => {
+		expect(matchRule(makeRule(), EMAIL)).toBe(false);
+		expect(
+			matchRule(
+				makeRule({
+					enabled: false,
+					match: { mode: "any", conditions: { from_contains: "alice" } },
+				}),
+				EMAIL,
+			),
+		).toBe(false);
+		// Blank strings are not conditions.
+		expect(
+			matchRule(
+				makeRule({ match: { mode: "all", conditions: { subject_contains: "   " } } }),
+				EMAIL,
+			),
+		).toBe(false);
+	});
+});
+
+
+describe("runRules", () => {
+	it("returns an inert result when nothing matches", () => {
+		const result = runRules(
+			[makeRule({ match: { mode: "all", conditions: { subject_contains: "nope" } } })],
+			EMAIL,
+		);
+
+		expect(result).toEqual(emptyRuleRunResult());
+	});
+
+
+	it("applies matching rules in ascending priority order", () => {
+		const result = runRules(
+			[
+				makeRule({
+					id: "second",
+					name: "file-invoice",
+					priority: 2,
+					match: { mode: "all", conditions: { subject_contains: "invoice" } },
+					actions: { move_to_folder: Folders.ARCHIVE },
+				}),
+				makeRule({
+					id: "first",
+					name: "star-boss",
+					priority: 1,
+					match: { mode: "all", conditions: { from_contains: "corp.example" } },
+					actions: { star: true },
+				}),
+			],
+			EMAIL,
+		);
+
+		expect(result.appliedRules).toEqual(["star-boss", "file-invoice"]);
+		expect(result.appliedRuleIds).toEqual(["first", "second"]);
+		expect(result.mutation).toEqual({
+			folder: Folders.ARCHIVE,
+			starred: true,
+		});
+		expect(result.routed).toBe(true);
+		expect(result.discarded).toBe(false);
+	});
+
+
+	it("keeps the first rule's value when rules conflict", () => {
+		const result = runRules(
+			[
+				makeRule({
+					name: "high-precedence",
+					priority: 0,
+					match: { mode: "any", conditions: { from_contains: "alice" } },
+					actions: { move_to_folder: Folders.ARCHIVE, set_category: "work", mark_read: true },
+				}),
+				makeRule({
+					name: "low-precedence",
+					priority: 9,
+					match: { mode: "any", conditions: { subject_contains: "invoice" } },
+					actions: { move_to_folder: Folders.TRASH, set_category: "spam", mark_unread: true },
+				}),
+			],
+			EMAIL,
+		);
+
+		expect(result.appliedRules).toEqual(["high-precedence", "low-precedence"]);
+		expect(result.mutation).toEqual({
+			folder: Folders.ARCHIVE,
+			category: "work",
+			read: true,
+		});
+	});
+
+
+	it("fills in fields the earlier rule left unset", () => {
+		const result = runRules(
+			[
+				makeRule({
+					name: "folder-only",
+					priority: 0,
+					match: { mode: "any", conditions: { from_contains: "alice" } },
+					actions: { move_to_folder: Folders.ARCHIVE },
+				}),
+				makeRule({
+					name: "category-only",
+					priority: 1,
+					match: { mode: "any", conditions: { subject_contains: "invoice" } },
+					actions: { set_category: "finance", star: true },
+				}),
+			],
+			EMAIL,
+		);
+
+		expect(result.mutation).toEqual({
+			folder: Folders.ARCHIVE,
+			category: "finance",
+			starred: true,
+		});
+	});
+
+
+	it("skips disabled rules", () => {
+		const result = runRules(
+			[
+				makeRule({
+					name: "disabled",
+					enabled: false,
+					priority: 0,
+					match: { mode: "any", conditions: { from_contains: "alice" } },
+					actions: { discard: true },
+				}),
+			],
+			EMAIL,
+		);
+
+		expect(result).toEqual(emptyRuleRunResult());
+	});
+
+
+	it("stops at a discard match and reports no routing", () => {
+		const result = runRules(
+			[
+				makeRule({
+					name: "drop-newsletters",
+					priority: 0,
+					match: { mode: "all", conditions: { from_contains: "alice" } },
+					actions: { discard: true },
+				}),
+				makeRule({
+					name: "never-reached",
+					priority: 1,
+					match: { mode: "any", conditions: { subject_contains: "invoice" } },
+					actions: { move_to_folder: Folders.ARCHIVE },
+				}),
+			],
+			EMAIL,
+		);
+
+		expect(result.discarded).toBe(true);
+		expect(result.routed).toBe(false);
+		expect(result.appliedRules).toEqual(["drop-newsletters"]);
+		expect(result.mutation).toEqual({});
+	});
+
+
+	it("maps mark_unread and unstar to false flags", () => {
+		const result = runRules(
+			[
+				makeRule({
+					match: { mode: "any", conditions: { from_contains: "alice" } },
+					actions: { mark_unread: true, unstar: true },
+				}),
+			],
+			EMAIL,
+		);
+
+		expect(result.mutation).toEqual({ read: false, starred: false });
+	});
+});
+
+
+describe("MailboxDO rules CRUD", () => {
+	const draft = (overrides: Partial<RuleDraft> = {}): RuleDraft => ({
+		name: overrides.name ?? "File invoices",
+		match: overrides.match ?? {
+			mode: "all",
+			conditions: { subject_contains: "invoice" },
+		},
+		actions: overrides.actions ?? { move_to_folder: Folders.ARCHIVE },
+		...(overrides.enabled === undefined ? {} : { enabled: overrides.enabled }),
+		...(overrides.priority === undefined ? {} : { priority: overrides.priority }),
+	});
+
+
+	it("creates a rule with defaults and reads it back", async () => {
+		const stub = stubFor("crud@example.com");
+		const created = await stub.createRule(draft({ name: "Invoices" }));
+
+		expect(created.id).toBeTruthy();
+		expect(created.name).toBe("Invoices");
+		expect(created.enabled).toBe(true);
+		expect(created.priority).toBe(0);
+		expect(created.match.conditions.subject_contains).toBe("invoice");
+		expect(created.actions.move_to_folder).toBe(Folders.ARCHIVE);
+		expect(typeof created.created_at).toBe("string");
+
+		const listed = await stub.listRules();
+		expect(listed.map((rule) => rule.id)).toEqual([created.id]);
+	});
+
+
+	it("resolves folder display names and rejects unknown folders", async () => {
+		const stub = stubFor("folders@example.com");
+		const created = await stub.createRule(
+			draft({ actions: { move_to_folder: "Archive" } }),
+		);
+		expect(created.actions.move_to_folder).toBe(Folders.ARCHIVE);
+
+		await expect(
+			stub.createRule(draft({ actions: { move_to_folder: "no-such-folder" } })),
+		).rejects.toThrow(/Unknown folder/);
+	});
+
+
+	it("rejects rules with no conditions or no actions", async () => {
+		const stub = stubFor("invalid@example.com");
+
+		await expect(
+			stub.createRule(
+				draft({ match: { mode: "all", conditions: { subject_contains: "  " } } }),
+			),
+		).rejects.toThrow(/at least one match condition/);
+
+		await expect(
+			stub.createRule(draft({ actions: { discard: false } })),
+		).rejects.toThrow(/at least one action/);
+
+		await expect(
+			stub.createRule(draft({ actions: { mark_read: true, mark_unread: true } })),
+		).rejects.toThrow(/cannot both be set/);
+	});
+
+
+	it("appends new rules to the end of the priority order", async () => {
+		const stub = stubFor("priority@example.com");
+		const first = await stub.createRule(draft({ name: "first" }));
+		const second = await stub.createRule(draft({ name: "second" }));
+		const explicit = await stub.createRule(draft({ name: "explicit", priority: 0 }));
+
+		expect(first.priority).toBe(0);
+		expect(second.priority).toBe(1);
+		expect(explicit.priority).toBe(0);
+
+		const listed = await stub.listRules();
+		// Ascending priority; ties keep creation order.
+		expect(listed.map((rule) => rule.name)).toEqual(["first", "explicit", "second"]);
+	});
+
+
+	it("updates a rule and reports unknown ids", async () => {
+		const stub = stubFor("update@example.com");
+		const created = await stub.createRule(draft());
+
+		const updated = await stub.updateRule(created.id, {
+			name: "Renamed",
+			enabled: false,
+			match: { mode: "any", conditions: { from_contains: "billing@" } },
+			actions: { star: true },
+		});
+
+		expect(updated?.name).toBe("Renamed");
+		expect(updated?.enabled).toBe(false);
+		expect(updated?.match.mode).toBe("any");
+		expect(updated?.match.conditions.from_contains).toBe("billing@");
+		expect(updated?.actions).toEqual({ star: true });
+		expect(updated?.created_at).toBe(created.created_at);
+
+		// A partial patch leaves other fields alone.
+		const patched = await stub.updateRule(created.id, { enabled: true });
+		expect(patched?.enabled).toBe(true);
+		expect(patched?.name).toBe("Renamed");
+		expect(patched?.actions).toEqual({ star: true });
+
+		expect(await stub.updateRule("missing-id", { name: "nope" })).toBeNull();
+	});
+
+
+	it("deletes rules and reports unknown ids", async () => {
+		const stub = stubFor("delete@example.com");
+		const created = await stub.createRule(draft());
+
+		expect(await stub.deleteRule(created.id)).toBe(true);
+		expect(await stub.deleteRule(created.id)).toBe(false);
+		expect(await stub.listRules()).toEqual([]);
+	});
+
+
+	it("reorders rules by id", async () => {
+		const stub = stubFor("reorder@example.com");
+		const a = await stub.createRule(draft({ name: "a" }));
+		const b = await stub.createRule(draft({ name: "b" }));
+		const c = await stub.createRule(draft({ name: "c" }));
+
+		const reordered = await stub.reorderRules([c.id, a.id, b.id]);
+		expect(reordered.map((rule) => rule.name)).toEqual(["c", "a", "b"]);
+		expect(reordered.map((rule) => rule.priority)).toEqual([0, 1, 2]);
+
+		// Unknown ids are ignored; unlisted rules keep their relative order.
+		const again = await stub.reorderRules(["not-a-rule", b.id]);
+		expect(again.map((rule) => rule.name)).toEqual(["b", "c", "a"]);
+	});
+
+
+	it("runs stored rules in priority order through the engine", async () => {
+		const stub = stubFor("engine@example.com");
+		await stub.createRule(
+			draft({
+				name: "archive-invoices",
+				priority: 1,
+				actions: { move_to_folder: Folders.ARCHIVE, mark_read: true },
+			}),
+		);
+		await stub.createRule(
+			draft({
+				name: "star-boss",
+				priority: 0,
+				match: { mode: "all", conditions: { from_contains: "corp.example" } },
+				actions: { star: true },
+			}),
+		);
+
+		const result = runRules(await stub.listRules(), EMAIL);
+
+		expect(result.appliedRules).toEqual(["star-boss", "archive-invoices"]);
+		expect(result.mutation).toEqual({
+			folder: Folders.ARCHIVE,
+			read: true,
+			starred: true,
+		});
+		expect(result.routed).toBe(true);
+	});
+});

@@ -9,6 +9,20 @@ import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import { SPAM_CATEGORY_ID } from "../../shared/categories";
+import {
+	hasActiveActions,
+	hasActiveConditions,
+	normalizeRuleActions,
+	normalizeRuleMatch,
+	RuleValidationError,
+	MAX_RULE_NAME_LENGTH,
+	MAX_RULE_PRIORITY,
+	type MailRule,
+	type RuleActions,
+	type RuleDraft,
+	type RuleMatchSpec,
+	type RulePatch,
+} from "../lib/rules";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 
@@ -1026,5 +1040,270 @@ export class MailboxDO extends DurableObject<Env> {
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
+	}
+
+
+	// ── Rules CRUD (raw SQL — JSON match/actions columns) ──────────
+
+
+	/**
+	 * Every rule for this mailbox in evaluation order — ascending priority,
+	 * then creation order, then id. This is exactly the order `runRules`
+	 * applies them in, so the API/UI list matches inbound behaviour.
+	 */
+	async listRules(): Promise<MailRule[]> {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, name, enabled, priority, match, actions, created_at
+				 FROM rules
+				 ORDER BY priority ASC, created_at ASC, id ASC`,
+			),
+		] as unknown as RuleRow[];
+		return rows.map(parseRuleRow);
+	}
+
+
+	/**
+	 * Store a new rule. An omitted priority appends it to the end of the list.
+	 * Throws RuleValidationError for unusable rules (missing name, unknown
+	 * folder, no conditions, no actions) so callers can answer with a 400.
+	 */
+	async createRule(draft: RuleDraft): Promise<MailRule> {
+		const id = crypto.randomUUID();
+		const createdAt = new Date().toISOString();
+		const name = this.#normalizeRuleName(draft.name);
+		const priority =
+			draft.priority === undefined
+				? this.#nextRulePriority()
+				: this.#normalizeRulePriority(draft.priority);
+		const match = this.#normalizeStoredMatch(draft.match);
+		const actions = this.#normalizeStoredActions(draft.actions);
+		const enabled = draft.enabled !== false;
+
+		this.ctx.storage.sql.exec(
+			`INSERT INTO rules (id, name, enabled, priority, match, actions, created_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+			id,
+			name,
+			enabled ? 1 : 0,
+			priority,
+			JSON.stringify(match),
+			JSON.stringify(actions),
+			createdAt,
+		);
+
+		return { id, name, enabled, priority, match, actions, created_at: createdAt };
+	}
+
+
+	/**
+	 * Patch a rule. Fields left out keep their stored value; returns the
+	 * updated rule, or null when the id is unknown.
+	 */
+	async updateRule(id: string, patch: RulePatch): Promise<MailRule | null> {
+		const existing = this.#getRule(id);
+		if (!existing) return null;
+
+		const name =
+			patch.name === undefined
+				? existing.name
+				: this.#normalizeRuleName(patch.name);
+		const priority =
+			patch.priority === undefined
+				? existing.priority
+				: this.#normalizeRulePriority(patch.priority);
+		const match =
+			patch.match === undefined
+				? existing.match
+				: this.#normalizeStoredMatch(patch.match);
+		const actions =
+			patch.actions === undefined
+				? existing.actions
+				: this.#normalizeStoredActions(patch.actions);
+		const enabled =
+			patch.enabled === undefined ? existing.enabled : patch.enabled !== false;
+
+		this.ctx.storage.sql.exec(
+			`UPDATE rules
+			 SET name = ?1, enabled = ?2, priority = ?3, match = ?4, actions = ?5
+			 WHERE id = ?6`,
+			name,
+			enabled ? 1 : 0,
+			priority,
+			JSON.stringify(match),
+			JSON.stringify(actions),
+			id,
+		);
+
+		return { ...existing, name, enabled, priority, match, actions };
+	}
+
+
+	/** Delete a rule. Returns false when the id is unknown. */
+	async deleteRule(id: string): Promise<boolean> {
+		if (!this.#getRule(id)) return false;
+		this.ctx.storage.sql.exec(`DELETE FROM rules WHERE id = ?1`, id);
+		return true;
+	}
+
+
+	/**
+	 * Rewrite priorities so they follow the given id order (index 0 evaluates
+	 * first). Unknown or duplicate ids are ignored, and rules missing from the
+	 * list keep their relative order after the listed ones. Returns the
+	 * re-ordered list.
+	 */
+	async reorderRules(orderedIds: string[]): Promise<MailRule[]> {
+		const current = await this.listRules();
+		const byId = new Map(current.map((rule) => [rule.id, rule]));
+		const seen = new Set<string>();
+		const ordered: MailRule[] = [];
+
+		for (const id of orderedIds) {
+			const rule = byId.get(id);
+			if (!rule || seen.has(id)) continue;
+			seen.add(id);
+			ordered.push(rule);
+		}
+		for (const rule of current) {
+			if (!seen.has(rule.id)) ordered.push(rule);
+		}
+
+		this.ctx.storage.transactionSync(() => {
+			ordered.forEach((rule, index) => {
+				if (rule.priority === index) return;
+				this.ctx.storage.sql.exec(
+					`UPDATE rules SET priority = ?1 WHERE id = ?2`,
+					index,
+					rule.id,
+				);
+			});
+		});
+
+		return this.listRules();
+	}
+
+
+	/** Load one rule by id, or null when it does not exist. */
+	#getRule(id: string): MailRule | null {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, name, enabled, priority, match, actions, created_at
+				 FROM rules WHERE id = ?1`,
+				id,
+			),
+		] as unknown as RuleRow[];
+		return rows.length > 0 ? parseRuleRow(rows[0]) : null;
+	}
+
+
+	/** Priority for a rule appended without an explicit one. */
+	#nextRulePriority(): number {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT COALESCE(MAX(priority), -1) + 1 AS next FROM rules`,
+			),
+		][0] as { next: number } | undefined;
+		return row?.next ?? 0;
+	}
+
+
+	#normalizeRuleName(name: string): string {
+		const trimmed =
+			typeof name === "string" ? name.trim().slice(0, MAX_RULE_NAME_LENGTH) : "";
+		if (!trimmed) throw new RuleValidationError("Rule name is required");
+		return trimmed;
+	}
+
+
+	#normalizeRulePriority(priority: number): number {
+		if (typeof priority !== "number" || !Number.isFinite(priority)) {
+			throw new RuleValidationError("Rule priority must be a finite number");
+		}
+		return Math.min(Math.max(Math.trunc(priority), 0), MAX_RULE_PRIORITY);
+	}
+
+
+	#normalizeStoredMatch(raw: unknown): RuleMatchSpec {
+		const match = normalizeRuleMatch(raw);
+		if (!hasActiveConditions(match.conditions)) {
+			throw new RuleValidationError("A rule needs at least one match condition");
+		}
+		return match;
+	}
+
+
+	#normalizeStoredActions(raw: unknown): RuleActions {
+		const actions = normalizeRuleActions(raw);
+		if (!hasActiveActions(actions)) {
+			throw new RuleValidationError("A rule needs at least one action");
+		}
+		if (actions.mark_read === true && actions.mark_unread === true) {
+			throw new RuleValidationError(
+				"mark_read and mark_unread cannot both be set",
+			);
+		}
+		if (actions.star === true && actions.unstar === true) {
+			throw new RuleValidationError("star and unstar cannot both be set");
+		}
+		// Folder ids are validated here so a rule can never point at a folder
+		// that does not exist (deleting a folder later still falls back to the
+		// Inbox in the inbound pipeline).
+		if (actions.move_to_folder) {
+			actions.move_to_folder = this.#resolveRuleFolder(actions.move_to_folder);
+		}
+		return actions;
+	}
+
+
+	/** Resolve a folder name or id to the real folder id, rejecting unknowns. */
+	#resolveRuleFolder(folder: string): string {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id FROM folders WHERE id = ?1 OR name = ?1 LIMIT 1`,
+				folder,
+			),
+		][0] as { id: string } | undefined;
+		if (!row) throw new RuleValidationError(`Unknown folder: ${folder}`);
+		return String(row.id);
+	}
+}
+
+
+/** Raw `rules` row shape (JSON columns arrive as strings). */
+interface RuleRow {
+	id: string;
+	name: string;
+	enabled: number;
+	priority: number;
+	match: string;
+	actions: string;
+	created_at: string;
+}
+
+
+/**
+ * Parse a `rules` row into the engine shape. JSON columns are normalized on
+ * read so a hand-edited or legacy row can never crash rule evaluation.
+ */
+function parseRuleRow(row: RuleRow): MailRule {
+	return {
+		id: String(row.id),
+		name: String(row.name),
+		enabled: row.enabled !== 0,
+		priority: Number.isFinite(Number(row.priority)) ? Number(row.priority) : 0,
+		match: normalizeRuleMatch(safeJsonParse(row.match)),
+		actions: normalizeRuleActions(safeJsonParse(row.actions)),
+		created_at: String(row.created_at ?? ""),
+	};
+}
+
+
+function safeJsonParse(value: unknown): unknown {
+	if (typeof value !== "string") return null;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return null;
 	}
 }

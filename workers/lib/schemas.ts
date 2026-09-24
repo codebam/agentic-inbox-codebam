@@ -11,6 +11,16 @@
  * Zod schemas: used across route handlers to eliminate duplication.
  */
 import { z } from "zod";
+import {
+	hasActiveActions,
+	hasActiveConditions,
+	normalizeRuleActions,
+	normalizeRuleConditions,
+	MAX_RULE_CONDITION_LENGTH,
+	MAX_RULE_NAME_LENGTH,
+	MAX_RULE_PRIORITY,
+	RULE_MATCH_MODES,
+} from "./rules";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -126,3 +136,102 @@ export const BulkEmailActionSchema = z
 		message: "folderId is required when action is 'move'",
 		path: ["folderId"],
 	});
+
+
+// ── Rules (deterministic per-mailbox filters) ──────────────────────
+
+
+/**
+ * Match conditions. Values are trimmed by the engine, so empty strings are
+ * tolerated here and simply mean "condition not set".
+ */
+const RuleConditionsSchema = z.object({
+	from_contains: z.string().trim().max(MAX_RULE_CONDITION_LENGTH).optional(),
+	to_contains: z.string().trim().max(MAX_RULE_CONDITION_LENGTH).optional(),
+	subject_contains: z.string().trim().max(MAX_RULE_CONDITION_LENGTH).optional(),
+	body_contains: z.string().trim().max(MAX_RULE_CONDITION_LENGTH).optional(),
+	has_attachment: z.boolean().optional(),
+	category_equals: z.string().trim().max(MAX_RULE_CONDITION_LENGTH).optional(),
+});
+
+
+const RuleMatchSchema = z.object({
+	mode: z.enum(RULE_MATCH_MODES).default("all"),
+	conditions: RuleConditionsSchema,
+});
+
+
+const RuleActionsSchema = z
+	.object({
+		move_to_folder: z.string().trim().min(1).max(MAX_RULE_NAME_LENGTH).optional(),
+		set_category: z.string().trim().min(1).max(MAX_RULE_NAME_LENGTH).optional(),
+		mark_read: z.boolean().optional(),
+		mark_unread: z.boolean().optional(),
+		star: z.boolean().optional(),
+		unstar: z.boolean().optional(),
+		discard: z.boolean().optional(),
+	})
+	.refine(
+		(actions) => !(actions.mark_read === true && actions.mark_unread === true),
+		{ message: "mark_read and mark_unread cannot both be set" },
+	)
+	.refine((actions) => !(actions.star === true && actions.unstar === true), {
+		message: "star and unstar cannot both be set",
+	});
+
+
+/** Fields shared by create and update; update makes them all optional. */
+const RuleShapeSchema = z.object({
+	name: z.string().trim().min(1).max(MAX_RULE_NAME_LENGTH),
+	enabled: z.boolean().optional(),
+	priority: z.number().int().min(0).max(MAX_RULE_PRIORITY).optional(),
+	match: RuleMatchSchema,
+	actions: RuleActionsSchema,
+});
+
+
+export const CreateRuleSchema = RuleShapeSchema.superRefine((rule, ctx) => {
+	if (!hasActiveConditions(normalizeRuleConditions(rule.match.conditions))) {
+		ctx.addIssue({
+			code: z.ZodIssueCode.custom,
+			path: ["match", "conditions"],
+			message: "A rule needs at least one match condition",
+		});
+	}
+	if (!hasActiveActions(normalizeRuleActions(rule.actions))) {
+		ctx.addIssue({
+			code: z.ZodIssueCode.custom,
+			path: ["actions"],
+			message: "A rule needs at least one action",
+		});
+	}
+});
+
+
+export const UpdateRuleSchema = RuleShapeSchema.partial().superRefine(
+	(rule, ctx) => {
+		if (
+			rule.match &&
+			!hasActiveConditions(normalizeRuleConditions(rule.match.conditions))
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["match", "conditions"],
+				message: "A rule needs at least one match condition",
+			});
+		}
+		if (rule.actions && !hasActiveActions(normalizeRuleActions(rule.actions))) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["actions"],
+				message: "A rule needs at least one action",
+			});
+		}
+	},
+);
+
+
+/** Body for POST /rules/reorder: rule ids in their new evaluation order. */
+export const ReorderRulesSchema = z.object({
+	ids: z.array(z.string().min(1)).min(1).max(200),
+});
