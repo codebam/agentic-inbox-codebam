@@ -4,7 +4,11 @@
 
 import DOMPurify from "dompurify";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { blockRemoteImages, buildEmailIframeCsp } from "shared/remote-images";
+import {
+	blockRemoteImages,
+	buildEmailIframeCsp,
+	proxyRemoteImages,
+} from "shared/remote-images";
 
 interface EmailIframeProps {
 	body: string;
@@ -16,6 +20,12 @@ interface EmailIframeProps {
 	 * omits every remote host until the user opts in.
 	 */
 	allowRemoteImages?: boolean | undefined;
+	/**
+	 * Mailbox the message belongs to, used to build the same-origin image
+	 * proxy route. When absent (or empty), an opted-in body renders exactly
+	 * as before: no proxy rewriting, so no sender URL is relayed.
+	 */
+	mailboxId?: string | undefined;
 }
 
 /** The height report our sandboxed iframe posts to the parent window. */
@@ -54,12 +64,14 @@ function isHeightReport(value: unknown): value is EmailIframeHeightReport {
  *   iframe as a defense-in-depth layer.
  * - Remote images (tracking pixels) are blocked by default: the sanitised
  *   body is passed through `blockRemoteImages` and the CSP allows no remote
- *   host, so they load only after an explicit opt-in (`allowRemoteImages`).
+ *   host. After an explicit opt-in (`allowRemoteImages`) they load through
+ *   the same-origin image proxy (`mailboxId`), never from the sender.
  */
 export default function EmailIframe({
 	body,
 	autoSize,
 	allowRemoteImages = false,
+	mailboxId,
 }: EmailIframeProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const [height, setHeight] = useState(autoSize ? 100 : 0);
@@ -93,13 +105,19 @@ export default function EmailIframe({
 		});
 
 		// Tracking pixels stay blocked unless the user opted in for this
-		// message or the sender sits on the mailbox's image allowlist.
+		// message or the sender sits on the mailbox's image allowlist. After
+		// the opt-in they still do not load from the sender: with a mailbox
+		// id the body's remote images are rewritten to the same-origin proxy
+		// route, so the sender never sees this reader.
 		const cleanBody = allowRemoteImages
-			? sanitizedBody
+			? mailboxId
+				? proxyRemoteImages(sanitizedBody, mailboxId).html
+				: sanitizedBody
 			: blockRemoteImages(sanitizedBody).html;
 
-		// Inline attachments are rewritten to same-origin API URLs, so the
-		// blocked CSP keeps the app's own origin while dropping remote hosts.
+		// Inline attachments are rewritten to same-origin API URLs and the
+		// proxied remote images are same-origin too, so the CSP keeps the
+		// app's own origin and still never allows a remote host.
 		const csp = buildEmailIframeCsp(
 			allowRemoteImages,
 			typeof window === "undefined" ? "" : window.location.origin,
@@ -176,7 +194,7 @@ ul, ol { padding-left: 20px; margin: 4px 0; }
 </head>
 <body>${cleanBody}${heightScript}</body>
 </html>`;
-	}, [body, autoSize, allowRemoteImages]);
+	}, [body, autoSize, allowRemoteImages, mailboxId]);
 
 	return (
 		<iframe

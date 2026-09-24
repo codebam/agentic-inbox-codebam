@@ -60,6 +60,7 @@ export default function MessageBody({
 			)}
 			autoSize={autoSize}
 			allowRemoteImages={allowRemoteImages}
+			mailboxId={mailboxId}
 		/>
 	);
 }

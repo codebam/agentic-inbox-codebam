@@ -18,9 +18,14 @@
  * are rewritten to same-origin API URLs before rendering) and cannot phone
  * home.
  *
- * Follow-up (not this wave): a Worker/Cloudflare-Images proxy that fetches
- * remote images server-side. An open proxy is an SSRF risk, so it needs a
- * destination allowlist plus size/type limits before it can ship.
+ * Opted-in remote images are not loaded from the sender's servers directly,
+ * either: `proxyRemoteImages` rewrites every https or protocol-relative
+ * candidate to the same-origin `/api/v1/mailboxes/<id>/image-proxy` route,
+ * so the Worker fetches it through the shared SSRF guard
+ * (workers/lib/ssrf-guard.ts) and the sender only ever sees Cloudflare's
+ * egress. `http:` candidates cannot be relayed (the guard is https-only) and
+ * are left for the iframe CSP to block, which is why the CSP never allows
+ * `https:`.
  */
 
 /** 1x1 transparent GIF used as the stand-in for every blocked remote image. */
@@ -64,32 +69,64 @@ export function isRemoteImageUrl(url: string): boolean {
 	return /^(?:https?:)?\/\//i.test(cleaned);
 }
 
+/** A rewritten attribute value plus how many references it replaced. */
+interface RewrittenValue {
+	value: string;
+	count: number;
+}
+
+
 /**
- * Rewrite the remote candidate URLs inside one `srcset` value, keeping
- * descriptors (`2x`, `640w`) and non-remote candidates (`cid:`, `data:`)
- * intact. Values are scanned rather than split on commas because `data:`
- * URIs legitimately contain commas.
+ * How one `<img>` tag's `src`/`srcset` values are rewritten: each callback
+ * returns the replacement (and how many references it covered), or null to
+ * keep the original value byte for byte. Blocking and the proxy differ only
+ * in these callbacks, so the tag walker — the fiddly part — is shared and
+ * the two modes cannot drift apart.
  */
-function blockRemoteSrcset(value: string): { value: string; count: number } {
+interface ImageRewriter {
+	src: (value: string) => RewrittenValue | null;
+	srcset: (value: string) => RewrittenValue | null;
+}
+
+
+/**
+ * Rewrite the candidate URLs inside one `srcset` value, keeping descriptors
+ * (`2x`, `640w`) intact. Values are scanned rather than split on commas
+ * because `data:` URIs legitimately contain commas, and a candidate the
+ * callback declines is copied back unchanged.
+ */
+function rewriteSrcsetCandidates(
+	value: string,
+	rewriteCandidate: (url: string) => string | null,
+): RewrittenValue | null {
 	let count = 0;
-	const rewritten = value.replace(SRCSET_CANDIDATE_RE, (_match, separator: string) => {
-		count++;
-		return `${separator}${BLOCKED_IMAGE_DATA_URI}`;
-	});
-	return { value: rewritten, count };
+	const rewritten = value.replace(
+		SRCSET_CANDIDATE_RE,
+		(match: string, separator: string, candidate: string) => {
+			const replacement = rewriteCandidate(candidate);
+			if (replacement === null) return match;
+			count++;
+			return `${separator}${replacement}`;
+		},
+	);
+	return count > 0 ? { value: rewritten, count } : null;
 }
 
 /**
- * Rewrite a single `<img ...>` tag: every remote `src`/`srcset` value becomes
- * the placeholder. Attribute names are matched case-insensitively and
- * everything else in the tag is copied byte for byte, so attribute values of
- * other attributes (e.g. `alt="src=..."`) are never rewritten.
+ * Rewrite a single `<img ...>` tag through `rewriter`: each `src`/`srcset`
+ * value the rewriter accepts is replaced, and everything else in the tag is
+ * copied byte for byte. Attribute names are matched case-insensitively, so
+ * attribute values of other attributes (e.g. `alt="src=..."`) are never
+ * rewritten.
  */
-function rewriteImgTag(tag: string): { tag: string; blockedCount: number } {
+function rewriteImgTag(
+	tag: string,
+	rewriter: ImageRewriter,
+): { tag: string; rewriteCount: number } {
 	const len = tag.length;
 	let i = 4; // past `<img`
 	let out = tag.slice(0, i);
-	let blockedCount = 0;
+	let rewriteCount = 0;
 
 	while (i < len) {
 		const ch = tag[i];
@@ -142,26 +179,36 @@ function rewriteImgTag(tag: string): { tag: string; blockedCount: number } {
 		}
 
 		const lowerName = name.toLowerCase();
-		if (lowerName === "src" && isRemoteImageUrl(value)) {
-			blockedCount++;
-			// Unquoted values cannot hold the placeholder (`=` is illegal
-			// there), so a blocked unquoted src comes back quoted.
-			out += `${name}${separator}${quote || '"'}${BLOCKED_IMAGE_DATA_URI}${quote || '"'}`;
-		} else if (lowerName === "srcset") {
-			const blocked = blockRemoteSrcset(value);
-			if (blocked.count > 0) {
-				blockedCount += blocked.count;
-				out += `${name}${separator}${quote || '"'}${blocked.value}${quote || '"'}`;
-			} else {
-				out += `${name}${separator}${quote}${value}${quote}`;
-			}
+		const rewritten =
+			lowerName === "src"
+				? rewriter.src(value)
+				: lowerName === "srcset"
+					? rewriter.srcset(value)
+					: null;
+		if (rewritten) {
+			rewriteCount += rewritten.count;
+			// A rewritten unquoted value comes back quoted: the replacement
+			// can hold characters (`=`, `&`) that are legal in a quoted
+			// attribute but not in an unquoted one.
+			out += `${name}${separator}${quote || '"'}${rewritten.value}${quote || '"'}`;
 		} else {
 			out += `${name}${separator}${quote}${value}${quote}`;
 		}
 	}
 
-	return { tag: out, blockedCount };
+	return { tag: out, rewriteCount };
 }
+
+/** The blocking rewriter: every remote reference becomes the placeholder. */
+const BLOCKING_REWRITER: ImageRewriter = {
+	src: (value) =>
+		isRemoteImageUrl(value) ? { value: BLOCKED_IMAGE_DATA_URI, count: 1 } : null,
+	srcset: (value) =>
+		rewriteSrcsetCandidates(value, (candidate) =>
+			isRemoteImageUrl(candidate) ? BLOCKED_IMAGE_DATA_URI : null,
+		),
+};
+
 
 export interface BlockedImagesResult {
 	/** The body with every remote image reference swapped for the placeholder. */
@@ -179,8 +226,8 @@ export function blockRemoteImages(html: string): BlockedImagesResult {
 	if (!html) return { html: html ?? "", blockedCount: 0 };
 	let blockedCount = 0;
 	const blocked = html.replace(IMG_TAG_RE, (tag) => {
-		const result = rewriteImgTag(tag);
-		blockedCount += result.blockedCount;
+		const result = rewriteImgTag(tag, BLOCKING_REWRITER);
+		blockedCount += result.rewriteCount;
 		return result.tag;
 	});
 	return { html: blocked, blockedCount };
@@ -192,25 +239,113 @@ export function hasRemoteImages(html: string): boolean {
 	return blockRemoteImages(html).blockedCount > 0;
 }
 
+
+// ── Same-origin image proxy ────────────────────────────────────────
+
+
+/**
+ * The absolute https URL behind one image reference, or null when the proxy
+ * must leave it alone: only `https:` and protocol-relative (`//host/...`)
+ * references can be relayed, while `http:` (the guard is https-only),
+ * `cid:` and `data:` can never be.
+ *
+ * Control characters browsers ignore while parsing a URL are stripped first
+ * (the same cleaning `isRemoteImageUrl` applies), so a newline inside the
+ * scheme cannot keep an unproxied reference past the rewrite.
+ */
+function proxiedHttpsUrl(value: string): string | null {
+	// eslint-disable-next-line no-control-regex -- deliberate: control characters are what browsers strip while parsing a URL
+	const cleaned = value.replace(/[\u0000-\u0020]/g, "");
+	if (/^https:\/\//i.test(cleaned)) return cleaned;
+	if (cleaned.startsWith("//")) return `https:${cleaned}`;
+	return null;
+}
+
+
+/**
+ * The same-origin image-proxy route for one mailbox: the route fetches and
+ * caches the image server-side (workers/lib/image-proxy).
+ */
+function proxyImageRoute(absoluteHttpsUrl: string, mailboxId: string): string {
+	return `/api/v1/mailboxes/${mailboxId}/image-proxy?url=${encodeURIComponent(absoluteHttpsUrl)}`;
+}
+
+
+export interface ProxiedImagesResult {
+	/** The body with every relayable remote image rewritten to the proxy route. */
+	html: string;
+	/** How many references were rewritten (one per src/srcset candidate). */
+	proxiedCount: number;
+}
+
+
+/**
+ * Produce the proxied variant of an opted-in email body: every `https:` and
+ * protocol-relative `img` src/srcset candidate is routed through the
+ * same-origin image proxy, so the sender's server never sees the reader's
+ * IP. `http:`, `cid:`, `data:` and all other markup pass through untouched —
+ * `http:` cannot be relayed (the guard is https-only) and is left to the
+ * iframe CSP to block, while `cid:`/`data:` images are part of the message.
+ *
+ * An empty `mailboxId` (a caller with no mailbox to attribute the route to)
+ * returns the body unchanged, so the browser never receives a proxy route it
+ * cannot use.
+ */
+export function proxyRemoteImages(
+	html: string,
+	mailboxId: string,
+): ProxiedImagesResult {
+	if (!html || !mailboxId) return { html: html ?? "", proxiedCount: 0 };
+
+	const rewriter: ImageRewriter = {
+		src: (value) => {
+			const absolute = proxiedHttpsUrl(value);
+			return absolute
+				? { value: proxyImageRoute(absolute, mailboxId), count: 1 }
+				: null;
+		},
+		srcset: (value) =>
+			rewriteSrcsetCandidates(value, (candidate) => {
+				const absolute = proxiedHttpsUrl(candidate);
+				return absolute ? proxyImageRoute(absolute, mailboxId) : null;
+			}),
+	};
+
+	let proxiedCount = 0;
+	const proxied = html.replace(IMG_TAG_RE, (tag) => {
+		const result = rewriteImgTag(tag, rewriter);
+		proxiedCount += result.rewriteCount;
+		return result.tag;
+	});
+	return { html: proxied, proxiedCount };
+}
+
 /**
  * Content-Security-Policy for the sandboxed email iframe (defense in depth on
  * top of the rewriting above).
  *
- * Images are the only resource a body may load. With remote images blocked,
- * `img-src` allows `data:`, `cid:` and the app's own origin (`appOrigin`):
- * inline attachments are rewritten to same-origin API URLs, so they keep
- * working while every remote host stays blocked. With remote images allowed
- * the iframe additionally allows `https:`.
+ * Images are the only resource a body may load, and the only sources are
+ * inline material (`data:`, `cid:`) and the app's own origin (`appOrigin`):
+ * inline attachments are rewritten to same-origin API URLs, and opted-in
+ * remote images were rewritten to same-origin proxy route URLs by
+ * `proxyRemoteImages`, so `https:` is never allowed.
+ *
+ * The policy is deliberately identical in both modes — the proxy made the
+ * image sources mode-independent. Keeping `https:` out even when remote
+ * images are allowed means a reference that somehow escaped the rewriting
+ * (an unparseable URL, an `http:` one the proxy cannot relay) stays blocked
+ * instead of leaking the reader's IP to the sender, while the proxy route
+ * keeps working because it is on the app origin. `allowRemoteImages` stays in
+ * the signature — the caller passes the mode it rendered the body in — but it
+ * no longer selects a source list.
  */
 export function buildEmailIframeCsp(
 	allowRemoteImages: boolean,
 	appOrigin = "",
 ): string {
-	const imageSources = allowRemoteImages
-		? "data: cid: https:"
-		: appOrigin
-			? `data: cid: ${appOrigin}`
-			: "data: cid:";
+	// Both modes resolve to the same sources; see the doc comment above.
+	void allowRemoteImages;
+	const imageSources = appOrigin ? `data: cid: ${appOrigin}` : "data: cid:";
 	return `default-src 'none'; style-src 'unsafe-inline'; img-src ${imageSources}; script-src 'unsafe-inline';`;
 }
 
