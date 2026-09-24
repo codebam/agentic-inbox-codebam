@@ -54,6 +54,8 @@ export interface Email {
 	envelope_recipient?: string | null;
 	cc?: string | undefined;
 	bcc?: string | undefined;
+	/** Reply-To target(s) the sender set, when any. */
+	reply_to?: string | null;
 	date: string;
 	read: boolean;
 	starred: boolean;

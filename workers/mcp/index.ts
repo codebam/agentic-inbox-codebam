@@ -291,7 +291,13 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				originalEmailId: z
 					.string()
 					.describe("The ID of the email being replied to"),
-				to: z.string().email().describe("Recipient email address"),
+				to: z
+					.string()
+					.email()
+					.optional()
+					.describe(
+						"Recipient email address. Omit it to reply to the original's Reply-To address (or its sender).",
+					),
 				subject: z.string().describe("Subject line (usually 'Re: ...')"),
 				bodyHtml: z
 					.string()

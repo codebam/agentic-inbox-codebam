@@ -1084,6 +1084,9 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const bccRecipients = (parsedEmail.bcc || [])
 		.map((recipient) => normalizeEmailAddress(recipient.address))
 		.filter((address): address is string => address !== null);
+	const replyToRecipients = (parsedEmail.replyTo || [])
+		.map((recipient) => normalizeEmailAddress(recipient.address))
+		.filter((address): address is string => address !== null);
 
 	const envelopeRecipient = normalizeEmailAddress(event.to);
 	// The SMTP envelope recipient is the routing source of truth. Fall back to
@@ -1341,6 +1344,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
 		envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
+		reply_to: replyToRecipients.join(", ") || null,
 		date: new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",
 		body_text: parsedEmail.text ?? null,

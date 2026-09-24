@@ -37,6 +37,9 @@ export default function SingleMessageView({
 								{email.sender}
 							</div>
 							<div className="text-xs text-kumo-subtle">To: {email.recipient}</div>
+							{email.cc && (
+								<div className="text-xs text-kumo-subtle">Cc: {email.cc}</div>
+							)}
 							{email.envelope_recipient && email.envelope_recipient !== email.recipient && (
 								<div className="text-xs text-kumo-subtle">Delivered to: {email.envelope_recipient}</div>
 							)}

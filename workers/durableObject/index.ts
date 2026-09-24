@@ -131,6 +131,7 @@ interface EmailData {
 	envelope_recipient?: string | null;
 	cc?: string | null;
 	bcc?: string | null;
+	reply_to?: string | null;
 	date: string;
 	body: string;
 	/** The message's text/plain alternative, when the sender included one. */
@@ -1284,6 +1285,7 @@ export class MailboxDO extends DurableObject<Env> {
 				envelope_recipient: email.envelope_recipient ?? null,
 				cc: email.cc ?? null,
 				bcc: email.bcc ?? null,
+				reply_to: email.reply_to ?? null,
 				date: email.date,
 				read: isSent ? 1 : (email.read ? 1 : 0),
 				starred: email.starred ? 1 : 0,

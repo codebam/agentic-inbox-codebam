@@ -87,7 +87,12 @@ function buildReplyAllFields(
 ) {
 	const toRecipients: string[] = [];
 	const toSeen = new Set<string>();
-	appendUniqueAddress(toRecipients, toSeen, original.sender, selfAddress);
+	// Reply-To replaces the sender as the reply target when the message
+	// sets it (mailing lists, ticketing systems); it may name several
+	// addresses, so every one of them is added.
+	for (const recipient of splitEmailList(original.reply_to?.trim() || original.sender)) {
+		appendUniqueAddress(toRecipients, toSeen, recipient, selfAddress);
+	}
 
 	for (const recipient of splitEmailList(original.recipient)) {
 		appendUniqueAddress(toRecipients, toSeen, recipient, selfAddress);
@@ -143,7 +148,7 @@ function buildInitialComposeFields(
 	if (mode === "reply") {
 		return {
 			...EMPTY_FIELDS,
-			to: original.sender,
+			to: original.reply_to?.trim() || original.sender,
 			subject: getPrefixedSubject(original.subject, "Re"),
 			body: `<p><br></p>${sigBlock ? `${sigBlock}<br>` : ""}${buildQuotedReplyBlock(original.date, original.sender, original.body || "")}`,
 		};

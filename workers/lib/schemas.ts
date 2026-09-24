@@ -36,6 +36,7 @@ export interface EmailMetadata {
 	envelope_recipient?: string | null;
 	cc?: string | null;
 	bcc?: string | null;
+	reply_to?: string | null;
 	date: string;
 	read: boolean;
 	starred: boolean;
