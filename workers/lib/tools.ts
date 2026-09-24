@@ -27,6 +27,8 @@ import {
 	buildThreadingHeaders,
 } from "./email-helpers";
 import { verifyDraft } from "./ai";
+import { applySignatureToBody } from "../../shared/signature";
+import { loadMailboxSignature, resolveMailboxModels } from "./mailbox-settings";
 import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
@@ -221,7 +223,13 @@ export async function toolDraftReply(
 		runVerifyDraft?: boolean;
 	},
 ): Promise<
-	| { status: "draft_saved"; draftId: string; message: string; draft: Record<string, string | null> }
+	| {
+			status: "draft_saved";
+			draftId: string;
+			message: string;
+			signatureApplied: boolean;
+			draft: Record<string, string | null>;
+	  }
 	| { error: string }
 > {
 	const stub = getMailboxStub(env, mailboxId);
@@ -240,10 +248,14 @@ export async function toolDraftReply(
 		};
 	}
 
+	// Model ids come from the mailbox settings, falling back to app-wide
+	// settings and the built-in defaults.
+	const models = await resolveMailboxModels(env, mailboxId);
+
 	// Verify/sanitize if requested
 	let processedBody = params.body.trim();
 	if (params.runVerifyDraft) {
-		const sanitized = await verifyDraft(env.AI, processedBody);
+		const sanitized = await verifyDraft(env.AI, processedBody, models.draftVerify);
 		if (!sanitized) {
 			return { error: "Draft verification failed — body could not be verified. Please try again." };
 		}
@@ -266,7 +278,13 @@ export async function toolDraftReply(
 				body: original.body ?? undefined,
 			})
 		: "";
-	const bodyHtml = processedBody + quotedBlock;
+	// Append the mailbox signature (when one is enabled) above the quoted
+	// reply block, matching the composer's prefill. Idempotent: a body that
+	// already carries the signature is left unchanged.
+	const bodyWithQuote = processedBody + quotedBlock;
+	const signature = await loadMailboxSignature(env, mailboxId);
+	const bodyHtml = applySignatureToBody(bodyWithQuote, signature);
+	const signatureApplied = bodyHtml !== bodyWithQuote;
 
 	await stub.createEmail(
 		Folders.DRAFT,
@@ -287,7 +305,10 @@ export async function toolDraftReply(
 	return {
 		status: "draft_saved",
 		draftId,
-		message: "Draft saved to Drafts folder. Review it and confirm to send.",
+		message: signatureApplied
+			? "Draft saved to Drafts folder with the mailbox signature. Review it and confirm to send."
+			: "Draft saved to Drafts folder. Review it and confirm to send.",
+		signatureApplied,
 		draft: {
 			mailboxId,
 			originalEmailId: params.originalEmailId,
@@ -317,7 +338,14 @@ export async function toolDraftEmail(
 		thread_id?: string;
 	},
 ): Promise<
-	| { status: string; draftId: string; threadId?: string; message: string; draft?: Record<string, string | null> }
+	| {
+			status: string;
+			draftId: string;
+			threadId?: string;
+			message: string;
+			signatureApplied: boolean;
+			draft?: Record<string, string | null>;
+	  }
 	| { error: string }
 > {
 	const stub = getMailboxStub(env, mailboxId);
@@ -379,7 +407,7 @@ export async function toolDraftEmail(
 			sender: mailboxId.toLowerCase(),
 			recipient: (params.to || "").toLowerCase(),
 			date: new Date().toISOString(),
-			body: processedBody,
+			body: bodyWithSignature,
 			in_reply_to: params.in_reply_to || null,
 			email_references: null,
 			thread_id: resolvedThreadId,
@@ -391,7 +419,10 @@ export async function toolDraftEmail(
 		status: "draft_saved",
 		draftId,
 		threadId: resolvedThreadId,
-		message: "Draft saved to Drafts folder. Review it and confirm to send.",
+		message: signatureApplied
+			? "Draft saved to Drafts folder with the mailbox signature. Review it and confirm to send."
+			: "Draft saved to Drafts folder. Review it and confirm to send.",
+		signatureApplied,
 		draft: {
 			mailboxId,
 			in_reply_to: params.in_reply_to || null,

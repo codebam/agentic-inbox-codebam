@@ -21,6 +21,7 @@ import {
 	SPAM_CATEGORY_ID,
 	type CategorizationSettings,
 } from "../../shared/categories";
+import { DEFAULT_MODELS } from "../../shared/models";
 import { stripHtmlToText } from "./email-helpers";
 
 export interface IncomingEmailForClassification {
@@ -98,6 +99,8 @@ function clampProbability(value: number): number {
 /**
  * Classify one inbound email against the mailbox's categorization settings.
  *
+ * @param model - Classifier model id; callers pass the mailbox-resolved
+ *          override, defaulting to DEFAULT_MODELS.classifier.
  * @returns the classification, or null when classification is disabled or the
  *          model call fails. Never throws.
  */
@@ -105,6 +108,7 @@ export async function classifyIncomingEmail(
 	ai: Ai,
 	email: IncomingEmailForClassification,
 	rawSettings: unknown,
+	model: string = DEFAULT_MODELS.classifier,
 ): Promise<EmailClassification | null> {
 	const settings = normalizeCategorizationSettings(rawSettings);
 	if (!settings.enabled) return null;
@@ -147,10 +151,10 @@ export async function classifyIncomingEmail(
 
 	try {
 		const response = (await ai.run(
-			"typesafe/jev",
+			model,
 			{ state, questions },
 			{ signal: AbortSignal.timeout(CLASSIFICATION_TIMEOUT_MS) },
-		)) as JevResponse;
+		)) as unknown as JevResponse;
 
 		return interpretJevResponse(response, settings);
 	} catch (error) {

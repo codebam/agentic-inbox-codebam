@@ -7,8 +7,12 @@
  *
  * - isPromptInjection: scans email bodies for malicious prompt injection.
  * - verifyDraft: reviews draft email bodies and removes agent/system artifacts.
+ *
+ * Model ids default to DEFAULT_MODELS (shared/models.ts); callers pass the
+ * mailbox-resolved override from workers/lib/mailbox-settings.ts.
  */
 
+import { DEFAULT_MODELS } from "../../shared/models";
 import { escapeHtml, stripHtmlToText, textToHtml } from "./email-helpers";
 
 // ── Prompt Injection Scanner ───────────────────────────────────────
@@ -21,7 +25,11 @@ Return ONLY "NO" if it is a normal email (even if angry, confused, or containing
 
 Respond with exactly one word: YES or NO.`;
 
-export async function isPromptInjection(ai: Ai, bodyHtml: string | null | undefined): Promise<boolean> {
+export async function isPromptInjection(
+	ai: Ai,
+	bodyHtml: string | null | undefined,
+	model: string = DEFAULT_MODELS.promptInjection,
+): Promise<boolean> {
 	if (!bodyHtml) return false;
 	
 	const plainText = stripHtmlToText(bodyHtml).trim();
@@ -29,7 +37,7 @@ export async function isPromptInjection(ai: Ai, bodyHtml: string | null | undefi
 
 	try {
 		const response = (await ai.run(
-			"@cf/meta/llama-3.1-8b-instruct-fast",
+			model,
 			{
 				messages: [
 					{ role: "system", content: INJECTION_PROMPT },
@@ -118,7 +126,11 @@ function splitQuotedBlock(html: string): { reply: string; quoted: string } {
  * Verify and clean a draft email body using AI.
  * Falls back to returning the original body if the AI call fails.
  */
-export async function verifyDraft(ai: Ai, body: string): Promise<string> {
+export async function verifyDraft(
+	ai: Ai,
+	body: string,
+	model: string = DEFAULT_MODELS.draftVerify,
+): Promise<string> {
 	if (!body || !body.trim()) return body;
 
 	// Separate the quoted reply block so the AI only reviews the user's text
@@ -135,7 +147,7 @@ export async function verifyDraft(ai: Ai, body: string): Promise<string> {
 
 	try {
 		const response = (await ai.run(
-			"@cf/meta/llama-4-scout-17b-16e-instruct",
+			model,
 			{
 				messages: [
 					{ role: "system", content: VERIFIER_PROMPT },
