@@ -3,11 +3,12 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Banner, Button, Input } from "@cloudflare/kumo";
-import { FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon, XIcon } from "@phosphor-icons/react";
+import { ClockIcon, FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon, XIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import AttachmentPicker from "./AttachmentPicker";
 import ComposeBodyEditor from "./ComposeBodyEditor";
+import SnoozeMenu from "./email-panel/SnoozeMenu";
 
 export default function ComposePanel({
 	mailboxId: mailboxIdProp,
@@ -36,10 +37,12 @@ export default function ComposePanel({
 		setBody,
 		error,
 		isSavingDraft,
-		isSending,
+		isScheduling,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
+		handleSendLater,
+		scheduleBlockReason,
 		closeCompose,
 		closePanel,
 		attachments,
@@ -63,7 +66,7 @@ export default function ComposePanel({
 						size="sm"
 						icon={<XIcon size={18} />}
 						onClick={closeCompose}
-						disabled={isSending}
+						disabled={isScheduling}
 						aria-label="Close compose"
 					/>
 				</div>
@@ -78,7 +81,7 @@ export default function ComposePanel({
 					attachments={attachments}
 					errors={attachmentErrors}
 					isBusy={isEncodingAttachments}
-					disabled={isSending || isSavingDraft}
+					disabled={isScheduling || isSavingDraft}
 					onAddFiles={(files) => { void handleAddAttachments(files); }}
 					onRemove={handleRemoveAttachment}
 				>
@@ -171,9 +174,12 @@ export default function ComposePanel({
 
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
+					{scheduleBlockReason && (
+						<p className="pb-2 text-xs text-kumo-subtle">{scheduleBlockReason}</p>
+					)}
 					<div className="flex items-center justify-between gap-3">
 						<div className="flex items-center gap-3 min-w-0">
-							<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
+							<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isScheduling}>
 								Discard
 							</Button>
 							{attachmentSummary && (
@@ -189,21 +195,42 @@ export default function ComposePanel({
 								variant="secondary"
 								size="sm"
 								loading={isSavingDraft}
-								disabled={isSending || isEncodingAttachments}
+								disabled={isScheduling || isEncodingAttachments}
 								icon={<FloppyDiskIcon size={14} />}
 								onClick={() => { void handleSaveDraft(); }}
 							>
 								{isSavingDraft ? "Saving..." : "Save as Draft"}
 							</Button>
+							{/* Presets and a custom time, in local time; queued sends carry no
+							    attachments, so the trigger is disabled with a visible reason. */}
+							<SnoozeMenu
+								label="Send later"
+								header="Send later"
+								icon={<ClockIcon size={14} />}
+								triggerLabel="Send later"
+								placement="up"
+								disabled={
+									isSavingDraft ||
+									isScheduling ||
+									isEncodingAttachments ||
+									scheduleBlockReason !== null
+								}
+								onPick={(iso) => { void handleSendLater(iso, closePanel); }}
+							/>
 							<Button
 								type="submit"
 								variant="primary"
 								size="sm"
-								loading={isSending}
-								disabled={isSavingDraft || isSending || isEncodingAttachments}
+								loading={isScheduling}
+								disabled={
+									isSavingDraft ||
+									isScheduling ||
+									isEncodingAttachments ||
+									scheduleBlockReason !== null
+								}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
-								{isSending ? "Sending..." : "Send"}
+								{isScheduling ? "Scheduling..." : "Send"}
 							</Button>
 						</div>
 					</div>

@@ -20,6 +20,7 @@ export default [
 		route("search", "routes/search-results.tsx"),
 		route("rules", "routes/rules.tsx"),
 		route("activity", "routes/activity.tsx"),
+		route("scheduled", "routes/scheduled.tsx"),
 	]),
 	route("*", "routes/not-found.tsx"),
 ] satisfies RouteConfig;

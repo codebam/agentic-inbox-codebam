@@ -32,6 +32,18 @@ interface SnoozeMenuProps {
 	extraItems?: ReadonlyArray<SnoozeMenuExtraItem> | undefined;
 	/** Tints the trigger when a time is already set. */
 	active?: boolean | undefined;
+	/**
+	 * Renders the trigger as a labelled button with this text instead of the
+	 * icon-only square button (the composer's "Send later").
+	 */
+	triggerLabel?: string | undefined;
+	/**
+	 * Direction the dropdown opens in. Use "up" for triggers pinned to the
+	 * bottom of a panel, where a downward menu would be clipped.
+	 */
+	placement?: "up" | "down" | undefined;
+	/** Disables the trigger, e.g. while the composer cannot schedule a send. */
+	disabled?: boolean | undefined;
 }
 
 /**
@@ -45,10 +57,10 @@ interface OpenMenu {
 }
 
 /**
- * Dropdown shared by the message toolbar's Snooze and Remind me actions:
- * canned local presets plus a custom date/time. Presets that have slipped
- * into the past are disabled and the custom input refuses past values —
- * the server rejects past timestamps.
+ * Dropdown shared by the message toolbar's Snooze and Remind me actions and
+ * the composer's Send later: canned local presets plus a custom date/time.
+ * Presets that have slipped into the past are disabled and the custom input
+ * refuses past values — the server rejects past timestamps.
  */
 export default function SnoozeMenu({
 	label,
@@ -58,6 +70,9 @@ export default function SnoozeMenu({
 	onPick,
 	extraItems,
 	active,
+	triggerLabel,
+	placement = "down",
+	disabled,
 }: SnoozeMenuProps) {
 	const [menu, setMenu] = useState<OpenMenu | null>(null);
 	const [custom, setCustom] = useState("");
@@ -105,19 +120,37 @@ export default function SnoozeMenu({
 
 	return (
 		<div ref={ref} className="relative">
-			<Tooltip content={label} side="bottom" asChild>
+			{triggerLabel !== undefined ? (
 				<Button
-					variant="ghost"
-					shape="square"
+					variant="secondary"
 					size="sm"
 					icon={icon}
 					onClick={toggleMenu}
+					disabled={disabled}
 					aria-label={ariaLabel ?? label}
-					className={active ? "text-kumo-brand" : ""}
-				/>
-			</Tooltip>
+				>
+					{triggerLabel}
+				</Button>
+			) : (
+				<Tooltip content={label} side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={icon}
+						onClick={toggleMenu}
+						disabled={disabled}
+						aria-label={ariaLabel ?? label}
+						className={active ? "text-kumo-brand" : ""}
+					/>
+				</Tooltip>
+			)}
 			{menu && (
-				<div className="absolute top-full left-0 z-50 mt-1 w-60 rounded-lg border border-kumo-line bg-kumo-elevated shadow-lg py-1">
+				<div
+					className={`absolute z-50 w-60 rounded-lg border border-kumo-line bg-kumo-elevated shadow-lg py-1 ${
+						placement === "up" ? "bottom-full right-0 mb-1" : "top-full left-0 mt-1"
+					}`}
+				>
 					<div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle">
 						{header}
 					</div>

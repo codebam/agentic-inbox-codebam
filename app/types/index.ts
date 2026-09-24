@@ -181,3 +181,27 @@ export interface AgentAction {
 	undone_at: string | null;
 	created_at: string;
 }
+
+/**
+ * One row of a mailbox's scheduled-send queue, as returned by
+ * `GET /api/v1/mailboxes/:mailboxId/scheduled-sends`.
+ *
+ * The composer's Send and Send later actions queue a message here instead
+ * of sending it immediately; the queue fires it at `send_at`. `draft_id`
+ * names the stored draft that holds the message — the queue owns that
+ * draft's lifecycle, the composer only creates it.
+ */
+export interface ScheduledSend {
+	id: string;
+	draft_id: string;
+	/** ISO 8601 instant the queue will send the message. */
+	send_at: string;
+	status: "pending" | "sent" | "failed" | "cancelled";
+	/** Delivery attempts made so far. */
+	attempts: number;
+	/** Last delivery error, when the send failed. */
+	last_error: string | null;
+	created_at: string;
+	/** ISO 8601 time the queue actually sent the message; null until it has. */
+	sent_at: string | null;
+}

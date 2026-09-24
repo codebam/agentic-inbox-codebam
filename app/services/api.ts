@@ -15,7 +15,7 @@ import type {
 } from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
-import type { AgentAction, BulkEmailAction, Contact, Email, Folder, Mailbox } from "~/types";
+import type { AgentAction, BulkEmailAction, Contact, Email, Folder, Mailbox, ScheduledSend } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -115,6 +115,11 @@ interface AgentActionListResponse {
 
 interface ContactListResponse {
 	contacts: Contact[];
+	totalCount: number;
+}
+
+interface ScheduledSendListResponse {
+	sends: ScheduledSend[];
 	totalCount: number;
 }
 
@@ -231,6 +236,31 @@ const api = {
 	/** Messages whose follow-up reminder is scheduled or has fired. */
 	listReminderEmails: (mailboxId: string) =>
 		get<EmailListResponse>(`/api/v1/mailboxes/${mailboxId}/reminders`),
+
+	// Scheduled sends — the composer queues messages here and the server's
+	// queue fires each one at `sendAt`. A queued send carries no attachments.
+	/** Queue `payload` (the same shape `sendEmail` takes) for `sendAt` (ISO 8601, future only). */
+	scheduleSend: (mailboxId: string, payload: Record<string, unknown>, sendAt: string) =>
+		post<ScheduledSend>(`/api/v1/mailboxes/${mailboxId}/scheduled-sends`, {
+			...payload,
+			send_at: sendAt,
+		}),
+	/** Queued and past sends for the mailbox, newest first (bounded page). */
+	listScheduledSends: (mailboxId: string, limit?: number) =>
+		get<ScheduledSendListResponse | ScheduledSend[]>(
+			`/api/v1/mailboxes/${mailboxId}/scheduled-sends`,
+			limit != null ? { params: { limit: String(limit) } } : undefined,
+		),
+	/** Cancel a queued send before the queue fires it. */
+	cancelScheduledSend: (mailboxId: string, id: string) =>
+		del<{ send: ScheduledSend }>(
+			`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}`,
+		),
+	/** Re-queue a failed send. */
+	retryScheduledSend: (mailboxId: string, id: string) =>
+		post<{ send: ScheduledSend }>(
+			`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}/retry`,
+		),
 
 	// Agent/MCP action audit log. Metadata only — never message bodies.
 	/** Recent agent/MCP actions for the mailbox, newest first (bounded page). */

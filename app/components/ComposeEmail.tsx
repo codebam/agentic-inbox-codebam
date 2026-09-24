@@ -3,12 +3,13 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Banner, Button, Dialog, Input, Text } from "@cloudflare/kumo";
-import { FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon } from "@phosphor-icons/react";
+import { ClockIcon, FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon } from "@phosphor-icons/react";
 import { lazy, Suspense } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import { useUIStore } from "~/hooks/useUIStore";
 import AttachmentPicker from "./AttachmentPicker";
+import SnoozeMenu from "./email-panel/SnoozeMenu";
 import RecipientField from "./RecipientField";
 
 const ComposeBodyEditor = lazy(() => import("./ComposeBodyEditor"));
@@ -36,10 +37,12 @@ export default function ComposeEmail() {
 		setBody,
 		error,
 		isSavingDraft,
-		isSending,
+		isScheduling,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
+		handleSendLater,
+		scheduleBlockReason,
 		attachments,
 		attachmentErrors,
 		attachmentSummary,
@@ -51,7 +54,7 @@ export default function ComposeEmail() {
 	return (
 		<Dialog.Root
 			open={isComposeModalOpen}
-			onOpenChange={(open) => !open && !isSending && closeComposeModal()}
+			onOpenChange={(open) => !open && !isScheduling && closeComposeModal()}
 		>
 			<Dialog size="lg" className="p-6 max-h-[85vh] overflow-y-auto">
 				<Dialog.Title className="text-lg font-semibold mb-5">{formTitle}</Dialog.Title>
@@ -61,7 +64,7 @@ export default function ComposeEmail() {
 						attachments={attachments}
 						errors={attachmentErrors}
 						isBusy={isEncodingAttachments}
-						disabled={isSending || isSavingDraft}
+						disabled={isScheduling || isSavingDraft}
 						onAddFiles={(files) => { void handleAddAttachments(files); }}
 						onRemove={handleRemoveAttachment}
 					>
@@ -129,6 +132,9 @@ export default function ComposeEmail() {
 						</Suspense>
 					</div>
 					</AttachmentPicker>
+					{scheduleBlockReason && (
+						<p className="pt-2 text-xs text-kumo-subtle">{scheduleBlockReason}</p>
+					)}
 					<div className="flex justify-between items-center gap-3 pt-2">
 						<div className="flex items-center gap-3 min-w-0">
 							<Button
@@ -136,7 +142,7 @@ export default function ComposeEmail() {
 								variant="ghost"
 								size="sm"
 								onClick={closeComposeModal}
-								disabled={isSending}
+								disabled={isScheduling}
 							>
 								Discard
 							</Button>
@@ -153,21 +159,42 @@ export default function ComposeEmail() {
 								variant="secondary"
 								size="sm"
 								loading={isSavingDraft}
-								disabled={isSending || isEncodingAttachments}
+								disabled={isScheduling || isEncodingAttachments}
 								icon={<FloppyDiskIcon size={14} />}
 								onClick={() => { void handleSaveDraft(); }}
 							>
 								{isSavingDraft ? "Saving..." : "Save as Draft"}
 							</Button>
+							{/* Presets and a custom time, in local time; queued sends carry no
+							    attachments, so the trigger is disabled with a visible reason. */}
+							<SnoozeMenu
+								label="Send later"
+								header="Send later"
+								icon={<ClockIcon size={14} />}
+								triggerLabel="Send later"
+								placement="up"
+								disabled={
+									isSavingDraft ||
+									isScheduling ||
+									isEncodingAttachments ||
+									scheduleBlockReason !== null
+								}
+								onPick={(iso) => { void handleSendLater(iso, closeComposeModal); }}
+							/>
 							<Button
 								type="submit"
 								variant="primary"
 								size="sm"
-								loading={isSending}
-								disabled={isSavingDraft || isSending || isEncodingAttachments}
+								loading={isScheduling}
+								disabled={
+									isSavingDraft ||
+									isScheduling ||
+									isEncodingAttachments ||
+									scheduleBlockReason !== null
+								}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
-								{isSending ? "Sending..." : "Send"}
+								{isScheduling ? "Scheduling..." : "Send"}
 							</Button>
 						</div>
 					</div>
