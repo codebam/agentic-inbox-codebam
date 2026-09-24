@@ -15,8 +15,14 @@ import {
 	buildThreadingHeaders,
 	listMailboxes,
 } from "./lib/email-helpers";
-import { SendEmailRequestSchema, BulkEmailActionSchema } from "./lib/schemas";
+import {
+	SendEmailRequestSchema,
+	BulkEmailActionSchema,
+	DraftBodySchema,
+} from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
+import { applySignatureToBody } from "../shared/signature";
+import { modelConfigErrors } from "../shared/models";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import {
@@ -38,6 +44,8 @@ import {
 	getGlobalCategorization,
 	putGlobalCategorization,
 } from "./lib/global-categorization";
+import { getGlobalModels, putGlobalModels } from "./lib/global-models";
+import { loadMailboxSignature } from "./lib/mailbox-settings";
 import {
 	classifyIncomingEmail,
 	serializeClassification,
@@ -58,17 +66,6 @@ const CreateMailboxBody = z.object({
 	email: z.string().email(),
 	name: z.string().min(1),
 	settings: z.record(z.any()).optional(), // unvalidated — agentSystemPrompt goes straight to AI
-});
-
-const DraftBody = z.object({
-	to: z.string().optional(),
-	cc: z.string().optional(),
-	bcc: z.string().optional(),
-	subject: z.string().optional(),
-	body: z.string(),
-	in_reply_to: z.string().optional(),
-	thread_id: z.string().optional(),
-	draft_id: z.string().optional(),
 });
 
 // -- Helpers --------------------------------------------------------
@@ -140,6 +137,24 @@ app.put("/api/v1/categorization", async (c) => {
 		return c.json({ error: "Invalid categorization settings" }, 400);
 	}
 	return c.json(await putGlobalCategorization(c.env.BUCKET, body));
+});
+
+// -- Global AI models -----------------------------------------------
+
+app.get("/api/v1/models", async (c) => {
+	return c.json(await getGlobalModels(c.env.BUCKET));
+});
+
+app.put("/api/v1/models", async (c) => {
+	const body = await c.req.json().catch(() => null);
+	if (!body || typeof body !== "object") {
+		return c.json({ error: "Invalid model settings" }, 400);
+	}
+	const errors = modelConfigErrors(body);
+	if (Object.keys(errors).length > 0) {
+		return c.json({ error: "Invalid model ID", details: errors }, 400);
+	}
+	return c.json(await putGlobalModels(c.env.BUCKET, body));
 });
 
 // -- Mailboxes ------------------------------------------------------
@@ -365,7 +380,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
+	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id, applySignature } = DraftBodySchema.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
 
 	// Draft replies to spam are refused at the same layer as the agent and MCP
@@ -437,13 +452,20 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	}
 	const messageId = crypto.randomUUID();
 	const now = new Date().toISOString();
+	// Programmatic callers (agent/MCP integrations) can ask for the mailbox
+	// signature server-side. The browser composer prefills the signature
+	// client-side and never sets applySignature, so a draft is never signed
+	// twice and sending a saved draft never appends another one.
+	const storedBody = applySignature
+		? applySignatureToBody(body, await loadMailboxSignature(c.env, mailboxId))
+		: body;
 	await stub.createEmail(Folders.DRAFT, {
 		id: messageId, subject: subject || "", sender: mailboxId.toLowerCase(),
 		recipient: (to || "").toLowerCase(), cc: cc?.toLowerCase() || null, bcc: bcc?.toLowerCase() || null,
-		date: now, body, in_reply_to: replyTarget || null, email_references: null,
+		date: now, body: storedBody, in_reply_to: replyTarget || null, email_references: null,
 		thread_id: threadTarget || replyTarget || messageId,
 	}, []);
-	return c.json({ id: messageId, draft_id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
+	return c.json({ id: messageId, draft_id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now, signatureApplied: storedBody !== body }, 201);
 });
 
 app.get("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {

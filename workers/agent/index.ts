@@ -314,6 +314,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					subject: args.subject,
 					body: args.body,
 					isPlainText: true,
+					applySignature: true,
 				});
 			},
 		}),
@@ -346,6 +347,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					body: args.body,
 					isPlainText: true,
 					runVerifyDraft: true,
+					applySignature: true,
 				});
 			},
 		}),

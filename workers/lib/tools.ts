@@ -210,6 +210,8 @@ export async function toolSearchEmails(
  * @param options.runVerifyDraft - If true, runs AI verifyDraft on the body.
  *   The agent and MCP both do this, but the agent does it on plain text
  *   while MCP does it on HTML.
+ * @param options.applySignature - If true, appends the mailbox's enabled
+ *   signature to the stored draft body (idempotent).
  */
 export async function toolDraftReply(
 	env: Env,
@@ -221,6 +223,8 @@ export async function toolDraftReply(
 		body: string;
 		isPlainText?: boolean;
 		runVerifyDraft?: boolean;
+		/** Append the mailbox signature (when one is enabled) to the stored draft. */
+		applySignature?: boolean;
 	},
 ): Promise<
 	| {
@@ -282,7 +286,9 @@ export async function toolDraftReply(
 	// reply block, matching the composer's prefill. Idempotent: a body that
 	// already carries the signature is left unchanged.
 	const bodyWithQuote = processedBody + quotedBlock;
-	const signature = await loadMailboxSignature(env, mailboxId);
+	const signature = params.applySignature
+		? await loadMailboxSignature(env, mailboxId)
+		: undefined;
 	const bodyHtml = applySignatureToBody(bodyWithQuote, signature);
 	const signatureApplied = bodyHtml !== bodyWithQuote;
 
@@ -332,6 +338,8 @@ export async function toolDraftEmail(
 		body: string;
 		isPlainText?: boolean;
 		runVerifyDraft?: boolean;
+		/** Append the mailbox signature (when one is enabled) to the stored draft. */
+		applySignature?: boolean;
 		/** Optional in_reply_to for create_draft style */
 		in_reply_to?: string;
 		/** Optional thread_id for create_draft style */
@@ -375,9 +383,13 @@ export async function toolDraftEmail(
 		}
 	}
 
+	// Model ids come from the mailbox settings, falling back to app-wide
+	// settings and the built-in defaults.
+	const models = await resolveMailboxModels(env, mailboxId);
+
 	let processedBody = params.body.trim();
 	if (params.runVerifyDraft) {
-		const sanitized = await verifyDraft(env.AI, processedBody);
+		const sanitized = await verifyDraft(env.AI, processedBody, models.draftVerify);
 		if (!sanitized) {
 			return { error: "Draft verification failed — body could not be verified. Please try again." };
 		}
@@ -398,6 +410,15 @@ export async function toolDraftEmail(
 	if (!resolvedThreadId) {
 		resolvedThreadId = draftId;
 	}
+
+	// Append the mailbox signature when the caller asked for it (the agent
+	// and MCP draft paths do). Idempotent: a body that already carries the
+	// signature is left unchanged.
+	const signature = params.applySignature
+		? await loadMailboxSignature(env, mailboxId)
+		: undefined;
+	const bodyWithSignature = applySignatureToBody(processedBody, signature);
+	const signatureApplied = bodyWithSignature !== processedBody;
 
 	await stub.createEmail(
 		Folders.DRAFT,
