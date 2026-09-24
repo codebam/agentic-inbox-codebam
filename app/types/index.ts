@@ -79,6 +79,12 @@ export interface Email {
 	participants?: string;
 	needs_reply?: boolean;
 	has_draft?: boolean;
+	/** ISO 8601 wake time while the message waits in the "snoozed" folder. */
+	snooze_until?: string | null;
+	/** ISO 8601 time of a scheduled follow-up reminder. */
+	remind_at?: string | null;
+	/** Set once the reminder has fired; the nudge stays until dismissed. */
+	reminded_at?: string | null;
 	// Present in the aggregated All Accounts list so each row knows which
 	// mailbox it belongs to.
 	mailboxId?: string;

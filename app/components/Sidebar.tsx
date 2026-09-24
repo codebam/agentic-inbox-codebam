@@ -6,6 +6,7 @@ import { Badge, Button, Dialog, Input, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	CaretLeftIcon,
+	ClockCounterClockwiseIcon,
 	EnvelopeOpenIcon,
 	FileIcon,
 	FolderIcon,
@@ -20,6 +21,7 @@ import {
 import { useMemo, useState } from "react";
 import { NavLink, useNavigate, useParams } from "react-router";
 import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
+import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import { useCreateFolder, useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
@@ -29,6 +31,7 @@ const FOLDER_ICONS: Record<string, React.ReactNode> = {
 	[Folders.SENT]: <PaperPlaneTiltIcon size={18} weight="regular" />,
 	[Folders.DRAFT]: <FileIcon size={18} weight="regular" />,
 	[Folders.ARCHIVE]: <ArchiveIcon size={18} weight="regular" />,
+	[SNOOZE_FOLDER_ID]: <ClockCounterClockwiseIcon size={18} weight="regular" />,
 	[Folders.SPAM]: <ProhibitIcon size={18} weight="regular" />,
 	[Folders.TRASH]: <TrashIcon size={18} weight="regular" />,
 };
@@ -38,6 +41,7 @@ const SYSTEM_FOLDER_LINKS = [
 	{ id: Folders.SENT, label: "Sent" },
 	{ id: Folders.DRAFT, label: "Drafts" },
 	{ id: Folders.ARCHIVE, label: "Archive" },
+	{ id: SNOOZE_FOLDER_ID, label: "Snoozed" },
 	{ id: Folders.SPAM, label: "Spam" },
 	{ id: Folders.TRASH, label: "Trash" },
 ];
@@ -90,7 +94,13 @@ export default function Sidebar() {
 
 	const customFolders = useMemo(
 		() =>
-			folders.filter((f) => !(SYSTEM_FOLDER_IDS as readonly string[]).includes(f.id)),
+			// Snoozed is a system view (own sidebar entry) even though the
+			// workers side may also list it among the API folders.
+			folders.filter(
+				(f) =>
+					!(SYSTEM_FOLDER_IDS as readonly string[]).includes(f.id) &&
+					f.id !== SNOOZE_FOLDER_ID,
+			),
 		[folders],
 	);
 

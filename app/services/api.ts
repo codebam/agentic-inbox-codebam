@@ -188,6 +188,29 @@ const api = {
 	/** Permanently delete every message in the Trash folder. */
 	emptyTrash: (mailboxId: string) =>
 		post<{ purged: number }>(`/api/v1/mailboxes/${mailboxId}/trash/empty`),
+
+	// Snooze and follow-up reminders. The Durable Object owns the
+	// semantics: a snoozed message waits in the "snoozed" folder and returns
+	// to the folder it came from; a fired reminder stays active until the
+	// user dismisses it. Both mutators return the updated row.
+	/** Park a message until `until` (ISO 8601, must be in the future). */
+	snoozeEmail: (mailboxId: string, id: string, until: string) =>
+		post<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/snooze`, { until }),
+	/** Wake a snoozed message immediately. */
+	unsnoozeEmail: (mailboxId: string, id: string) =>
+		del<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/snooze`),
+	/** Schedule a follow-up reminder for `at` (ISO 8601, future only). */
+	setReminder: (mailboxId: string, id: string, at: string) =>
+		post<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/reminder`, { at }),
+	/** Clear the reminder — used for both "change" and "dismiss". */
+	clearReminder: (mailboxId: string, id: string) =>
+		del<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/reminder`),
+	/** Every snoozed message for the mailbox, with its wake time. */
+	listSnoozedEmails: (mailboxId: string) =>
+		get<EmailListResponse>(`/api/v1/mailboxes/${mailboxId}/snoozed`),
+	/** Messages whose follow-up reminder is scheduled or has fired. */
+	listReminderEmails: (mailboxId: string) =>
+		get<EmailListResponse>(`/api/v1/mailboxes/${mailboxId}/reminders`),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>

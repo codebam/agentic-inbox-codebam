@@ -2,8 +2,9 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { AttachmentPayload } from "~/lib/attachments";
+import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import api from "~/services/api";
 import type { BulkEmailAction, BulkEmailTarget, Email } from "~/types";
 import { queryKeys } from "./keys";
@@ -104,6 +105,37 @@ export function useThreadReplies(
 	});
 }
 
+/**
+ * Snoozed messages for a mailbox — the Snoozed folder's data source. The
+ * dedicated endpoint returns the whole list (no pagination).
+ */
+export function useSnoozedEmails(
+	mailboxId: string | undefined,
+	options?: { enabled?: boolean },
+) {
+	return useQuery<EmailListResponse>({
+		queryKey: mailboxId
+			? queryKeys.emails.snoozed(mailboxId)
+			: ["emails", "_disabled_snoozed"],
+		queryFn: () => api.listSnoozedEmails(mailboxId!),
+		enabled: !!mailboxId && (options?.enabled ?? true),
+	});
+}
+
+/** Messages whose follow-up reminder is scheduled or has fired. */
+export function useReminderEmails(
+	mailboxId: string | undefined,
+	options?: { enabled?: boolean },
+) {
+	return useQuery<EmailListResponse>({
+		queryKey: mailboxId
+			? queryKeys.emails.reminders(mailboxId)
+			: ["emails", "_disabled_reminders"],
+		queryFn: () => api.listReminderEmails(mailboxId!),
+		enabled: !!mailboxId && (options?.enabled ?? true),
+	});
+}
+
 // ---------- Mutations ----------
 
 /** Invalidate both the email list and folder counts after any email mutation. */
@@ -192,6 +224,136 @@ export function useUpdateEmail() {
 			});
 			void qc.invalidateQueries({ queryKey: ["all-emails"] });
 		},
+	});
+}
+
+/**
+ * Mirror an optimistic patch into every cached list that shows this email,
+ * plus its detail cache, and return the snapshots needed to roll back.
+ */
+function patchEmailInCaches(
+	qc: QueryClient,
+	mailboxId: string,
+	id: string,
+	patch: Partial<Email>,
+) {
+	const listQueries = qc.getQueriesData<{
+		emails: Email[];
+		totalCount: number;
+	}>({
+		queryKey: ["emails", mailboxId],
+		predicate: isEmailListQuery(mailboxId),
+	});
+	for (const [key, cached] of listQueries) {
+		if (!cached?.emails) continue;
+		qc.setQueryData(key, {
+			...cached,
+			emails: cached.emails.map((email) =>
+				email.id === id ? { ...email, ...patch } : email,
+			),
+		});
+	}
+
+	const detailKey = queryKeys.emails.detail(mailboxId, id);
+	const prevDetail = qc.getQueryData<Email>(detailKey);
+	if (prevDetail) {
+		qc.setQueryData(detailKey, { ...prevDetail, ...patch });
+	}
+
+	return { listQueries, detailKey, prevDetail };
+}
+
+type EmailPatchSnapshot = ReturnType<typeof patchEmailInCaches>;
+
+/** Roll back a `patchEmailInCaches` snapshot after a failed mutation. */
+function restoreEmailCaches(
+	qc: QueryClient,
+	snapshot: EmailPatchSnapshot | undefined,
+) {
+	if (!snapshot) return;
+	for (const [key, cached] of snapshot.listQueries) {
+		qc.setQueryData(key, cached);
+	}
+	if (snapshot.prevDetail) {
+		qc.setQueryData(snapshot.detailKey, snapshot.prevDetail);
+	}
+}
+
+/**
+ * Shared machinery for the snooze and reminder mutations: cancel in-flight
+ * list queries, patch the message optimistically, roll back on failure,
+ * then refetch server truth (which also refreshes the snoozed and reminder
+ * lists, since their keys sit under ["emails", mailboxId]).
+ */
+function useEmailTimingMutation<
+	TVars extends { mailboxId: string; id: string },
+>(options: {
+	mutationFn: (vars: TVars) => Promise<Email>;
+	patch: (vars: TVars) => Partial<Email>;
+}) {
+	const qc = useQueryClient();
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: options.mutationFn,
+		onMutate: async (vars: TVars) => {
+			await qc.cancelQueries({
+				queryKey: ["emails", vars.mailboxId],
+				predicate: isEmailListQuery(vars.mailboxId),
+			});
+			return patchEmailInCaches(
+				qc,
+				vars.mailboxId,
+				vars.id,
+				options.patch(vars),
+			);
+		},
+		onError: (_err, _vars, snapshot) => restoreEmailCaches(qc, snapshot),
+		onSettled: (_data, _err, vars) => invalidate(vars.mailboxId),
+	});
+}
+
+/** Snooze a message until `until` (ISO 8601, future only). */
+export function useSnoozeEmail() {
+	return useEmailTimingMutation<{
+		mailboxId: string;
+		id: string;
+		until: string;
+	}>({
+		mutationFn: ({ mailboxId, id, until }) =>
+			api.snoozeEmail(mailboxId, id, until),
+		patch: ({ until }) => ({
+			snooze_until: until,
+			folder_id: SNOOZE_FOLDER_ID,
+		}),
+	});
+}
+
+/** Wake a snoozed message now; it returns to the folder it came from. */
+export function useUnsnoozeEmail() {
+	return useEmailTimingMutation<{ mailboxId: string; id: string }>({
+		mutationFn: ({ mailboxId, id }) => api.unsnoozeEmail(mailboxId, id),
+		patch: () => ({ snooze_until: null }),
+	});
+}
+
+/** Schedule a follow-up reminder at `at` (ISO 8601, future only). */
+export function useSetReminder() {
+	return useEmailTimingMutation<{
+		mailboxId: string;
+		id: string;
+		at: string;
+	}>({
+		mutationFn: ({ mailboxId, id, at }) => api.setReminder(mailboxId, id, at),
+		// Scheduling a fresh reminder also clears a nudge that already fired.
+		patch: ({ at }) => ({ remind_at: at, reminded_at: null }),
+	});
+}
+
+/** Dismiss a fired reminder or cancel a scheduled one. */
+export function useClearReminder() {
+	return useEmailTimingMutation<{ mailboxId: string; id: string }>({
+		mutationFn: ({ mailboxId, id }) => api.clearReminder(mailboxId, id),
+		patch: () => ({ remind_at: null, reminded_at: null }),
 	});
 }
 

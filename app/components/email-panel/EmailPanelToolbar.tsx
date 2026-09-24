@@ -3,14 +3,17 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 
-import { Button, Tooltip } from "@cloudflare/kumo";
+import { Badge, Button, Tooltip } from "@cloudflare/kumo";
 import { useEffect, useRef, useState } from "react";
 import {
+	AlarmIcon,
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
 	ArrowLeftIcon,
 	ArrowUUpLeftIcon,
+	BellRingingIcon,
 	ChatCircleIcon,
+	ClockCounterClockwiseIcon,
 	CodeIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
@@ -21,6 +24,8 @@ import {
 	TrashIcon,
 	XIcon,
 } from "@phosphor-icons/react";
+import SnoozeMenu from "~/components/email-panel/SnoozeMenu";
+import { formatSnoozeTime } from "~/lib/snooze";
 import type { Folder, Email } from "~/types";
 
 
@@ -45,6 +50,14 @@ interface EmailPanelToolbarProps {
 	onViewSource: () => void;
 	onDelete: () => void;
 	onRestore: () => void;
+	/** Snooze the message until the given ISO 8601 instant. */
+	onSnooze: (untilIso: string) => void;
+	/** Wake the message immediately and return it to its folder. */
+	onUnsnooze: () => void;
+	/** Schedule a follow-up reminder at the given ISO 8601 instant. */
+	onRemind: (atIso: string) => void;
+	/** Dismiss a fired reminder, or cancel a scheduled one. */
+	onDismissReminder: () => void;
 }
 
 
@@ -66,6 +79,10 @@ export default function EmailPanelToolbar({
 	onViewSource,
 	onDelete,
 	onRestore,
+	onSnooze,
+	onUnsnooze,
+	onRemind,
+	onDismissReminder,
 }: EmailPanelToolbarProps) {
 	return (
 		<div className="flex items-center gap-1 px-3 py-2 border-b border-kumo-line shrink-0 md:px-4">
@@ -170,6 +187,68 @@ export default function EmailPanelToolbar({
 
 
 			<MoveToFolderMenu folders={moveToFolders} onMove={onMove} />
+
+			{/* Snooze, follow-up reminders and the fired-reminder nudge.
+			    Drafts and trashed messages are not snoozable. */}
+			{!isDraftFolder && !isTrash && (
+				<>
+					{email.snooze_until ? (
+						<>
+							<Tooltip content="Unsnooze" side="bottom" asChild>
+								<Button
+									variant="ghost"
+									shape="square"
+									size="sm"
+									icon={<ClockCounterClockwiseIcon size={18} />}
+									onClick={onUnsnooze}
+									aria-label="Unsnooze"
+								/>
+							</Tooltip>
+							<span className="hidden text-xs text-kumo-subtle sm:inline">
+								Snoozed until {formatSnoozeTime(email.snooze_until)}
+							</span>
+						</>
+					) : (
+						<SnoozeMenu
+							label="Snooze"
+							icon={<ClockCounterClockwiseIcon size={18} />}
+							header="Snooze until"
+							onPick={onSnooze}
+						/>
+					)}
+					<SnoozeMenu
+						label={
+							email.remind_at && !email.reminded_at
+								? `Reminder set for ${formatSnoozeTime(email.remind_at)}`
+								: "Remind me"
+						}
+						ariaLabel="Remind me"
+						icon={<AlarmIcon size={18} />}
+						header="Remind me"
+						active={!!email.remind_at && !email.reminded_at}
+						onPick={onRemind}
+						extraItems={
+							email.remind_at
+								? [{ label: "Clear reminder", onSelect: onDismissReminder }]
+								: undefined
+						}
+					/>
+					{email.reminded_at && (
+						<Badge variant="warning" className="gap-1.5">
+							<BellRingingIcon size={14} weight="bold" />
+							Reminder
+							<button
+								type="button"
+								onClick={onDismissReminder}
+								aria-label="Dismiss reminder"
+								className="flex cursor-pointer items-center border-0 bg-transparent p-0 text-kumo-warning hover:text-kumo-default"
+							>
+								<XIcon size={12} weight="bold" />
+							</button>
+						</Badge>
+					)}
+				</>
+			)}
 
 
 			<div className="ml-auto flex items-center gap-0.5">

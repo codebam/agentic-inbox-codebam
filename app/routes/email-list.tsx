@@ -7,6 +7,8 @@ import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
 	ArrowsClockwiseIcon,
+	BellRingingIcon,
+	ClockCounterClockwiseIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
 	FileIcon,
@@ -29,6 +31,7 @@ import CategoryBadge from "~/components/CategoryBadge";
 import KeyboardCheatsheet, { KeyboardCheatsheetButton } from "~/components/KeyboardCheatsheet";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import SelectionCheckbox from "~/components/SelectionCheckbox";
+import { formatSnoozeTime, SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import { getSnippetText } from "~/lib/utils";
 import {
 	useBulkEmailAction,
@@ -36,6 +39,8 @@ import {
 	useEmails,
 	useEmptyTrash,
 	useMarkThreadRead,
+	useSnoozedEmails,
+	useUnsnoozeEmail,
 	useUpdateEmail,
 } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
@@ -97,6 +102,14 @@ const FOLDER_EMPTY_STATES: Record<
 		title: "No spam",
 		description:
 			"Emails that Jev flags as spam will be routed here when spam detection is enabled.",
+	},
+	[SNOOZE_FOLDER_ID]: {
+		icon: (
+			<ClockCounterClockwiseIcon size={48} weight="thin" className="text-kumo-subtle" />
+		),
+		title: "Nothing snoozed",
+		description:
+			"Snoozed emails wait here and return to their folder at the wake time.",
 	},
 };
 
@@ -166,6 +179,9 @@ export default function EmailListRoute() {
 		folder: string;
 	}>();
 	const isTrashFolder = folder === Folders.TRASH;
+	// The Snoozed sidebar entry reuses this route: same rows, same panel,
+	// but the list comes from the dedicated snoozed endpoint.
+	const isSnoozedFolder = folder === SNOOZE_FOLDER_ID;
 	const {
 		selectedEmailId,
 		isComposing,
@@ -178,6 +194,7 @@ export default function EmailListRoute() {
 
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
+	const unsnoozeEmail = useUnsnoozeEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
 	const emptyTrash = useEmptyTrash();
@@ -211,12 +228,26 @@ export default function EmailListRoute() {
 
 	const {
 		data: emailData,
-		isFetching: isRefreshing,
-	} = useEmails(mailboxId, params, { refetchInterval: 30_000 });
+		isFetching: isRefreshingEmails,
+	} = useEmails(mailboxId, params, {
+		refetchInterval: 30_000,
+		enabled: !isSnoozedFolder,
+	});
+	// Snoozed rows come from the dedicated endpoint (whole list, no paging).
+	const { data: snoozedData, isFetching: isRefreshingSnoozed } =
+		useSnoozedEmails(mailboxId, { enabled: isSnoozedFolder });
+	const isRefreshing = isSnoozedFolder
+		? isRefreshingSnoozed
+		: isRefreshingEmails;
 
 	// Stable reference: a fresh array here would invalidate every memo below.
-	const emails = useMemo(() => emailData?.emails ?? [], [emailData]);
-	const totalCount = emailData?.totalCount ?? 0;
+	const emails = useMemo(
+		() => (isSnoozedFolder ? snoozedData?.emails : emailData?.emails) ?? [],
+		[isSnoozedFolder, snoozedData, emailData],
+	);
+	const totalCount = isSnoozedFolder
+		? snoozedData?.totalCount ?? 0
+		: emailData?.totalCount ?? 0;
 
 	const { data: folders = [] } = useFolders(mailboxId);
 
@@ -253,7 +284,12 @@ export default function EmailListRoute() {
 		return folders
 			.filter(
 				(f) =>
-					f.id !== folder && f.id !== Folders.SENT && f.id !== Folders.DRAFT,
+					f.id !== folder &&
+					f.id !== Folders.SENT &&
+					f.id !== Folders.DRAFT &&
+					// Snoozing carries a wake time — it goes through the snooze
+					// action, never the plain move menu.
+					f.id !== SNOOZE_FOLDER_ID,
 			)
 			.sort((a, b) => {
 				const ai = systemOrder.indexOf(a.id);
@@ -496,7 +532,7 @@ export default function EmailListRoute() {
 								{folderName}
 							</h1>
 							<div className="ml-auto flex items-center gap-1">
-								{categories.length > 0 && (
+								{categories.length > 0 && !isSnoozedFolder && (
 									<Select
 										aria-label="Filter by category"
 										size="sm"
@@ -659,6 +695,20 @@ export default function EmailListRoute() {
 													category={email.category}
 													categories={categories}
 												/>
+												{email.snooze_until && (
+													<span className="shrink-0 inline-flex items-center gap-1 text-xs text-kumo-subtle">
+														<ClockCounterClockwiseIcon size={14} />
+														Snoozed until {formatSnoozeTime(email.snooze_until)}
+													</span>
+												)}
+												{email.reminded_at && (
+													<Tooltip content="Reminder fired" asChild>
+														<span className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-kumo-warning">
+															<BellRingingIcon size={14} weight="bold" />
+															Reminder
+														</span>
+													</Tooltip>
+												)}
 												{email.needs_reply && !email.has_draft && (
 													<Tooltip content="Needs reply" asChild>
 														<span className="shrink-0 text-kumo-warning">
@@ -686,6 +736,21 @@ export default function EmailListRoute() {
 
 										{/* Hover actions */}
 										<div className="hidden group-hover:flex items-center shrink-0">
+											{email.snooze_until && mailboxId ? (
+												<Tooltip content="Unsnooze" asChild>
+													<Button
+														variant="ghost"
+														shape="square"
+														size="sm"
+														icon={<ClockCounterClockwiseIcon size={14} />}
+														onClick={(e) => {
+															e.stopPropagation();
+															unsnoozeEmail.mutate({ mailboxId, id: email.id });
+														}}
+														aria-label="Unsnooze"
+													/>
+												</Tooltip>
+											) : null}
 											<Tooltip content={email.read ? "Mark unread" : "Mark read"} asChild>
 												<Button
 													variant="ghost"
@@ -730,8 +795,8 @@ export default function EmailListRoute() {
 					)}
 				</div>
 
-				{/* Pagination */}
-				{totalCount > PAGE_SIZE && (
+				{/* Pagination — the snoozed endpoint returns the whole list */}
+				{!isSnoozedFolder && totalCount > PAGE_SIZE && (
 					<div className="flex justify-center py-3 border-t border-kumo-line shrink-0">
 						<Pagination
 							page={page}
