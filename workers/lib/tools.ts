@@ -28,6 +28,10 @@ import {
 	type RulePatch,
 } from "./rules";
 import {
+	isSenderPolicyValidationError,
+	type SenderPolicy,
+} from "./sender-policy";
+import {
 	getMailboxStub,
 	getFullEmail,
 	getFullThread,
@@ -633,6 +637,45 @@ export async function toolMarkEmailRead(
 	const stub = getMailboxStub(env, mailboxId);
 	await stub.updateEmail(emailId, { read });
 	return { status: "updated", emailId, read };
+}
+
+// ── star_email ─────────────────────────────────────────────────────
+
+export async function toolStarEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	starred: boolean,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const email = await stub.updateEmail(emailId, { starred });
+	if (!email) return { error: "Email not found" };
+	return { status: "updated", emailId, starred };
+}
+
+// ── set_sender_policy ──────────────────────────────────────────────
+
+/**
+ * Record an allow/block decision for the sender of an email.
+ *
+ * `allow` also moves the message back to the Inbox and clears its spam
+ * markings; `block` moves it to Spam. Neither deletes anything.
+ */
+export async function toolSetSenderPolicy(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	policy: SenderPolicy,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	try {
+		const entry = await stub.applySenderPolicyFeedback(emailId, policy);
+		if (!entry) return { error: "Email not found" };
+		return { status: "updated", action: policy, entry };
+	} catch (e) {
+		if (isSenderPolicyValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
 }
 
 // ── move_email ─────────────────────────────────────────────────────

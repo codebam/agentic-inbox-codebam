@@ -29,10 +29,14 @@ import {
 	toolGetEmail,
 	toolGetThread,
 	toolSearchEmails,
+	toolSearchAllMailboxes,
 	toolDraftReply,
 	toolDraftEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolUpdateDraft,
+	toolStarEmail,
+	toolSetSenderPolicy,
 	toolDiscardDraft,
 	toolDeleteEmail,
 	toolDeleteSpamEmails,
@@ -193,7 +197,7 @@ async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
 
 
 
-function createEmailTools(env: Env, fixedMailboxId: string | null) {
+export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 	const allMailboxes = fixedMailboxId === null;
 
 
@@ -443,6 +447,49 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			},
 		}),
 
+		// Only offered where the chat already spans mailboxes; a per-mailbox
+		// chat must not be able to read another mailbox through it.
+		...(allMailboxes
+			? {
+					search_all_mailboxes: defineTool({
+						description:
+							"Search every mailbox at once and merge the matches by date (newest first). Same filters as search_emails; each result row carries the mailboxId it came from.",
+						parameters: z.object({
+							query: z.string().optional().describe("Free text matched against subject, body, sender and recipient; Gmail-style operators (from:bob, is:unread, has:attachment, before:2025-01-01) are accepted too."),
+							folder: z.string().optional().describe("Optional folder to restrict the search to"),
+							category: z.string().optional().describe("Optional category ID to restrict the search to"),
+							from: z.string().optional().describe("Only emails whose sender matches this text"),
+							to: z.string().optional().describe("Only emails whose recipient (to/cc/bcc) matches this text"),
+							subject: z.string().optional().describe("Only emails whose subject matches this text"),
+							isRead: z.boolean().optional().describe("true = only read emails, false = only unread emails"),
+							isStarred: z.boolean().optional().describe("true = only starred emails"),
+							hasAttachment: z.boolean().optional().describe("true = only emails with attachments"),
+							before: z.string().optional().describe("Only emails dated before this date (YYYY-MM-DD or ISO 8601)"),
+							after: z.string().optional().describe("Only emails dated after this date (YYYY-MM-DD or ISO 8601)"),
+							page: z.number().int().min(1).optional().describe("Page number (default 1)"),
+							limit: z.number().int().min(1).max(100).optional().describe("Results per page (default 25, max 100)"),
+						}),
+						execute: async (args) => {
+							return toolSearchAllMailboxes(env, {
+								query: args.query,
+								folder: args.folder,
+								category: args.category,
+								from: args.from,
+								to: args.to,
+								subject: args.subject,
+								isRead: args.isRead,
+								isStarred: args.isStarred,
+								hasAttachment: args.hasAttachment,
+								before: args.before,
+								after: args.after,
+								page: args.page,
+								limit: args.limit,
+							});
+						},
+					}),
+			}
+		: {}),
+
 
 
 
@@ -458,6 +505,16 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.describe(
 						"The plain text body of the email. No HTML — just write normally.",
 					),
+				in_reply_to: z
+					.string()
+					.optional()
+					.describe(
+						"The ID of the email this draft replies to, to thread it as a reply",
+					),
+				thread_id: z
+					.string()
+					.optional()
+					.describe("Thread ID to attach this draft to"),
 			}),
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
@@ -468,6 +525,8 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					body: args.body,
 					isPlainText: true,
 					applySignature: true,
+					in_reply_to: args.in_reply_to,
+					thread_id: args.thread_id,
 				});
 			},
 		}),
@@ -530,6 +589,62 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolMarkEmailRead(env, mailboxId, args.emailId, args.read);
+			},
+		}),
+
+		star_email: defineTool({
+			description: "Star or unstar an email.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID"),
+				starred: z.boolean().describe("true to star, false to unstar"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolStarEmail(env, mailboxId, args.emailId, args.starred);
+			},
+		}),
+
+		update_draft: defineTool({
+			description:
+				"Revise a draft in the Drafts folder. Pass only what changes; the draft is re-created with the new content and the previous draft is removed. The body is plain text.",
+			parameters: z.object({
+				...mailboxIdField,
+				draftId: z.string().describe("The ID of the draft to update"),
+				to: z.string().email().optional().describe("New recipient, when changing it"),
+				subject: z.string().optional().describe("New subject line"),
+				body: z
+					.string()
+					.optional()
+					.describe("New plain text body. No HTML — just write normally."),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUpdateDraft(env, mailboxId, {
+					draftId: args.draftId,
+					to: args.to,
+					subject: args.subject,
+					bodyHtml: args.body === undefined ? undefined : textToHtml(args.body),
+				});
+			},
+		}),
+
+		set_sender_policy: defineTool({
+			description:
+				"Record an allow or block decision for the sender of an email: allow moves the message back to the Inbox and clears its spam markings, block moves it to Spam. Nothing is deleted. Only call this when the operator explicitly asks to block or trust a sender.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email whose sender the decision applies to"),
+				action: z
+					.enum(["allow", "block"])
+					.describe("allow = trust this sender (not spam); block = send them to Spam"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolSetSenderPolicy(env, mailboxId, args.emailId, args.action);
 			},
 		}),
 

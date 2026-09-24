@@ -20,6 +20,10 @@ import {
 	toolSendEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolStarEmail,
+	toolSetSenderPolicy,
+	toolDiscardDraft,
+	toolDeleteSpamEmails,
 	toolListRules,
 	toolCreateRule,
 	toolUpdateRule,
@@ -427,6 +431,42 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			},
 		);
 
+		// ── discard_draft ──────────────────────────────────────────
+		this.server.tool(
+			"discard_draft",
+			"Permanently delete a draft email — drafts are not moved to Trash and cannot be restored.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				draftId: z.string().describe("The ID of the draft to delete"),
+			},
+			async ({ mailboxId, draftId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolDiscardDraft(env, mailboxId, draftId);
+				return mcpResult(result);
+			},
+		);
+
+		// ── delete_spam_emails ─────────────────────────────────────
+		this.server.tool(
+			"delete_spam_emails",
+			"Permanently delete every email marked as spam (Spam folder, spam category, or classifier is_spam). Irreversible — spam is never moved to Trash. Omit mailboxId to clear spam from every mailbox.",
+			{
+				mailboxId: z
+					.string()
+					.optional()
+					.describe("Mailbox address; omit to clear spam from every mailbox"),
+			},
+			async ({ mailboxId }) => {
+				if (mailboxId !== undefined) {
+					const denied = await verifyMailbox(mailboxId);
+					if (denied) return denied;
+				}
+				const result = await toolDeleteSpamEmails(env, mailboxId);
+				return mcpResult(result);
+			},
+		);
+
 		// ── send_reply ─────────────────────────────────────────────
 		this.server.tool(
 			"send_reply",
@@ -517,6 +557,23 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			},
 		);
 
+		// ── star_email ─────────────────────────────────────────────
+		this.server.tool(
+			"star_email",
+			"Star or unstar an email.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID"),
+				starred: z.boolean().describe("true to star, false to unstar"),
+			},
+			async ({ mailboxId, emailId, starred }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolStarEmail(env, mailboxId, emailId, starred);
+				return mcpResult(result);
+			},
+		);
+
 		// ── move_email ─────────────────────────────────────────────
 		this.server.tool(
 			"move_email",
@@ -547,6 +604,25 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			},
 		);
 
+
+		// ── set_sender_policy ──────────────────────────────────────
+		this.server.tool(
+			"set_sender_policy",
+			"Record an allow or block decision for the sender of an email: allow moves the message back to the Inbox and clears its spam markings, block moves it to Spam. Nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email whose sender the decision applies to"),
+				action: z
+					.enum(["allow", "block"])
+					.describe("allow = trust this sender (not spam); block = send them to Spam"),
+			},
+			async ({ mailboxId, emailId, action }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolSetSenderPolicy(env, mailboxId, emailId, action);
+				return mcpResult(result);
+			},
+		);
 
 		// ── list_rules ─────────────────────────────────────────────
 		// Rules are deterministic per-mailbox filters. The agent/MCP rule
