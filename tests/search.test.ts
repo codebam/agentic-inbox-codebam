@@ -5,8 +5,8 @@
 
 /**
  * Search tests: real Durable Object SQLite queries (body terms, operator
- * filters, the long-term LIKE pattern limit, pagination) plus focused unit
- * tests for the LIKE-pattern and query-parser helpers.
+ * filters, the long-term LIKE pattern limit, the FTS index, pagination) plus
+ * focused unit tests for the LIKE-pattern, FTS-term and query-parser helpers.
  *
  * Durable Object storage is shared by every test in this file, so each test
  * uses its own mailbox to keep its rows out of the others' result sets.
@@ -24,6 +24,13 @@ import {
 	likePatternsFor,
 	splitLikeTerm,
 } from "../workers/lib/like-terms";
+import {
+	FTS_MAX_TERMS,
+	FTS_MIN_TERM_LENGTH,
+	ftsPhrase,
+	splitFtsTerms,
+} from "../workers/lib/fts-terms";
+import { applyMigrations, mailboxMigrations } from "../workers/durableObject/migrations";
 import { searchAllMailboxes } from "../workers/lib/search-all";
 import type { Env } from "../workers/types";
 
@@ -36,6 +43,14 @@ const BODY_MAILBOX = "search-body@example.com";
 const OPS_MAILBOX = "search-ops@example.com";
 const LONG_MAILBOX = "search-long@example.com";
 const PAGE_MAILBOX = "search-page@example.com";
+const FTS_MAILBOX = "search-fts@example.com";
+const AND_MAILBOX = "search-and@example.com";
+const COLUMNS_MAILBOX = "search-columns@example.com";
+const SYNC_MAILBOX = "search-sync@example.com";
+const NASTY_MAILBOX = "search-nasty@example.com";
+const PURGE_FTS_MAILBOX = "search-purge-fts@example.com";
+const LONG_TERM_MAILBOX = "search-long-fts@example.com";
+const UPGRADE_MAILBOX = "search-upgrade@example.com";
 
 
 function stubFor(mailbox: string) {
@@ -53,6 +68,9 @@ interface SeedEmail {
 	read?: boolean;
 	starred?: boolean;
 	thread_id?: string | null;
+	envelope_recipient?: string | null;
+	cc?: string | null;
+	bcc?: string | null;
 }
 
 
@@ -84,6 +102,9 @@ async function seedEmails(
 				read: email.read,
 				starred: email.starred,
 				thread_id: email.thread_id ?? email.id,
+				envelope_recipient: email.envelope_recipient ?? null,
+				cc: email.cc ?? null,
+				bcc: email.bcc ?? null,
 			},
 			attachments.filter((attachment) => attachment.email_id === email.id),
 		);
@@ -225,6 +246,13 @@ describe("MailboxDO search", () => {
 		expect(ids(page1)[0]).toBe("page-30"); // newest first
 		expect(ids(page2)[0]).toBe("page-20");
 		expect(new Set([...ids(page1), ...ids(page2)]).size).toBe(20); // pages don't overlap
+
+		// A mid-word substring ('ation' inside every 'pagination') is answered
+		// by the FTS index, and paginates with the same exact totals.
+		expect(await stub.countSearchResults({ query: "ation" })).toBe(total);
+		expect(ids(await stub.searchEmails({ query: "ation", page: 1, limit: 10 }))[0]).toBe("page-30");
+		expect(ids(await stub.searchEmails({ query: "ation", page: 3, limit: 10 }))).toContain("page-10");
+		expect(ids(await stub.searchEmails({ query: "ation", page: 4, limit: 10 }))).toHaveLength(0);
 	});
 });
 
@@ -251,6 +279,330 @@ describe("searchAllMailboxes", () => {
 			`${beta}:x-3`,
 			`${alpha}:x-1`,
 		]);
+
+		// A mid-word substring resolves through every mailbox's own FTS index.
+		const substring = await searchAllMailboxes(appEnv, { query: "rossbox" });
+		expect(substring.totalCount).toBe(3);
+		expect(substring.emails.map((row) => row.id)).toContain("x-1");
+	});
+});
+
+
+// ── FTS index (migration 23) ───────────────────────────────────────
+
+
+describe("MailboxDO search (FTS index)", () => {
+	it("matches substrings inside words and keeps % and _ literal", async () => {
+		const stub = stubFor(FTS_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "fts-1", subject: "Weekly report", sender: "alice@example.org", recipient: FTS_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>The quarterly projections look healthy.</p>" },
+			{ id: "fts-2", subject: "Progress notes", sender: "bob@example.org", recipient: FTS_MAILBOX, date: "2026-01-03T10:00:00.000Z", body: "<p>50% done with the migration</p>" },
+			{ id: "fts-3", subject: "Flag naming", sender: "carol@example.org", recipient: FTS_MAILBOX, date: "2026-01-04T10:00:00.000Z", body: "<p>the a_b flag and 5012 rows</p>" },
+			{ id: "fts-4", subject: "Flag naming two", sender: "dave@example.org", recipient: FTS_MAILBOX, date: "2026-01-05T10:00:00.000Z", body: "<p>the axb flag</p>" },
+		]);
+
+		// Substring inside a word: 'arter' is not a word of its own anywhere.
+		expect(ids(await stub.searchEmails({ query: "arter" }))).toEqual(["fts-1"]);
+		expect(await stub.countSearchResults({ query: "arter" })).toBe(1);
+		// The whole word still matches the whole word.
+		expect(ids(await stub.searchEmails({ query: "quarterly" }))).toEqual(["fts-1"]);
+
+		// % and _ stay literal inside a quoted FTS phrase: '50%' matches the
+		// message holding it and not the 5012 one, and 'a_b' is the underscore
+		// rather than a LIKE wildcard.
+		expect(ids(await stub.searchEmails({ query: "50%" }))).toEqual(["fts-2"]);
+		expect(ids(await stub.searchEmails({ query: "a_b" }))).toEqual(["fts-3"]);
+		// Terms under the trigram minimum keep the same escaping on the LIKE path.
+		expect(ids(await stub.searchEmails({ query: "%" }))).toEqual(["fts-2"]);
+		expect(ids(await stub.searchEmails({ query: "_" }))).toEqual(["fts-3"]);
+
+		// A miss stays empty and totals stay exact.
+		expect(ids(await stub.searchEmails({ query: "no-such-term-anywhere" }))).toEqual([]);
+		expect(await stub.countSearchResults({ query: "no-such-term-anywhere" })).toBe(0);
+	});
+
+
+	it("ANDs multi-term queries across the whole message", async () => {
+		const stub = stubFor(AND_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "and-1", subject: "Both words", sender: "joint@example.org", recipient: AND_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>alpha beta together</p>" },
+			{ id: "and-2", subject: "Only alpha", sender: "alpha-only@example.org", recipient: AND_MAILBOX, date: "2026-01-03T10:00:00.000Z", body: "<p>alpha appears here</p>" },
+			{ id: "and-3", subject: "Only beta", sender: "beta-only@example.org", recipient: AND_MAILBOX, date: "2026-01-04T10:00:00.000Z", body: "<p>beta appears here</p>" },
+		]);
+
+		expect(ids(await stub.searchEmails({ query: "alpha beta" }))).toEqual(["and-1"]);
+		expect(await stub.countSearchResults({ query: "alpha beta" })).toBe(1);
+
+		// Either term on its own matches both messages carrying it, newest
+		// first — the ordering of the LIKE-era search is unchanged.
+		expect(ids(await stub.searchEmails({ query: "alpha" }))).toEqual(["and-2", "and-1"]);
+		expect(ids(await stub.searchEmails({ query: "beta" }))).toEqual(["and-3", "and-1"]);
+
+		// One matching term is not enough...
+		expect(ids(await stub.searchEmails({ query: "alpha gamma" }))).toEqual([]);
+		expect(await stub.countSearchResults({ query: "alpha gamma" })).toBe(0);
+		// ...and the terms may live in different columns of one message.
+		expect(ids(await stub.searchEmails({ query: "alpha Only" }))).toEqual(["and-2"]);
+	});
+
+
+	it("indexes the same seven columns the LIKE path searched", async () => {
+		const stub = stubFor(COLUMNS_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			// One message per column, each with a token no other column holds.
+			{ id: "col-subject", subject: "zebracol in the subject", sender: "one@example.org", recipient: COLUMNS_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>plain body</p>" },
+			{ id: "col-body", subject: "plain subject", sender: "two@example.org", recipient: COLUMNS_MAILBOX, date: "2026-01-03T10:00:00.000Z", body: "<p>yachtcol in the body</p>" },
+			{ id: "col-sender", subject: "plain subject", sender: "xenoncol@example.org", recipient: COLUMNS_MAILBOX, date: "2026-01-04T10:00:00.000Z", body: "<p>plain body</p>" },
+			{ id: "col-recipient", subject: "plain subject", sender: "three@example.org", recipient: "walnutcol@example.com", date: "2026-01-05T10:00:00.000Z", body: "<p>plain body</p>" },
+			{ id: "col-envelope", subject: "plain subject", sender: "four@example.org", recipient: COLUMNS_MAILBOX, envelope_recipient: "vipercol@example.com", date: "2026-01-06T10:00:00.000Z", body: "<p>plain body</p>" },
+			{ id: "col-cc", subject: "plain subject", sender: "five@example.org", recipient: COLUMNS_MAILBOX, cc: "umbracol@example.com", date: "2026-01-07T10:00:00.000Z", body: "<p>plain body</p>" },
+			{ id: "col-bcc", subject: "plain subject", sender: "six@example.org", recipient: COLUMNS_MAILBOX, bcc: "tapircol@example.com", date: "2026-01-08T10:00:00.000Z", body: "<p>plain body</p>" },
+		]);
+
+		for (const [id, token] of [
+			["col-subject", "zebracol"],
+			["col-body", "yachtcol"],
+			["col-sender", "xenoncol"],
+			["col-recipient", "walnutcol"],
+			["col-envelope", "vipercol"],
+			["col-cc", "umbracol"],
+			["col-bcc", "tapircol"],
+		] as const) {
+			expect(ids(await stub.searchEmails({ query: token }))).toEqual([id]);
+			expect(await stub.countSearchResults({ query: token })).toBe(1);
+		}
+	});
+
+
+	it("keeps the index in sync through create, update and delete", async () => {
+		const stub = stubFor(SYNC_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "sync-1", subject: "Sync subject", sender: "sync@example.org", recipient: SYNC_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>oldbodytoken stays here</p>" },
+		]);
+
+		// Created mail is indexed at once (AFTER INSERT trigger).
+		expect(ids(await stub.searchEmails({ query: "oldbodytoken" }))).toEqual(["sync-1"]);
+
+		// The index is external-content, so a rewrite of an indexed column has
+		// to be mirrored by the UPDATE trigger. Raw SQL is what every update
+		// path compiles to, and no production path rewrites body/subject today
+		// — this keeps a future one covered.
+		await runInDurableObject(stub, async (_instance, state) => {
+			state.storage.sql.exec(
+				"UPDATE emails SET subject = ?1, body = ?2 WHERE id = 'sync-1'",
+				"Renamed subject",
+				"<p>newbodytoken stays here</p>",
+			);
+		});
+		expect(ids(await stub.searchEmails({ query: "newbodytoken" }))).toEqual(["sync-1"]);
+		expect(ids(await stub.searchEmails({ query: "Renamed" }))).toEqual(["sync-1"]);
+		// The replaced text is gone, from both arrays and the total.
+		expect(ids(await stub.searchEmails({ query: "oldbodytoken" }))).toEqual([]);
+		expect(await stub.countSearchResults({ query: "oldbodytoken" })).toBe(0);
+
+		// Updates to columns outside the index (read flags) leave it alone.
+		await stub.bulkUpdateEmails(["sync-1"], { read: true });
+		expect(ids(await stub.searchEmails({ query: "newbodytoken" }))).toEqual(["sync-1"]);
+
+		// Deleting the message drops its postings (AFTER DELETE trigger).
+		expect(await stub.deleteEmail("sync-1")).not.toBeNull();
+		expect(ids(await stub.searchEmails({ query: "newbodytoken" }))).toEqual([]);
+		expect(await stub.countSearchResults({ query: "newbodytoken" })).toBe(0);
+	});
+
+
+	it("backfills mail stored before the index existed", async () => {
+		const stub = stubFor(UPGRADE_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "upgrade-1", subject: "Stored before the index", sender: "old@example.org", recipient: UPGRADE_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>preexistingtoken</p>" },
+		]);
+
+		// Reproduce the upgrade of a mailbox that stored mail before this
+		// migration existed: drop the index objects, forget the migration, and
+		// re-apply. The 'rebuild' in the migration is what indexes the rows
+		// that are already in place.
+		await runInDurableObject(stub, async (_instance, state) => {
+			state.storage.sql.exec(`
+				DROP TRIGGER emails_fts_ai;
+				DROP TRIGGER emails_fts_ad;
+				DROP TRIGGER emails_fts_au;
+				DROP TABLE emails_fts;
+				DELETE FROM d1_migrations WHERE name = '23_add_email_fts';
+			`);
+			applyMigrations(state.storage.sql, mailboxMigrations, state.storage);
+		});
+
+		expect(ids(await stub.searchEmails({ query: "preexistingtoken" }))).toEqual(["upgrade-1"]);
+		// The re-created triggers keep indexing whatever is written next.
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "upgrade-2", subject: "After the upgrade", sender: "new@example.org", recipient: UPGRADE_MAILBOX, date: "2026-01-03T10:00:00.000Z", body: "<p>freshlyindexedtoken</p>" },
+		]);
+		expect(ids(await stub.searchEmails({ query: "freshlyindexedtoken" }))).toEqual(["upgrade-2"]);
+	});
+
+
+	it("keeps a working index after the mailbox purge path", async () => {
+		const stub = stubFor(PURGE_FTS_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "purge-fts-1", subject: "Before purge", sender: "purge@example.org", recipient: PURGE_FTS_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>prepurgetoken</p>" },
+		]);
+		expect(ids(await stub.searchEmails({ query: "prepurgetoken" }))).toEqual(["purge-fts-1"]);
+
+		// purgeAll empties storage and re-applies mailboxMigrations, so the
+		// virtual table and its triggers have to come back with the rest of
+		// the schema — otherwise the live instance keeps serving searches
+		// against a table that no longer exists.
+		await stub.purgeAll();
+		const schemaObjects = await runInDurableObject(
+			stub,
+			async (_instance, state) =>
+				[
+					...state.storage.sql.exec(
+						"SELECT name, type FROM sqlite_master WHERE name LIKE 'emails_fts%' ORDER BY type, name",
+					),
+				].map((row) => `${(row as { type: string }).type}:${(row as { name: string }).name}`),
+		);
+		expect(schemaObjects).toEqual([
+			"table:emails_fts",
+			"table:emails_fts_config",
+			"table:emails_fts_data",
+			"table:emails_fts_docsize",
+			"table:emails_fts_idx",
+			"trigger:emails_fts_ad",
+			"trigger:emails_fts_ai",
+			"trigger:emails_fts_au",
+		]);
+
+		// The re-applied index is empty, and it indexes new mail again.
+		expect(ids(await stub.searchEmails({ query: "prepurgetoken" }))).toEqual([]);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "purge-fts-2", subject: "After purge", sender: "purge@example.org", recipient: PURGE_FTS_MAILBOX, date: "2026-01-03T10:00:00.000Z", body: "<p>postpurgetoken</p>" },
+		]);
+		expect(ids(await stub.searchEmails({ query: "postpurgetoken" }))).toEqual(["purge-fts-2"]);
+	});
+
+
+	it("answers very long terms through the index, not the LIKE chunker", async () => {
+		const stub = stubFor(LONG_TERM_MAILBOX);
+		const longTerm = "zygomorphic".repeat(500); // 5500 characters
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "long-fts-1", subject: "Long index hit", sender: "long@example.org", recipient: LONG_TERM_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: `<p>${longTerm}</p>` },
+		]);
+
+		// The same term on the LIKE path would spend ~115 bound parameters on
+		// its 48-character chunks — past the 100-parameter statement limit
+		// Durable Object SQLite enforces — so this can only pass as a single
+		// FTS phrase.
+		expect(ids(await stub.searchEmails({ query: longTerm }))).toEqual(["long-fts-1"]);
+		expect(await stub.countSearchResults({ query: longTerm })).toBe(1);
+		expect(ids(await stub.searchEmails({ query: `${longTerm.slice(0, -1)}z` }))).toEqual([]);
+	});
+
+
+	it("never throws on operator input of any shape", async () => {
+		const stub = stubFor(NASTY_MAILBOX);
+		await seedEmails(stub, Folders.INBOX, [
+			{ id: "nasty-1", subject: "Literal punctuation", sender: "nasty@example.org", recipient: NASTY_MAILBOX, date: "2026-01-02T10:00:00.000Z", body: "<p>a (paren) and star* and dash- and % and _ and \"quoted\" text</p>" },
+		]);
+
+		// Every one of these is FTS5 syntax (or a LIKE metacharacter) in raw
+		// form; all of them have to survive quoting and escaping.
+		const nastyQueries = [
+			'"', '""', '"""', 'a"b', "'", "\\", "(", "(((", ")))", "*", "**", "-", "-x", "--",
+			"NOT", "AND", "OR", "NEAR", "col:value", "subject:foo", "a:b", "100%", "a_b", "%%%",
+			"((a OR b))", "a*b(c)d-e", "; DROP TABLE emails; --", "' OR 1=1 --",
+			"日本語", "👍👍", "👍👍👍", "a\u0000b", "\u0000", "\u0001\u0002\u0003",
+		];
+		for (const query of nastyQueries) {
+			expect(Array.isArray(await stub.searchEmails({ query }))).toBe(true);
+			expect(typeof (await stub.countSearchResults({ query }))).toBe("number");
+		}
+
+		// Quoting makes the punctuation literal, so the message holding it is
+		// found by exactly the shapes an FTS5 parser would otherwise reject.
+		expect(ids(await stub.searchEmails({ query: "(paren)" }))).toEqual(["nasty-1"]);
+		expect(ids(await stub.searchEmails({ query: "star*" }))).toEqual(["nasty-1"]);
+		expect(ids(await stub.searchEmails({ query: "dash-" }))).toEqual(["nasty-1"]);
+		expect(ids(await stub.searchEmails({ query: '"quoted"' }))).toEqual(["nasty-1"]);
+		expect(ids(await stub.searchEmails({ query: "and" }))).toEqual(["nasty-1"]);
+
+		// An injection-shaped query is a literal phrase that matches nothing.
+		expect(ids(await stub.searchEmails({ query: "'; DROP TABLE emails; --" }))).toEqual([]);
+		// ...and the table is still there for the next search.
+		expect(await stub.countSearchResults({ query: "(paren)" })).toBe(1);
+	});
+});
+
+
+describe("splitFtsTerms", () => {
+	it("splits on whitespace and drops blank input", () => {
+		expect(splitFtsTerms("  quarterly \t projections \n between ")).toEqual({
+			ftsPhrases: ['"quarterly"', '"projections"', '"between"'],
+			shortTerms: [],
+		});
+		expect(splitFtsTerms("")).toEqual({ ftsPhrases: [], shortTerms: [] });
+		expect(splitFtsTerms("   \t\n ")).toEqual({ ftsPhrases: [], shortTerms: [] });
+		expect(splitFtsTerms(null)).toEqual({ ftsPhrases: [], shortTerms: [] });
+		expect(splitFtsTerms(undefined)).toEqual({ ftsPhrases: [], shortTerms: [] });
+	});
+
+
+	it("routes terms the trigram index cannot match to the LIKE path", () => {
+		expect(FTS_MIN_TERM_LENGTH).toBe(3);
+		expect(splitFtsTerms("ab abc")).toEqual({ ftsPhrases: ['"abc"'], shortTerms: ["ab"] });
+		expect(splitFtsTerms("50% a_b % _")).toEqual({
+			ftsPhrases: ['"50%"', '"a_b"'],
+			shortTerms: ["%", "_"],
+		});
+	});
+
+
+	it("counts code points, not UTF-16 units", () => {
+		// Two emoji are four UTF-16 units but two characters to the tokenizer,
+		// which is below the trigram minimum — LIKE still finds them.
+		expect(splitFtsTerms("👍👍")).toEqual({ ftsPhrases: [], shortTerms: ["👍👍"] });
+		expect(splitFtsTerms("👍👍👍")).toEqual({ ftsPhrases: ['"👍👍👍"'], shortTerms: [] });
+		expect(splitFtsTerms("日本 日本語")).toEqual({
+			ftsPhrases: ['"日本語"'],
+			shortTerms: ["日本"],
+		});
+	});
+
+
+	it("quotes every term so FTS5 syntax cannot be injected", () => {
+		expect(ftsPhrase('a"b')).toBe('"a""b"');
+		expect(splitFtsTerms('"')).toEqual({ ftsPhrases: [], shortTerms: ['"'] });
+		// Three literal quotes become eight: each is doubled, then quoted.
+		expect(splitFtsTerms('"""')).toEqual({ ftsPhrases: ['""""""""'], shortTerms: [] });
+		expect(splitFtsTerms('"quoted" (paren) *star*')).toEqual({
+			ftsPhrases: ['"""quoted"""', '"(paren)"', '"*star*"'],
+			shortTerms: [],
+		});
+		expect(splitFtsTerms("AND NOT NEAR")).toEqual({
+			ftsPhrases: ['"AND"', '"NOT"', '"NEAR"'],
+			shortTerms: [],
+		});
+	});
+
+
+	it("treats NUL as a separator instead of letting it truncate a phrase", () => {
+		// workerd hands bound parameters to SQLite as C strings, so a NUL used
+		// to reach the FTS5 parser as an unterminated string.
+		expect(splitFtsTerms("a\u0000b")).toEqual({ ftsPhrases: [], shortTerms: ["a", "b"] });
+		expect(splitFtsTerms("abc\u0000def")).toEqual({
+			ftsPhrases: ['"abc"', '"def"'],
+			shortTerms: [],
+		});
+		expect(splitFtsTerms("\u0000")).toEqual({ ftsPhrases: [], shortTerms: [] });
+	});
+
+
+	it("keeps at most FTS_MAX_TERMS terms, in query order", () => {
+		const terms = Array.from({ length: FTS_MAX_TERMS + 1 }, (_, index) => `word${index}`);
+		const { ftsPhrases } = splitFtsTerms(terms.join(" "));
+		expect(ftsPhrases).toHaveLength(FTS_MAX_TERMS);
+		expect(ftsPhrases[0]).toBe('"word0"');
+		expect(ftsPhrases.at(-1)).toBe(`"word${FTS_MAX_TERMS - 1}"`);
 	});
 });
 
