@@ -357,6 +357,21 @@ export function useClearReminder() {
 	});
 }
 
+/**
+ * One-click unsubscribe. Deliberately not optimistic: the POST can fail at
+ * the sender's endpoint, so the banner owns the pending and error states and
+ * `unsubscribed_at` only lands once the server confirms it. The response is
+ * the updated row; the affected caches are invalidated either way.
+ */
+export function useUnsubscribeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.unsubscribeEmail(mailboxId, id),
+		onSettled: (_data, _err, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
 export function useMarkThreadRead() {
 	const qc = useQueryClient();
 	return useMutation({
