@@ -42,6 +42,7 @@ import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { findDuplicateEmailId, type CreateEmailResult } from "./dedupe";
 import { likePatternsFor } from "../lib/like-terms";
+import { splitFtsTerms } from "../lib/fts-terms";
 import {
 	contactDeltasForEmail,
 	normalizeContactAddress,
@@ -2178,7 +2179,29 @@ export class MailboxDO extends DurableObject<Env> {
 			}
 		};
 
-		addLikeConditions(["subject", "body", "sender", "recipient", "envelope_recipient", "cc", "bcc"], query);
+		// The columns a free-text query searches — exactly the columns indexed
+		// by `emails_fts` (migration 23); keep the two lists in step.
+		const searchColumns = ["subject", "body", "sender", "recipient", "envelope_recipient", "cc", "bcc"];
+
+		// Free-text terms go through the `emails_fts` index (migration 23):
+		// one condition per term, ANDed, so a multi-word query still means
+		// "every word appears somewhere in the message". The trigram tokenizer
+		// makes each phrase a substring match, so 'arter' finds 'quarterly'.
+		// Every phrase is quoted (lib/fts-terms.ts) because raw operator text
+		// would otherwise be parsed as FTS5 syntax. The index is
+		// external-content, so its `rowid` is the `emails` rowid, and the
+		// subquery is prefixed like any other column so the builder works with
+		// and without a table alias (countSearchResults passes none).
+		const { ftsPhrases, shortTerms } = splitFtsTerms(query);
+		for (const phrase of ftsPhrases) {
+			const p = addParam(phrase);
+			conditions.push(`${prefix}rowid IN (SELECT rowid FROM emails_fts WHERE emails_fts MATCH ${p})`);
+		}
+		// One- and two-character terms have no trigram to match, so they keep
+		// the LIKE path over the same columns.
+		for (const term of shortTerms) {
+			addLikeConditions(searchColumns, term);
+		}
 		if (folder) {
 			const p = addParam(folder);
 			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);

@@ -401,4 +401,50 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_scheduled_sends_send_at ON scheduled_sends(send_at);
         `),
 	},
+	{
+		// Full-text search index for MailboxDO.#buildSearchConditions.
+		//
+		// External-content FTS5: the virtual table stores only the inverted
+		// index and reads its columns back from `emails` by rowid, so no
+		// second copy of every body is written. Because the content lives in
+		// `emails`, the index is only correct if every write to those columns
+		// is mirrored — that is what the three triggers below do, so routes,
+		// tools and rules keep the index in sync without knowing FTS exists.
+		//
+		// tokenize='trigram' preserves the LIKE-era semantics that matter:
+		// substring matches inside a word ('arter' finds 'quarterly'),
+		// case-insensitive ASCII, and literal punctuation inside a quoted
+		// phrase. Its cost is that a term of one or two characters has no
+		// trigram to match, so the query builder routes those to the LIKE
+		// path (workers/lib/fts-terms.ts documents the split point).
+		//
+		// 'rebuild' backfills mail stored before this migration: it drops the
+		// index and re-derives it from `emails`.
+		name: "23_add_email_fts",
+		sql: txn(`
+            CREATE VIRTUAL TABLE emails_fts USING fts5(
+                subject, body, sender, recipient, envelope_recipient, cc, bcc,
+                content='emails', content_rowid='rowid', tokenize='trigram'
+            );
+
+            INSERT INTO emails_fts(emails_fts) VALUES('rebuild');
+
+            CREATE TRIGGER emails_fts_ai AFTER INSERT ON emails BEGIN
+                INSERT INTO emails_fts(rowid, subject, body, sender, recipient, envelope_recipient, cc, bcc)
+                VALUES (new.rowid, new.subject, new.body, new.sender, new.recipient, new.envelope_recipient, new.cc, new.bcc);
+            END;
+
+            CREATE TRIGGER emails_fts_ad AFTER DELETE ON emails BEGIN
+                INSERT INTO emails_fts(emails_fts, rowid, subject, body, sender, recipient, envelope_recipient, cc, bcc)
+                VALUES ('delete', old.rowid, old.subject, old.body, old.sender, old.recipient, old.envelope_recipient, old.cc, old.bcc);
+            END;
+
+            CREATE TRIGGER emails_fts_au AFTER UPDATE OF subject, body, sender, recipient, envelope_recipient, cc, bcc ON emails BEGIN
+                INSERT INTO emails_fts(emails_fts, rowid, subject, body, sender, recipient, envelope_recipient, cc, bcc)
+                VALUES ('delete', old.rowid, old.subject, old.body, old.sender, old.recipient, old.envelope_recipient, old.cc, old.bcc);
+                INSERT INTO emails_fts(rowid, subject, body, sender, recipient, envelope_recipient, cc, bcc)
+                VALUES (new.rowid, new.subject, new.body, new.sender, new.recipient, new.envelope_recipient, new.cc, new.bcc);
+            END;
+        `),
+	},
 ];
