@@ -162,6 +162,8 @@ const api = {
 		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
+	// The composer prefills the signature client-side, so it never sends
+	// applySignature — the server would append the signature a second time.
 	saveDraft: (
 		mailboxId: string,
 		draft: {
