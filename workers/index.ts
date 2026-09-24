@@ -721,9 +721,9 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/restore", async (c: AppContext
 
 // -- Snooze & reminders ---------------------------------------------
 
-/** The snooze/reminder RPCs are not part of the default stub shape (see the aliases above). */
+/** Narrow the mailbox stub to the snooze/reminder RPCs the routes use. */
 function snoozeStub(c: AppContext): MailboxSnoozeStub {
-	return c.var.mailboxStub as unknown as MailboxSnoozeStub;
+	return c.var.mailboxStub;
 }
 
 /**
