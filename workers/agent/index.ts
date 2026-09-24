@@ -12,6 +12,7 @@ import {
 	convertToModelMessages,
 	stepCountIs,
 } from "ai";
+import type { StreamTextOnFinishCallback, ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
 import type { EmailFull, EmailMetadata } from "../lib/schemas";
@@ -52,11 +53,14 @@ import type { Env } from "../types";
 
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
-// objects matching the Tool type to avoid overload resolution issues.
-function defineTool(def: {
+// objects matching the Tool type to avoid overload resolution issues. The
+// schema stays generic so each tool's execute() receives exactly the input
+// the model was asked for (z.infer<SCHEMA>); the assembled tool set is
+// checked against ToolSet where streamText / generateText consume it.
+function defineTool<SCHEMA extends z.ZodTypeAny, OUTPUT>(def: {
 	description: string;
-	parameters: z.ZodType<any>;
-	execute: (...args: any[]) => Promise<any>;
+	parameters: SCHEMA;
+	execute: (args: z.infer<SCHEMA>) => Promise<OUTPUT>;
 }) {
 	return {
 		description: def.description,
@@ -195,7 +199,12 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 
 
-	const mailboxIdField: z.ZodRawShape = allMailboxes
+	// Both shapes are spread into every tool's z.object parameters. They carry
+	// an explicit mailboxId type instead of z.ZodRawShape so the key survives in
+	// the params type each execute() sees. The entry itself still reads back as
+	// `unknown` (zod cannot infer the output of a shape entry declared as an
+	// optional property), so resolveMailboxId narrows it back to a string.
+	const mailboxIdField: { mailboxId?: z.ZodString } = allMailboxes
 		? {
 				mailboxId: z
 					.string()
@@ -205,7 +214,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					),
 			}
 		: {};
-	const optionalMailboxIdField: z.ZodRawShape = allMailboxes
+	const optionalMailboxIdField: { mailboxId?: z.ZodOptional<z.ZodString> } = allMailboxes
 		? {
 				mailboxId: z
 					.string()
@@ -232,11 +241,16 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 	 * Resolve the mailbox for one tool call. Global mode requires an explicit
 	 * mailboxId and verifies it exists, so a hallucinated or mistyped address
 	 * cannot silently operate on an empty Durable Object.
+	 *
+	 * The argument arrives as `unknown`: the mailboxId entry of the spread
+	 * params shape reads back as unknown (see above), and the tool's JSON
+	 * schema still requires a string, so any non-string counts as absent.
 	 */
 	const resolveMailboxId = async (
-		explicit?: string,
+		explicit?: unknown,
 	): Promise<string | { error: string }> => {
-		const candidate = (allMailboxes ? explicit : fixedMailboxId)?.trim();
+		const requested = typeof explicit === "string" ? explicit : undefined;
+		const candidate = (allMailboxes ? requested : fixedMailboxId)?.trim();
 		if (!candidate) return missingMailbox;
 		if (!allMailboxes) return candidate;
 		const normalized = candidate.toLowerCase();
@@ -295,7 +309,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 						"Optional category ID to filter by (spam or a configured category from an email's category field)",
 					),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolListEmails(env, mailboxId, {
@@ -317,7 +331,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				...mailboxIdField,
 				emailId: z.string().describe("The email ID to retrieve"),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolGetEmail(env, mailboxId, args.emailId);
@@ -338,7 +352,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 						"The thread_id to retrieve all messages for. Get this from an email's thread_id field.",
 					),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolGetThread(env, mailboxId, args.threadId);
@@ -408,7 +422,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.optional()
 					.describe("Results per page (default 25, max 100)"),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolSearchEmails(env, mailboxId, {
@@ -445,7 +459,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 						"The plain text body of the email. No HTML — just write normally.",
 					),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDraftEmail(env, mailboxId, {
@@ -479,7 +493,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 						"The plain text body of the reply. No HTML — just write normally.",
 					),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDraftReply(env, mailboxId, {
@@ -506,7 +520,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.boolean()
 					.describe("true to mark as read, false for unread"),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolMarkEmailRead(env, mailboxId, args.emailId, args.read);
@@ -526,7 +540,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.string()
 					.describe(MOVE_FOLDER_TOOL_DESCRIPTION),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolMoveEmail(env, mailboxId, args.emailId, args.folderId);
@@ -549,7 +563,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 						"true to permanently delete (irreversible); omit or false to move the email to Trash",
 					),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true);
@@ -565,7 +579,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			parameters: z.object({
 				...optionalMailboxIdField,
 			}).strict(),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				if (!allMailboxes) {
 					return toolDeleteSpamEmails(env, fixedMailboxId ?? undefined);
 				}
@@ -590,7 +604,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				...mailboxIdField,
 				draftId: z.string().describe("The ID of the draft to delete"),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDiscardDraft(env, mailboxId, args.draftId);
@@ -613,7 +627,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			description:
 				"List the mailbox's deterministic rules (file, label, star, mark read, discard) with firing statistics. Rules that forward or auto-reply are operator-only: they are listed, but cannot be created, edited, or enabled through tools.",
 			parameters: z.object({ ...mailboxIdField }),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolListRules(env, mailboxId);
@@ -631,7 +645,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			description:
 				"Create a deterministic rule for incoming mail: move it to a folder, set a category, star/unstar, mark read/unread, or discard it. A rule needs at least one match condition and at least one action. Rules created here cannot send mail: forward_to and auto_reply_text are operator-only and are stripped.",
 			parameters: z.object({ ...mailboxIdField, ...ruleToolDraftShape }),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolCreateRule(env, mailboxId, {
@@ -663,7 +677,7 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				match: ruleToolMatchSchema.optional(),
 				actions: ruleToolActionsSchema.optional(),
 			}),
-			execute: async (args: any): Promise<unknown> => {
+			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				const patch = Object.fromEntries(
@@ -684,16 +698,28 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 
 
-// Use `any` for the Env generic to avoid type conflicts between the custom
-// SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
-// is fully typed inside the tools via the closure.
-export class EmailAgent extends AIChatAgent<any> {
-	override async onChatMessage(onFinish: any) {
-		const env = this.env as Env;
+/**
+ * JSON body of the POST /onNewEmail request the inbound Worker sends to
+ * the agent Durable Object.
+ */
+interface NewEmailRequest {
+	mailboxId: string;
+	emailId: string;
+	sender: string;
+	subject: string;
+	threadId: string;
+}
+
+// `Env` extends the generated `Cloudflare.Env` — the binding shape the
+// AIChatAgent generic is constrained to — so the agent is instantiated with
+// the real env type and `this.env` needs no cast.
+export class EmailAgent extends AIChatAgent<Env> {
+	override async onChatMessage(onFinish: StreamTextOnFinishCallback<ToolSet>) {
+		const env = this.env;
 		const agentName = this.name;
 		const allMailboxes = isAllMailboxesAgentId(agentName);
 		const workersai = createWorkersAI({ binding: env.AI });
-		const tools = createEmailTools(env, allMailboxes ? null : agentName);
+		const tools: ToolSet = createEmailTools(env, allMailboxes ? null : agentName);
 		const systemPrompt = allMailboxes
 			? `${DEFAULT_SYSTEM_PROMPT}${ALL_MAILBOXES_SYSTEM_PROMPT}`
 			: await getSystemPrompt(env, agentName);
@@ -739,13 +765,7 @@ export class EmailAgent extends AIChatAgent<any> {
 		const url = new URL(request.url);
 		if (url.pathname === "/onNewEmail" && request.method === "POST") {
 			try {
-				const emailData = await request.json() as {
-					mailboxId: string;
-					emailId: string;
-					sender: string;
-					subject: string;
-					threadId: string;
-				};
+				const emailData: NewEmailRequest = await request.json();
 				const result = await this.handleNewEmail(emailData);
 				return new Response(JSON.stringify(result), {
 					headers: { "Content-Type": "application/json" },
@@ -768,16 +788,10 @@ export class EmailAgent extends AIChatAgent<any> {
 	 * Called when a new email arrives. Reads it, loads the thread,
 	 * drafts a response, and saves it to the Drafts folder.
 	 */
-	async handleNewEmail(emailData: {
-		mailboxId: string;
-		emailId: string;
-		sender: string;
-		subject: string;
-		threadId: string;
-	}) {
-		const env = this.env as Env;
+	async handleNewEmail(emailData: NewEmailRequest) {
+		const env = this.env;
 		const workersai = createWorkersAI({ binding: env.AI });
-		const tools = createEmailTools(env, emailData.mailboxId);
+		const tools: ToolSet = createEmailTools(env, emailData.mailboxId);
 		const systemPrompt = await getSystemPrompt(env, emailData.mailboxId);
 		// Model ids come from the mailbox settings, falling back to app-wide
 		// settings and the built-in defaults.
@@ -984,8 +998,11 @@ Based on the email content and thread context above, draft a reply using draft_r
 				),
 			);
 			const draftToolSucceeded = result.steps.some((step) =>
-				(step.toolResults ?? []).some((toolResult: any) => {
-					const output = toolResult.output ?? toolResult.result;
+				(step.toolResults ?? []).some((toolResult) => {
+					// `result` is the pre-v6 spelling of `output`; keep reading it so
+					// steps produced before the rename still count as saved drafts.
+					const output: unknown =
+						toolResult.output ?? ("result" in toolResult ? toolResult.result : undefined);
 					return Boolean(
 						output &&
 							typeof output === "object" &&
