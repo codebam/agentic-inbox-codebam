@@ -36,6 +36,7 @@ export default tseslint.config(
 			".wrangler/**",
 			"node_modules/**",
 			".hermes/**",
+			".worktrees/**",
 			"worker-configuration.d.ts",
 		],
 	},
