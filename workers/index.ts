@@ -27,6 +27,7 @@ import { isSpamMarkedEmail } from "../shared/spam";
 import { applySignatureToBody } from "../shared/signature";
 import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-view";
+import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -247,13 +248,16 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	// Normalize server-side so an edited stale client cannot store malformed
-	// categorization or model settings that would break inbound
-	// classification and AI calls.
+	// categorization, model or Trash retention settings that would break
+	// inbound classification, AI calls or the retention sweep.
 	const normalizedSettings = {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings.categorization),
 		models: normalizeModelConfig(settings.models),
 		defaultEmailView: normalizeEmailViewMode(settings.defaultEmailView) ?? null,
+		// Missing or unusable values fall back to the 30-day default; 0 keeps
+		// trashed mail until someone empties Trash by hand.
+		trashRetentionDays: normalizeTrashRetentionDays(settings.trashRetentionDays),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });

@@ -3,7 +3,12 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Badge, Button, Input, Loader, Switch, useKumoToastManager } from "@cloudflare/kumo";
-import { RobotIcon, ArrowCounterClockwiseIcon, SignatureIcon } from "@phosphor-icons/react";
+import {
+	RobotIcon,
+	ArrowCounterClockwiseIcon,
+	SignatureIcon,
+	TrashIcon,
+} from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
@@ -28,6 +33,11 @@ import {
 	normalizeSignatureSettings,
 	type SignatureSettings,
 } from "shared/signature";
+import {
+	DEFAULT_TRASH_RETENTION_DAYS,
+	MAX_TRASH_RETENTION_DAYS,
+	normalizeTrashRetentionDays,
+} from "shared/trash-retention";
 import { getSignatureBlock } from "~/lib/utils";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import { useGlobalModels } from "~/queries/models";
@@ -56,6 +66,11 @@ export default function SettingsRoute() {
 	});
 	const [models, setModels] = useState<ModelConfig>({});
 	const [defaultEmailView, setDefaultEmailView] = useState<EmailViewMode | undefined>(undefined);
+	// Held as a string so the field can be cleared while typing; normalized
+	// (default 30, 0 = off, capped) on save.
+	const [trashRetentionDays, setTrashRetentionDays] = useState(
+		String(DEFAULT_TRASH_RETENTION_DAYS),
+	);
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
@@ -73,6 +88,9 @@ export default function SettingsRoute() {
 			);
 			setModels(mailbox.settings?.models ?? {});
 			setDefaultEmailView(normalizeEmailViewMode(mailbox.settings?.defaultEmailView));
+			setTrashRetentionDays(
+				String(normalizeTrashRetentionDays(mailbox.settings?.trashRetentionDays)),
+			);
 		}
 	}, [mailbox]);
 
@@ -97,6 +115,7 @@ export default function SettingsRoute() {
 			signature: normalizeSignatureSettings(signature),
 			models: normalizeModelConfig(models),
 			defaultEmailView: normalizeEmailViewMode(defaultEmailView) ?? null,
+			trashRetentionDays: normalizeTrashRetentionDays(trashRetentionDays),
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -124,6 +143,7 @@ export default function SettingsRoute() {
 	}
 
 	const isCustomPrompt = agentPrompt.trim().length > 0;
+	const trashRetentionEnabled = normalizeTrashRetentionDays(trashRetentionDays) > 0;
 
 	return (
 		<div className="max-w-2xl px-4 py-4 md:px-8 md:py-6 h-full overflow-y-auto">
@@ -259,6 +279,36 @@ export default function SettingsRoute() {
 					</div>
 				</div>
 
+
+				{/* Trash retention */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="flex items-center gap-2 mb-3">
+						<TrashIcon size={16} weight="duotone" className="text-kumo-subtle" />
+						<span className="text-sm font-medium text-kumo-default">
+							Trash retention
+						</span>
+						{trashRetentionEnabled ? (
+							<Badge variant="primary">On</Badge>
+						) : (
+							<Badge variant="secondary">Off</Badge>
+						)}
+					</div>
+					<p className="text-xs text-kumo-subtle mb-4">
+						Emails are permanently deleted once they have been in Trash for this
+						many days. The countdown starts when a message is moved to Trash, not
+						on its Date header. Set to 0 to keep trashed emails until you empty
+						Trash yourself.
+					</p>
+					<Input
+						label="Days in Trash before automatic deletion"
+						type="number"
+						min={0}
+						max={MAX_TRASH_RETENTION_DAYS}
+						value={trashRetentionDays}
+						onChange={(e) => setTrashRetentionDays(e.target.value)}
+						description={`Default ${DEFAULT_TRASH_RETENTION_DAYS} days; values above ${MAX_TRASH_RETENTION_DAYS} are capped, 0 means never.`}
+					/>
+				</div>
 
 				<AiModelsCard
 					title="AI Models"

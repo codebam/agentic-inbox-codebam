@@ -9,6 +9,7 @@
  */
 import { createMiddleware } from "hono/factory";
 import { defaultCategorizationSettings } from "../../shared/categories";
+import { DEFAULT_TRASH_RETENTION_DAYS } from "../../shared/trash-retention";
 import type { MailboxDO } from "../durableObject";
 import type { Env } from "../types";
 
@@ -25,6 +26,8 @@ export function defaultMailboxSettings(name: string) {
 		categorization: defaultCategorizationSettings(),
 		// Explicit "inherit the app-wide default"; a mailbox can pin html/text.
 		defaultEmailView: null,
+		// Automatic Trash cleanup after 30 days; 0 disables it.
+		trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
 	};
 }
 

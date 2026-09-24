@@ -23,6 +23,8 @@ export interface MailboxSettings {
 	models?: ModelConfig;
 	/** Mailbox-level default message view; blank/null inherits the app-wide default. */
 	defaultEmailView?: EmailViewMode | null;
+	/** Days a message may sit in Trash before the retention sweep deletes it; 0 disables. */
+	trashRetentionDays?: number;
 }
 
 export interface Mailbox {

@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, inArray, ne } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, lt } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -65,6 +65,24 @@ const SORT_COLUMN_MAP = {
 	read: schema.emails.read,
 	starred: schema.emails.starred,
 } satisfies Record<SortColumn, typeof schema.emails[keyof typeof schema.emails]>;
+
+/**
+ * Columns every write that moves a message between folders must set.
+ *
+ * Entering Trash stamps `trashed_at` — the clock the retention sweep reads —
+ * and every other folder clears it. Centralised here so no move path can
+ * leave the stamp behind: a stale stamp would let the sweep purge a message
+ * that was restored, and a missing one would make Trash immortal.
+ */
+export function folderMoveFields(
+	folderId: string,
+	now: string = new Date().toISOString(),
+): { folder_id: string; trashed_at: string | null } {
+	return {
+		folder_id: folderId,
+		trashed_at: folderId === Folders.TRASH ? now : null,
+	};
+}
 
 interface SearchFilterOptions {
 	query: string;
@@ -729,7 +747,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		this.db
 			.update(schema.emails)
-			.set({ folder_id: folderId })
+			.set(folderMoveFields(folderId))
 			.where(eq(schema.emails.id, id))
 			.run();
 
@@ -788,7 +806,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		this.db
 			.update(schema.emails)
-			.set({ folder_id: folderId })
+			.set(folderMoveFields(folderId))
 			.where(inArray(schema.emails.id, ids))
 			.run();
 
@@ -853,7 +871,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		const trashed = this.db
 			.update(schema.emails)
-			.set({ folder_id: Folders.TRASH })
+			.set(folderMoveFields(Folders.TRASH))
 			.where(
 				and(
 					inArray(schema.emails.id, ids),
@@ -876,7 +894,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		return this.db
 			.update(schema.emails)
-			.set({ folder_id: Folders.INBOX })
+			.set(folderMoveFields(Folders.INBOX))
 			.where(
 				and(
 					inArray(schema.emails.id, ids),
@@ -908,6 +926,56 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 		const ids = trashRows.map((row) => row.id);
+
+
+		const emailAttachments = this.db
+			.select({
+				id: schema.attachments.id,
+				email_id: schema.attachments.email_id,
+				filename: schema.attachments.filename,
+			})
+			.from(schema.attachments)
+			.where(inArray(schema.attachments.email_id, ids))
+			.all();
+
+
+		this.db
+			.delete(schema.emails)
+			.where(inArray(schema.emails.id, ids))
+			.run();
+
+
+		return { purged: ids.length, attachments: emailAttachments };
+	}
+
+
+	/**
+	 * Permanently delete Trash messages that entered Trash before `cutoffIso`.
+	 *
+	 * Only rows with an explicit `trashed_at` older than the cutoff are
+	 * eligible: rows trashed before retention existed (NULL) are left for the
+	 * manual "Empty trash" action, and anything restored or re-trashed carries
+	 * a fresh stamp. Mirrors emptyTrash: returns the number of purged messages
+	 * plus their attachment rows so the Worker can delete the R2 objects.
+	 */
+	async purgeTrashedBefore(cutoffIso: string) {
+		const expiredRows = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(
+				and(
+					eq(schema.emails.folder_id, Folders.TRASH),
+					isNotNull(schema.emails.trashed_at),
+					lt(schema.emails.trashed_at, cutoffIso),
+				),
+			)
+			.all();
+
+
+		if (expiredRows.length === 0) return { purged: 0, attachments: [] };
+
+
+		const ids = expiredRows.map((row) => row.id);
 
 
 		const emailAttachments = this.db
@@ -1138,7 +1206,10 @@ export class MailboxDO extends DurableObject<Env> {
 			.insert(schema.emails)
 			.values({
 				id: email.id,
-				folder_id: folderId,
+				// A message can be created straight in Trash (an inbound rule
+				// routing to it), so creation goes through the same stamping
+				// helper as every folder move.
+				...folderMoveFields(folderId),
 				subject: email.subject,
 				sender: email.sender,
 				recipient: email.recipient,
