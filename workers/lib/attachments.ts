@@ -38,7 +38,7 @@ export async function storeAttachments(
 	for (const att of attachments) {
 		const attachmentId = crypto.randomUUID();
 		// Sanitize filename to prevent path traversal in R2 keys
-		const safeFilename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
+		const safeFilename = (att.filename || "untitled").replace(/[/\\:*?"<>|\p{Cc}]/gu, "_");
 		const key = `attachments/${emailId}/${attachmentId}/${safeFilename}`;
 		const binaryStr = atob(att.content);
 		const bytes = Uint8Array.from(binaryStr, (c) => c.charCodeAt(0));

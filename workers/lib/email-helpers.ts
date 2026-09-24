@@ -115,7 +115,12 @@ export function buildReferencesChain(original: EmailFull): {
 	let existingRefs: string[] = [];
 	if (original.email_references) {
 		try {
-			existingRefs = JSON.parse(original.email_references);
+			const parsed: unknown = JSON.parse(original.email_references);
+			// Stored as a JSON array of message-ids; anything else (a malformed
+			// or hand-edited value) is treated as empty, like the catch below.
+			existingRefs = Array.isArray(parsed)
+				? parsed.filter((ref): ref is string => typeof ref === "string")
+				: [];
 		} catch {
 			// Malformed JSON in email_references — treat as empty
 		}

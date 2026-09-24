@@ -102,6 +102,26 @@ export function emptyRuleOutboundReport(): RuleOutboundReport {
 }
 
 
+/**
+ * Stringify one raw header value. Strings pass through; the other primitives
+ * keep their historical spelling. Objects, arrays and functions are dropped
+ * rather than becoming "[object Object]" in a header.
+ */
+function headerText(value: unknown): string {
+	switch (typeof value) {
+		case "string":
+			return value;
+		case "number":
+		case "bigint":
+		case "boolean":
+		case "symbol":
+			return String(value);
+		default:
+			return "";
+	}
+}
+
+
 /** Parse the stored `raw_headers` JSON into lower-cased key/value pairs. */
 function parseHeaderPairs(
 	rawHeaders: string | null | undefined,
@@ -114,15 +134,15 @@ function parseHeaderPairs(
 			for (const entry of parsed) {
 				if (!entry || typeof entry !== "object") continue;
 				const record = entry as Record<string, unknown>;
-				const key = String(record["key"] ?? record["name"] ?? "").toLowerCase();
+				const key = headerText(record["key"] ?? record["name"]).toLowerCase();
 				if (!key) continue;
-				pairs.push({ key, value: String(record["value"] ?? "") });
+				pairs.push({ key, value: headerText(record["value"]) });
 			}
 			return pairs;
 		}
 		if (parsed && typeof parsed === "object") {
 			return Object.entries(parsed as Record<string, unknown>).map(
-				([key, value]) => ({ key: key.toLowerCase(), value: String(value ?? "") }),
+				([key, value]) => ({ key: key.toLowerCase(), value: headerText(value) }),
 			);
 		}
 	} catch {
