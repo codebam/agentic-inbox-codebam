@@ -26,6 +26,7 @@ import {
 import { isSpamMarkedEmail } from "../shared/spam";
 import { applySignatureToBody } from "../shared/signature";
 import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
+import { normalizeImageAllowlist } from "../shared/remote-images";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -206,6 +207,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 		...defaultMailboxSettings(name),
 		...settings,
 		categorization: normalizeCategorizationSettings(settings?.categorization),
+		imageAllowlist: normalizeImageAllowlist(settings?.imageAllowlist),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -235,6 +237,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings.categorization),
 		models: normalizeModelConfig(settings.models),
+		imageAllowlist: normalizeImageAllowlist(settings.imageAllowlist),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });

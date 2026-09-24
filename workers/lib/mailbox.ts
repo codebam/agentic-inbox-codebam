@@ -23,6 +23,7 @@ export function defaultMailboxSettings(name: string) {
 		signature: { enabled: false, text: "" },
 		autoReply: { enabled: false, subject: "", message: "" },
 		categorization: defaultCategorizationSettings(),
+		imageAllowlist: [],
 	};
 }
 
