@@ -7,6 +7,7 @@ import {
 	ArchiveIcon,
 	CaretLeftIcon,
 	ClockCounterClockwiseIcon,
+	ClockIcon,
 	EnvelopeOpenIcon,
 	FileIcon,
 	FolderIcon,
@@ -244,6 +245,21 @@ export default function Sidebar() {
 						</div>
 					</div>
 				)}
+				{/* Sending — the composer's queued and past scheduled sends */}
+				<div className="pt-5">
+					<div className="flex items-center justify-between px-3 mb-1.5">
+						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+							Sending
+						</span>
+					</div>
+					<FolderLink
+						to={`/mailbox/${mailboxId}/scheduled`}
+						icon={<ClockIcon size={18} />}
+						label="Scheduled"
+						onClick={handleNavClick}
+					/>
+				</div>
+
 				{/* Automation — deterministic rules run before the AI classifier */}
 				<div className="pt-5">
 					<div className="flex items-center justify-between px-3 mb-1.5">
