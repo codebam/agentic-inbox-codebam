@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray, ne } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -801,6 +801,116 @@ export class MailboxDO extends DurableObject<Env> {
 
 		return emailAttachments;
 	}
+
+	// ── Trash semantics ────────────────────────────────────────────
+
+
+	/**
+	 * Move emails into the Trash folder.
+	 *
+	 * Messages already in Trash are left untouched, so deleting an email that
+	 * is already trashed never silently purges it. Returns the ids that moved
+	 * and the ids that were already in Trash — the partition the API needs to
+	 * apply the per-message "delete from Trash = delete forever" rule.
+	 */
+	async trashEmails(ids: string[]) {
+		if (ids.length === 0) return { trashed: [], alreadyInTrash: [] };
+
+
+		// Snapshot the partition before moving anything: once the UPDATE runs,
+		// freshly-moved messages would look like they were already in Trash.
+		const alreadyInTrash = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(
+				and(
+					inArray(schema.emails.id, ids),
+					eq(schema.emails.folder_id, Folders.TRASH),
+				),
+			)
+			.all()
+			.map((row) => row.id);
+
+
+		const trashed = this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.TRASH })
+			.where(
+				and(
+					inArray(schema.emails.id, ids),
+					ne(schema.emails.folder_id, Folders.TRASH),
+				),
+			)
+			.returning({ id: schema.emails.id })
+			.all()
+			.map((row) => row.id);
+
+
+		return { trashed, alreadyInTrash };
+	}
+
+
+	/** Move messages from Trash back to the Inbox. Returns the ids that moved. */
+	async restoreEmails(ids: string[]) {
+		if (ids.length === 0) return [];
+
+
+		return this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.INBOX })
+			.where(
+				and(
+					inArray(schema.emails.id, ids),
+					eq(schema.emails.folder_id, Folders.TRASH),
+				),
+			)
+			.returning({ id: schema.emails.id })
+			.all()
+			.map((row) => row.id);
+	}
+
+
+	/**
+	 * Permanently delete every message in the Trash folder.
+	 *
+	 * Returns the number of purged messages plus the attachment rows that
+	 * belonged to them, so the Worker can remove the corresponding R2 objects
+	 * (attachment rows cascade away with their email).
+	 */
+	async emptyTrash() {
+		const trashRows = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.folder_id, Folders.TRASH))
+			.all();
+
+
+		if (trashRows.length === 0) return { purged: 0, attachments: [] };
+
+
+		const ids = trashRows.map((row) => row.id);
+
+
+		const emailAttachments = this.db
+			.select({
+				id: schema.attachments.id,
+				email_id: schema.attachments.email_id,
+				filename: schema.attachments.filename,
+			})
+			.from(schema.attachments)
+			.where(inArray(schema.attachments.email_id, ids))
+			.all();
+
+
+		this.db
+			.delete(schema.emails)
+			.where(inArray(schema.emails.id, ids))
+			.run();
+
+
+		return { purged: ids.length, attachments: emailAttachments };
+	}
+
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────
 
