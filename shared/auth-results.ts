@@ -149,8 +149,9 @@ function parseProperties(text: string): Record<string, string> {
 	PROPERTY_RE.lastIndex = 0;
 	let match: RegExpExecArray | null;
 	while ((match = PROPERTY_RE.exec(text)) !== null) {
-		const key = match[1].toLowerCase();
+		const key = match[1]?.toLowerCase();
 		let value = match[2];
+		if (!key || value === undefined) continue; // malformed pair: skip it
 		if (value.startsWith('"') && value.endsWith('"')) {
 			value = value.slice(1, -1);
 		}
@@ -218,7 +219,7 @@ function parseAuthenticationResultsHeader(
 
 	const segments = cleaned.split(";");
 	for (let index = 0; index < segments.length; index += 1) {
-		const segment = segments[index].trim();
+		const segment = segments[index]?.trim() ?? "";
 		if (!segment) continue;
 
 
@@ -231,8 +232,8 @@ function parseAuthenticationResultsHeader(
 		}
 
 
-		const method = methodMatch[1].toLowerCase();
-		const result = methodMatch[2].toLowerCase();
+		const method = methodMatch[1]?.toLowerCase() ?? "";
+		const result = methodMatch[2]?.toLowerCase() ?? "";
 		if (!isAuthMethod(method) || !isAuthResultToken(result)) continue;
 
 
@@ -265,7 +266,7 @@ function parseReceivedSpfHeader(
 	const cleaned = stripComments(headerValue.replace(/\s+/g, " ")).trim();
 	const tokenMatch = /^([a-z][a-z0-9_-]*)/i.exec(cleaned);
 	if (!tokenMatch) return undefined;
-	const result = tokenMatch[1].toLowerCase();
+	const result = tokenMatch[1]?.toLowerCase() ?? "";
 	if (!isAuthResultToken(result)) return undefined;
 
 

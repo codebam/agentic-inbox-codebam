@@ -172,7 +172,8 @@ function sanitizeAttributes(source: string): string {
 	ATTRIBUTE_PATTERN.lastIndex = 0;
 	let match: RegExpExecArray | null;
 	while ((match = ATTRIBUTE_PATTERN.exec(source)) !== null) {
-		const name = match[1].toLowerCase();
+		const name = match[1]?.toLowerCase();
+		if (!name) continue; // unparsable attribute name: drop the attribute
 		// Event handlers and inline JS-adjacent attributes never survive.
 		if (name.startsWith("on") || name.startsWith("xmlns")) continue;
 		if (!ALLOWED_ATTRS.has(name)) continue;
@@ -193,11 +194,13 @@ function sanitizeTag(raw: string): string {
 	const body = closing ? inner.slice(1).trim() : inner;
 	const nameMatch = /^([a-zA-Z][a-zA-Z0-9:-]*)/.exec(body);
 	if (!nameMatch) return ""; // doctype, processing instruction, bogus markup
-	const name = nameMatch[1].toLowerCase();
+	const rawName = nameMatch[1];
+	if (!rawName) return ""; // unparsable tag: drop it, keep its content
+	const name = rawName.toLowerCase();
 	if (!ALLOWED_TAGS.has(name)) return ""; // drop the tag, keep its content
 	if (closing) return `</${name}>`;
 	const attributes = sanitizeAttributes(
-		body.slice(nameMatch[1].length).replace(/\/\s*$/, ""),
+		body.slice(rawName.length).replace(/\/\s*$/, ""),
 	);
 	return VOID_TAGS.has(name) ? `<${name}${attributes}>` : `<${name}${attributes}>`;
 }
