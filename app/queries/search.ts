@@ -10,11 +10,6 @@ import { queryKeys } from "./keys";
 
 export const SEARCH_PAGE_SIZE = 25;
 
-interface SearchResponse {
-	emails: Email[];
-	totalCount: number;
-}
-
 export function useSearchEmails(
 	mailboxId: string | undefined,
 	query: string,
@@ -43,9 +38,7 @@ export function useSearchEmails(
 				params["is_starred"] = String(parsed.is_starred);
 			if (parsed.has_attachment) params["has_attachment"] = "true";
 
-			const data = await api.searchEmails(mailboxId!, params) as
-				| SearchResponse
-				| Email[];
+			const data = await api.searchEmails(mailboxId!, params);
 			if (data && typeof data === "object" && "emails" in data) {
 				return {
 					results: data.emails ?? [],

@@ -43,9 +43,7 @@ export function useEmails(
 			? queryKeys.emails.list(mailboxId, queryParams)
 			: ["emails", "_disabled"],
 		queryFn: async () => {
-			const data = await api.listEmails(mailboxId!, queryParams) as
-				| EmailListResponse
-				| Email[];
+			const data = await api.listEmails(mailboxId!, queryParams);
 			if (data && typeof data === "object" && "emails" in data) {
 				return {
 					emails: data.emails ?? [],
