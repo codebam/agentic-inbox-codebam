@@ -33,6 +33,8 @@ export const emails = sqliteTable("emails", {
 	category: text("category"),
 	category_confidence: real("category_confidence"),
 	classification: text("classification"),
+	/** When the message entered Trash; NULL means "not retention-eligible". */
+	trashed_at: text("trashed_at"),
 });
 
 export const attachments = sqliteTable("attachments", {
