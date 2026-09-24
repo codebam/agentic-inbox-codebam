@@ -85,6 +85,12 @@ export interface Email {
 	remind_at?: string | null;
 	/** Set once the reminder has fired; the nudge stays until dismissed. */
 	reminded_at?: string | null;
+	/** Raw List-Unsubscribe header value, when the sender set one. */
+	list_unsubscribe?: string | null;
+	/** Raw List-Unsubscribe-Post header value (RFC 8058 one-click marker). */
+	list_unsubscribe_post?: string | null;
+	/** ISO 8601 time the user unsubscribed through the message panel. */
+	unsubscribed_at?: string | null;
 	// Present in the aggregated All Accounts list so each row knows which
 	// mailbox it belongs to.
 	mailboxId?: string;

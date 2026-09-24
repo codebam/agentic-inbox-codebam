@@ -12,6 +12,9 @@ export interface ComposeOptions {
 	originalEmail?: Email | null;
 	/** When editing a draft, this holds the draft email to pre-fill the composer */
 	draftEmail?: Email | null;
+	/** Recipient and subject pre-filled on a fresh compose, e.g. an unsubscribe mailto. */
+	to?: string | null;
+	subject?: string | null;
 	/**
 	 * Mailbox that owns this compose session. The All Accounts view has no
 	 * :mailboxId route param, so agent-created drafts pass their mailbox here.
@@ -84,7 +87,12 @@ export const useUIStore = create<UIState>((set, get) => ({
 				state.selectedMailboxId;
 			// Draft editing in the All Accounts view needs the owning mailbox just
 			// like a reply does, because there is no route param to fall back to.
-			const keepsSelection = isReplyOrForward || Boolean(options?.draftEmail);
+			// An explicit mailboxId means the caller knows the owning mailbox
+			// (the unsubscribe banner, whose panel has no route param there).
+			const keepsSelection =
+				isReplyOrForward ||
+				Boolean(options?.draftEmail) ||
+				Boolean(options?.mailboxId);
 			return {
 				isComposing: true,
 				_previousEmailId: state.selectedEmailId,

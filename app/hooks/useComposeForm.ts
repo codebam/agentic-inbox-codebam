@@ -141,6 +141,10 @@ function buildInitialComposeFields(
 	if (!original) {
 		return {
 			...EMPTY_FIELDS,
+			// A fresh compose can arrive with its recipient and subject already
+			// decided, e.g. the unsubscribe banner's mailto fallback.
+			to: composeOptions.to ?? "",
+			subject: composeOptions.subject ?? "",
 			body: sigBlock ? `<p><br></p>${sigBlock}` : "",
 		};
 	}

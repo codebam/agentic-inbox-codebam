@@ -205,6 +205,13 @@ const api = {
 	/** Clear the reminder — used for both "change" and "dismiss". */
 	clearReminder: (mailboxId: string, id: string) =>
 		del<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/reminder`),
+	/**
+	 * One-click unsubscribe (RFC 8058). The server posts to the sender's
+	 * endpoint and returns the updated row; the UI only ever calls this from
+	 * an explicit user click.
+	 */
+	unsubscribeEmail: (mailboxId: string, id: string) =>
+		post<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/unsubscribe`),
 	/** Every snoozed message for the mailbox, with its wake time. */
 	listSnoozedEmails: (mailboxId: string) =>
 		get<EmailListResponse>(`/api/v1/mailboxes/${mailboxId}/snoozed`),
