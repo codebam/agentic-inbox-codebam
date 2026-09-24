@@ -12,6 +12,7 @@ import {
 	mergeCategorizationCategories,
 } from "shared/categories";
 import { resolveDefaultEmailView } from "shared/email-view";
+import ExplainPanel from "~/components/ExplainPanel";
 import EmailPanelDialogs from "~/components/email-panel/EmailPanelDialogs";
 import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
@@ -279,6 +280,9 @@ export default function EmailPanel({
 			/>
 
 			<div className="flex justify-end px-4 pt-3 md:px-6"><EmailViewToggle value={viewMode} onChange={setSessionEmailViewMode} /></div>
+
+
+			<ExplainPanel email={email} categories={categoryNames} />
 
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (
