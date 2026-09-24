@@ -22,6 +22,8 @@ import {
 	MAX_RULE_CONDITION_LENGTH,
 	MAX_RULE_NAME_LENGTH,
 	MAX_RULE_PRIORITY,
+	RULE_APPLY_LIMIT_DEFAULT,
+	RULE_APPLY_LIMIT_MAX,
 	RULE_MATCH_MODES,
 } from "./rules";
 import { SENDER_POLICIES } from "./sender-policy";
@@ -310,6 +312,23 @@ export const PreviewRuleSchema = z
 			});
 		}
 	});
+
+
+/**
+ * Body for POST /rules/:ruleId/apply: the batch size for one retroactive
+ * apply call. Optional (defaults to `RULE_APPLY_LIMIT_DEFAULT`) and, when
+ * present, strictly inside the repo's bulk-action cap, so one call can never
+ * touch more rows than a list-view bulk action.
+ */
+export const ApplyRuleSchema = z.object({
+	limit: z
+		.number()
+		.int()
+		.min(1)
+		.max(RULE_APPLY_LIMIT_MAX)
+		.default(RULE_APPLY_LIMIT_DEFAULT),
+});
+
 
 
 /**

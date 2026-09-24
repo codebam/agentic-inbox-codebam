@@ -16,6 +16,7 @@ import {
 	listMailboxes,
 } from "./lib/email-helpers";
 import {
+	ApplyRuleSchema,
 	SendEmailRequestSchema,
 	ScheduleSendRequestSchema,
 	BulkEmailActionSchema,
@@ -94,6 +95,7 @@ import {
 } from "./lib/categorize";
 import {
 	emptyRuleRunResult,
+	hasLocalRuleActions,
 	isRuleValidationError,
 	resolveRuleFolderId,
 	runRules,
@@ -1359,6 +1361,53 @@ app.post("/api/v1/mailboxes/:mailboxId/rules/preview", async (c: AppContext) => 
 	if (folderError) return c.json({ error: folderError }, 400);
 	try {
 		return c.json(await c.var.mailboxStub.previewRule(parsed.data));
+	} catch (e) {
+		if (isRuleValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+/**
+ * Retroactive apply: run a stored rule against mail that is already in the
+ * mailbox, one bounded batch per call. Operator-only — there is deliberately
+ * no agent/MCP tool for it — and strictly local: it never sends, never
+ * deletes, never records a rule firing (see `applyRuleToExisting`).
+ *
+ * The rule and its folder target are checked here first so an unknown rule
+ * answers 404 and a folder deleted after the rule was saved answers 400,
+ * instead of an RPC error surfacing as a 500. `limit` is optional; the
+ * schema defaults it to the bulk-action cap.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/rules/:ruleId/apply", async (c: AppContext) => {
+	// An absent or empty body means "run one default-sized batch".
+	const parsed = ApplyRuleSchema.safeParse(await c.req.json().catch(() => ({})));
+	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+
+	const ruleId = c.req.param("ruleId")!;
+	const rule = (await c.var.mailboxStub.listRules()).find((item) => item.id === ruleId);
+	if (!rule) return c.json({ error: "Rule not found" }, 404);
+
+	const folderError = await unknownRuleFolder(c.var.mailboxStub, rule.actions);
+	if (folderError) return c.json({ error: folderError }, 400);
+
+	// The Durable Object rejects a rule with no stored-mail actions too;
+	// checking here as well keeps that 400 free of a rejected RPC call, the
+	// same reason the folder target is checked above. Message kept in sync
+	// with applyRuleToExisting.
+	if (!hasLocalRuleActions(rule.actions ?? {})) {
+		return c.json(
+			{
+				error:
+					"This rule has no folder, category, read or star action to apply to existing mail",
+			},
+			400,
+		);
+	}
+
+	try {
+		const result = await c.var.mailboxStub.applyRuleToExisting(ruleId, parsed.data.limit);
+		return result ? c.json(result) : c.json({ error: "Rule not found" }, 404);
 	} catch (e) {
 		if (isRuleValidationError(e)) return c.json({ error: (e as Error).message }, 400);
 		throw e;

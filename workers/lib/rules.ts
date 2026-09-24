@@ -239,6 +239,148 @@ export interface RulePreviewDraft {
 
 
 /**
+ * Retroactive apply — operator-only, stored mail only.
+ *
+ * The preview above answers "what would this rule match"; this section
+ * answers "change what it matched". It is deliberately narrow:
+ *
+ *   - Only the LOCAL actions can be applied retroactively. `forward_to` and
+ *     `auto_reply_text` are outbound: replaying them over old mail would
+ *     send messages about messages that were already delivered — surprise
+ *     mail to third parties, from a click that never said "send".
+ *   - `discard` cannot be applied retroactively either. It is a
+ *     delivery-time action (drop the message before it is stored); on mail
+ *     that is already stored, honouring it could only delete it, and no
+ *     rule edit should be able to destroy stored mail.
+ *   - Nothing here sends, deletes, or records a firing: an apply call
+ *     mutates at most `RULE_APPLY_LIMIT_MAX` rows and reports what is
+ *     left, so the UI can loop until the window is exhausted.
+ */
+
+
+/**
+ * Hard cap for one retroactive apply batch. Mirrors the bulk-action cap the
+ * repo already enforces (BulkEmailActionSchema ids/threadIds max 90), so an
+ * apply call can never touch more rows than a list-view bulk action.
+ */
+export const RULE_APPLY_LIMIT_MAX = 90;
+/** Default batch size: one click usually finishes in a single call. */
+export const RULE_APPLY_LIMIT_DEFAULT = 90;
+
+
+/** The part of a rule's actions that can run against already-stored mail. */
+export interface RuleLocalActions {
+	/** Target folder id (`move_to_folder`, resolved when the rule is saved). */
+	folder?: string | undefined;
+	/** Target category id (`set_category`). */
+	category?: string | undefined;
+	/** Target read state (`mark_read`/`mark_unread` collapsed to a boolean). */
+	read?: boolean | undefined;
+	/** Target star state (`star`/`unstar` collapsed to a boolean). */
+	starred?: boolean | undefined;
+}
+
+
+/**
+ * Reduce a rule's actions to the ones that make sense on a stored message.
+ * Drops `discard`, `forward_to` and `auto_reply_text` — see the section
+ * comment above for why. An empty result means the rule has nothing to
+ * apply retroactively, and callers reject it instead of scanning for it.
+ */
+export function localRuleActions(actions: RuleActions): RuleLocalActions {
+	const local: RuleLocalActions = {};
+	if (actions.move_to_folder) local.folder = actions.move_to_folder;
+	if (actions.set_category) local.category = actions.set_category;
+	if (actions.mark_read === true) local.read = true;
+	if (actions.mark_unread === true) local.read = false;
+	if (actions.star === true) local.starred = true;
+	if (actions.unstar === true) local.starred = false;
+	return local;
+}
+
+
+/** True when `localRuleActions` kept at least one action. */
+export function hasLocalRuleActions(actions: RuleActions): boolean {
+	const local = localRuleActions(actions);
+	return (
+		local.folder !== undefined ||
+		local.category !== undefined ||
+		local.read !== undefined ||
+		local.starred !== undefined
+	);
+}
+
+
+/** The stored state a retroactive apply compares its targets against. */
+export interface RuleEmailState {
+	folder_id?: string | null;
+	/** Stored category id; absent/null means "no category". */
+	category?: string | null;
+	/** Stored read flag. */
+	read?: boolean;
+	/** Stored star flag. */
+	starred?: boolean;
+}
+
+
+/**
+ * True when at least one applicable action is not satisfied yet — i.e. a
+ * retroactive apply would actually change this message.
+ *
+ * This is what makes repeated apply calls terminate: a message already in
+ * the target state counts as skipped, so a second run over the same window
+ * applies nothing to it. Category comparison is case-insensitive trimmed
+ * text, mirroring how `matchRule` compares `category_equals`.
+ */
+export function ruleNeedsChange(
+	state: RuleEmailState,
+	actions: RuleLocalActions,
+): boolean {
+	if (actions.folder !== undefined && state.folder_id !== actions.folder) {
+		return true;
+	}
+	if (
+		actions.category !== undefined &&
+		(state.category ?? "").trim().toLowerCase() !==
+			actions.category.trim().toLowerCase()
+	) {
+		return true;
+	}
+	if (actions.read !== undefined && Boolean(state.read) !== actions.read) {
+		return true;
+	}
+	if (
+		actions.starred !== undefined &&
+		Boolean(state.starred) !== actions.starred
+	) {
+		return true;
+	}
+	return false;
+}
+
+
+/**
+ * One retroactive apply batch's outcome, counted over the scanned window
+ * (the newest `RULE_PREVIEW_SCAN_LIMIT` stored messages):
+ *   - `scanned`   stored messages examined,
+ *   - `matched`   of those, the ones the rule matches,
+ *   - `applied`   matches this call changed,
+ *   - `skipped`   matches already in the target state (nothing to do),
+ *   - `remaining` matches still needing a change after the batch cap.
+ * A caller loops while `remaining > 0` and `applied > 0`.
+ */
+export interface RuleApplyResult {
+	rule_id: string;
+	applied: number;
+	skipped: number;
+	matched: number;
+	remaining: number;
+	scanned: number;
+	scan_limit: number;
+}
+
+
+/**
  * The email view a rule matches against. Only the fields the engine needs —
  * callers pass parsed inbound mail, not a stored row.
  */

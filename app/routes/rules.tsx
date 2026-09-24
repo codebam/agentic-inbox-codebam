@@ -21,18 +21,22 @@ import {
 	FunnelIcon,
 	MagnifyingGlassIcon,
 	PencilSimpleIcon,
+	PlayIcon,
 	PlusIcon,
 	TrashIcon,
 	WarningCircleIcon,
 } from "@phosphor-icons/react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router";
 import {
 	mergeCategorizationCategories,
 	SPAM_CATEGORY_ID,
 } from "shared/categories";
 import {
+	hasLocalRuleActions,
 	hasOutboundActions,
+	RULE_APPLY_LIMIT_MAX,
+	RULE_PREVIEW_SCAN_LIMIT,
 	type MailRule,
 	type RuleActions,
 	type RuleConditions,
@@ -44,6 +48,7 @@ import { useGlobalCategorization } from "~/queries/categorization";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import {
+	useApplyRule,
 	useCreateRule,
 	useDeleteRule,
 	usePreviewRule,
@@ -56,6 +61,16 @@ import type { Folder } from "~/types";
 
 /** Mirrors MAX_RULE_NAME_LENGTH in workers/lib/rules.ts (client-side cap only). */
 const RULE_NAME_MAX_LENGTH = 120;
+
+
+/**
+ * Retroactive apply batch size and hard iteration cap. Each server batch is
+ * bounded to RULE_APPLY_LIMIT_MAX messages; the UI loops until nothing
+ * remains (or a batch changes nothing) and stops after APPLY_MAX_BATCHES
+ * regardless, so a stuck loop can never spin forever.
+ */
+const APPLY_BATCH_LIMIT = RULE_APPLY_LIMIT_MAX;
+const APPLY_MAX_BATCHES = 50;
 
 
 type AttachmentChoice = "any" | "yes" | "no";
@@ -393,6 +408,8 @@ interface RuleRowProps {
 	isToggling: boolean;
 	isReordering: boolean;
 	isTesting: boolean;
+	/** True while this row (or any row) is running a retroactive apply. */
+	isApplying: boolean;
 	folderNames: Map<string, string>;
 	categoryNames: Map<string, string>;
 	/** Rendered inside the row (the "Test rule" results). */
@@ -402,8 +419,8 @@ interface RuleRowProps {
 	onEdit: (rule: MailRule) => void;
 	onDelete: (rule: MailRule) => void;
 	onTest: (rule: MailRule) => void;
+	onApply: (rule: MailRule) => void;
 }
-
 
 
 
@@ -414,6 +431,7 @@ function RuleRow({
 	isToggling,
 	isReordering,
 	isTesting,
+	isApplying,
 	folderNames,
 	categoryNames,
 	previewPanel,
@@ -422,7 +440,9 @@ function RuleRow({
 	onEdit,
 	onDelete,
 	onTest,
+	onApply,
 }: RuleRowProps) {
+
 	const conditions = conditionSummary(rule.match?.conditions ?? {});
 	const actions = actionSummary(rule.actions ?? {}, folderNames, categoryNames);
 	const isFirst = index === 0;
@@ -513,6 +533,17 @@ function RuleRow({
 							onClick={() => onTest(rule)}
 							disabled={isTesting}
 							aria-label={`Test ${rule.name}`}
+						/>
+					</Tooltip>
+					<Tooltip content="Apply to existing mail" asChild>
+						<Button
+							variant="ghost"
+							shape="square"
+							size="sm"
+							icon={<PlayIcon size={16} />}
+							onClick={() => onApply(rule)}
+							disabled={isApplying}
+							aria-label={`Apply ${rule.name} to existing mail`}
 						/>
 					</Tooltip>
 					<Tooltip content="Edit" asChild>
@@ -873,12 +904,27 @@ export default function RulesRoute() {
 	const deleteRule = useDeleteRule();
 	const reorderRules = useReorderRules();
 	const previewRule = usePreviewRule();
+	const applyRule = useApplyRule();
 
 
 	const [isEditorOpen, setIsEditorOpen] = useState(false);
 	const [editorRule, setEditorRule] = useState<MailRule | null>(null);
 	const [editorError, setEditorError] = useState<string | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<MailRule | null>(null);
+	/** Rule whose "apply to existing mail" confirmation is open. */
+	const [applyTarget, setApplyTarget] = useState<MailRule | null>(null);
+	/**
+	 * Live progress of a retroactive apply run; non-null while the loop is
+	 * running. `applied` is cumulative for the run, `remaining` is the last
+	 * server batch's count.
+	 */
+	const [applyRun, setApplyRun] = useState<{
+		ruleId: string;
+		applied: number;
+		remaining: number;
+	} | null>(null);
+	/** Set by the stop action; checked between batches. */
+	const stopApply = useRef(false);
 	/** "Test rule" result for one row (rule id -> matches). */
 	const [rowPreview, setRowPreview] = useState<{
 		ruleId: string;
@@ -1053,6 +1099,58 @@ export default function RulesRoute() {
 	};
 
 
+	/**
+	 * "Apply to existing mail": run the stored rule against stored mail in
+	 * bounded batches until nothing remains. Only the rule's stored-mail
+	 * actions run — the server never forwards or auto-replies retroactively
+	 * and never deletes — and the loop is capped so it cannot spin forever.
+	 * The stop action takes effect between batches.
+	 */
+	const handleApply = async (rule: MailRule) => {
+		if (!mailboxId || applyRun !== null) return;
+		setApplyTarget(null);
+		stopApply.current = false;
+		setApplyRun({ ruleId: rule.id, applied: 0, remaining: 0 });
+		let applied = 0;
+		/** Matches already in the target state when the run started. */
+		let alreadyUpToDate = 0;
+		let remaining = 0;
+		let batches = 0;
+		try {
+			for (let batch = 0; batch < APPLY_MAX_BATCHES; batch += 1) {
+				const result = await applyRule.mutateAsync({
+					mailboxId,
+					ruleId: rule.id,
+					limit: APPLY_BATCH_LIMIT,
+				});
+				batches = batch + 1;
+				applied += result.applied;
+				if (batch === 0) alreadyUpToDate = result.skipped;
+				remaining = result.remaining;
+				setApplyRun({ ruleId: rule.id, applied, remaining });
+				if (result.remaining === 0 || result.applied === 0) break;
+				if (stopApply.current) break;
+			}
+			const summary = `Applied to ${applied} message${applied === 1 ? "" : "s"}; ${alreadyUpToDate} already up to date.`;
+			toastManager.add({
+				title: "Rule applied to existing mail",
+				description:
+					remaining > 0
+						? `${summary} Stopped with ${remaining} still to change${batches >= APPLY_MAX_BATCHES ? " (batch limit reached)" : ""}.`
+						: summary,
+			});
+		} catch (applyError) {
+			toastManager.add({
+				title: "Apply failed",
+				description: errorMessage(applyError),
+				variant: "error",
+			});
+		} finally {
+			setApplyRun(null);
+		}
+	};
+
+
 	const togglingRuleId = updateRule.isPending
 		? updateRule.variables?.ruleId
 		: undefined;
@@ -1168,6 +1266,8 @@ export default function RulesRoute() {
 							onDelete={setDeleteTarget}
 							onTest={(rule) => void handleTestRow(rule)}
 							isTesting={previewRule.isPending}
+							isApplying={applyRun !== null}
+							onApply={setApplyTarget}
 							previewPanel={
 								rowPreview?.ruleId === rule.id ? (
 									<RulePreviewPanel
@@ -1181,6 +1281,93 @@ export default function RulesRoute() {
 					))}
 				</ul>
 			)}
+
+
+			{/*
+			 * Retroactive apply. The confirmation is explicit about what the
+			 * server will and will not do; a rule with no stored-mail actions
+			 * cannot proceed (the route would 400 it anyway).
+			 */}
+			<Dialog.Root
+				open={applyTarget !== null}
+				onOpenChange={(open) => {
+					if (!open) setApplyTarget(null);
+				}}
+			>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="mb-2 text-base font-semibold">
+						Apply to existing mail
+					</Dialog.Title>
+					<Dialog.Description className="mb-4 text-sm text-kumo-subtle">
+						“{applyTarget?.name}” will run against the messages already stored
+						in this mailbox (the {RULE_PREVIEW_SCAN_LIMIT.toLocaleString()}{" "}
+						newest), in batches of {APPLY_BATCH_LIMIT}. Outbound actions
+						(forward and auto-reply) are never applied retroactively, its
+						discard action is ignored, and folder, category, read and star
+						changes cannot be undone.
+					</Dialog.Description>
+					{applyTarget && !hasLocalRuleActions(applyTarget.actions ?? {}) && (
+						<p className="mb-4 text-xs text-kumo-danger">
+							This rule only sends or discards mail — it has no folder,
+							category, read or star action to apply to stored messages.
+						</p>
+					)}
+					<div className="flex justify-end gap-2">
+						<Dialog.Close
+							render={({ className, ...props }) => (
+								<Button {...props} {...(className ? { className } : {})} variant="secondary">
+									Cancel
+								</Button>
+							)}
+						/>
+						<Button
+							variant="primary"
+							onClick={() => {
+								if (applyTarget) void handleApply(applyTarget);
+							}}
+							disabled={
+								!applyTarget || !hasLocalRuleActions(applyTarget.actions ?? {})
+							}
+						>
+							Apply to existing mail
+						</Button>
+					</div>
+				</Dialog>
+			</Dialog.Root>
+
+
+			{/*
+			 * Live progress while a run is in flight. Closing it (button,
+			 * Escape, outside click) asks the loop to stop after the batch
+			 * that is already in flight.
+			 */}
+			<Dialog.Root
+				open={applyRun !== null}
+				onOpenChange={(open) => {
+					if (!open) stopApply.current = true;
+				}}
+			>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="mb-2 text-base font-semibold">
+						Applying rule…
+					</Dialog.Title>
+					<Dialog.Description className="mb-4 text-sm text-kumo-subtle">
+						{applyRun
+							? `Applied to ${applyRun.applied} message${applyRun.applied === 1 ? "" : "s"}; ${applyRun.remaining} still to change.`
+							: ""}
+					</Dialog.Description>
+					<div className="flex justify-end">
+						<Button
+							variant="secondary"
+							onClick={() => {
+								stopApply.current = true;
+							}}
+						>
+							Stop
+						</Button>
+					</div>
+				</Dialog>
+			</Dialog.Root>
 
 
 			<Dialog.Root

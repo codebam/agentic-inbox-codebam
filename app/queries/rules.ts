@@ -121,3 +121,29 @@ export function usePreviewRule() {
 		}) => api.previewRule(mailboxId, draft),
 	});
 }
+
+
+/**
+ * Retroactively run a stored rule against existing mail, one bounded batch
+ * per call. Applied changes touch stored messages (folder, category, read,
+ * star), so the mailbox's email lists are invalidated after every batch —
+ * the UI refetches while a multi-batch run is in progress.
+ */
+export function useApplyRule() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			ruleId,
+			limit,
+		}: {
+			mailboxId: string;
+			ruleId: string;
+			limit?: number;
+		}) => api.applyRule(mailboxId, ruleId, limit),
+		onSuccess: (_result, { mailboxId }) => {
+			void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			void qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
+		},
+	});
+}
