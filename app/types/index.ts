@@ -133,3 +133,31 @@ export interface BulkEmailTarget {
 	threadId?: string | null | undefined;
 	threadCount?: number | undefined;
 }
+
+/** Surface that recorded an action: the built-in agent or an MCP client. */
+export type AgentActionSource = "agent" | "mcp";
+
+/**
+ * One row of a mailbox's agent/MCP action audit log.
+ *
+ * `args`, `before_state` and `after_state` are metadata-only payloads (never
+ * message bodies). They are stored as TEXT, so the API may hand them back as
+ * raw JSON or as parsed values — read them through `parseActionState` in
+ * ~/lib/agent-actions.ts rather than indexing them directly.
+ */
+export interface AgentAction {
+	id: string;
+	source: AgentActionSource;
+	tool: string;
+	email_id: string | null;
+	email_subject: string | null;
+	thread_id: string | null;
+	args: unknown;
+	before_state: unknown;
+	after_state: unknown;
+	/** 1 when the recorded tool has an inverse; 0 when the action cannot be undone. */
+	undoable: number;
+	/** ISO 8601 time the action was undone through this view, if it has been. */
+	undone_at: string | null;
+	created_at: string;
+}

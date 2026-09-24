@@ -15,7 +15,7 @@ import type {
 } from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
-import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
+import type { AgentAction, BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -102,6 +102,11 @@ function del<T>(url: string) {
 
 interface EmailListResponse {
 	emails: Email[];
+	totalCount: number;
+}
+
+interface AgentActionListResponse {
+	actions: AgentAction[];
 	totalCount: number;
 }
 
@@ -218,6 +223,19 @@ const api = {
 	/** Messages whose follow-up reminder is scheduled or has fired. */
 	listReminderEmails: (mailboxId: string) =>
 		get<EmailListResponse>(`/api/v1/mailboxes/${mailboxId}/reminders`),
+
+	// Agent/MCP action audit log. Metadata only — never message bodies.
+	/** Recent agent/MCP actions for the mailbox, newest first (bounded page). */
+	listAgentActions: (mailboxId: string, limit?: number) =>
+		get<AgentActionListResponse>(
+			`/api/v1/mailboxes/${mailboxId}/agent-actions`,
+			limit != null ? { params: { limit: String(limit) } } : undefined,
+		),
+	/** Undo a reversible recorded action; returns the updated action and message. */
+	undoAgentAction: (mailboxId: string, actionId: string) =>
+		post<{ action: AgentAction; email: Email }>(
+			`/api/v1/mailboxes/${mailboxId}/agent-actions/${actionId}/undo`,
+		),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>

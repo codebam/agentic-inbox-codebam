@@ -139,7 +139,7 @@ export function useReminderEmails(
 // ---------- Mutations ----------
 
 /** Invalidate both the email list and folder counts after any email mutation. */
-function useInvalidateEmailData() {
+export function useInvalidateEmailData() {
 	const qc = useQueryClient();
 	return (mailboxId: string) => {
 		void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
