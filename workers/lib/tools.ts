@@ -1092,16 +1092,22 @@ export async function toolUpdateRule(
 	const existing = (await stub.listRules()).find((rule) => rule.id === ruleId);
 	if (!existing) return { error: `Rule ${ruleId} not found in ${mailboxId}.` };
 
-	// A rule the operator gave sending powers to is off-limits here: neither
-	// its actions nor its enabled flag may change through agent/MCP tooling.
-	// Disabling it (enabled: false) stays allowed so an agent can stop noise.
-	if (
-		hasOutboundActions(existing.actions) &&
-		(patch.actions !== undefined || patch.enabled === true)
-	) {
-		return {
-			error: `Rule "${existing.name}" sends mail automatically (forward or auto-reply). It can only be changed by the operator in the mailbox's rules settings.`,
-		};
+	// A rule the operator gave sending powers to is off-limits here: agent/MCP
+	// tooling must not be able to enable it, rewrite its actions, or widen its
+	// conditions (which would send more mail). The single allowed edit is
+	// `enabled: false`, so an agent can still stop noise.
+	if (hasOutboundActions(existing.actions)) {
+		const onlyDisabling =
+			patch.enabled === false &&
+			patch.actions === undefined &&
+			patch.match === undefined &&
+			patch.name === undefined &&
+			patch.priority === undefined;
+		if (!onlyDisabling) {
+			return {
+				error: `Rule "${existing.name}" sends mail automatically (forward or auto-reply). It can only be changed by the operator in the mailbox's rules settings; tools may only pause it (enabled: false).`,
+			};
+		}
 	}
 
 	const next: RulePatch = { ...patch };

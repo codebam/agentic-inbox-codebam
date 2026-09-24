@@ -21,6 +21,10 @@
  *   - Sends go through the existing send path (workers/email-sender.ts,
  *     `sendEmail`) behind an injectable seam: without an EMAIL binding (the
  *     test config has none) nothing is sent and the report says so.
+ *   - `verifyDraft` is deliberately not applied on this path: the content is
+ *     operator-authored automation (not model output), and AI-cleaning it
+ *     would rewrite what the operator asked to send. The agent/MCP send paths
+ *     keep their draft verification untouched.
  */
 
 import { sendEmail, type SendEmailParams } from "../email-sender";

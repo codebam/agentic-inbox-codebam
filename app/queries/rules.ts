@@ -101,21 +101,6 @@ export function useReorderRules() {
 		},
 	});
 }
-export function useReorderRules() {
-	const qc = useQueryClient();
-	return useMutation({
-		mutationFn: ({ mailboxId, ids }: { mailboxId: string; ids: string[] }) =>
-			api.reorderRules(mailboxId, ids),
-		onSuccess: (rules, { mailboxId }) => {
-			// The endpoint returns the new evaluation order, so seed the cache
-			// with it and let the invalidation reconcile.
-			if (rules) {
-				qc.setQueryData(queryKeys.rules.list(mailboxId), rules);
-			}
-			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
-		},
-	});
-}
 
 
 
