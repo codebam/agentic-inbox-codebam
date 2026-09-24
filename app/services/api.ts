@@ -8,6 +8,7 @@ import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
+import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -230,6 +231,25 @@ const api = {
 		del<void>(`/api/v1/mailboxes/${mailboxId}/rules/${ruleId}`),
 	reorderRules: (mailboxId: string, ids: string[]) =>
 		post<MailRule[]>(`/api/v1/mailboxes/${mailboxId}/rules/reorder`, { ids }),
+
+
+
+
+	// Sender policy (per-mailbox allow/block list, applied before the classifier)
+	listSenderPolicy: (mailboxId: string) =>
+		get<SenderPolicyEntry[]>(`/api/v1/mailboxes/${mailboxId}/sender-policy`),
+	setSenderPolicy: (mailboxId: string, address: string, policy: SenderPolicy) =>
+		put<SenderPolicyEntry>(`/api/v1/mailboxes/${mailboxId}/sender-policy`, { address, policy }),
+	removeSenderPolicy: (mailboxId: string, address: string) =>
+		del<void>(
+			`/api/v1/mailboxes/${mailboxId}/sender-policy?address=${encodeURIComponent(address)}`,
+		),
+	/** One-click message-panel feedback: allow ("Not spam") or block a sender. */
+	senderPolicyFeedback: (mailboxId: string, emailId: string, action: SenderPolicy) =>
+		post<SenderPolicyEntry>(`/api/v1/mailboxes/${mailboxId}/sender-policy/feedback`, {
+			emailId,
+			action,
+		}),
 
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>

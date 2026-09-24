@@ -21,6 +21,7 @@ import {
 	MAX_RULE_PRIORITY,
 	RULE_MATCH_MODES,
 } from "./rules";
+import { SENDER_POLICIES } from "./sender-policy";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -275,4 +276,38 @@ export const DraftBodySchema = z.object({
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),
 	applySignature: z.boolean().optional(),
+});
+
+
+// ── Sender policy (per-mailbox allow/block list) ───────────────────
+
+
+/**
+ * A sender address as stored in `sender_policy`. Trimmed here; the Durable
+ * Object lowercases it, so `Alice@Example.com ` and `alice@example.com`
+ * address the same entry.
+ */
+export const SenderPolicyAddressSchema = z
+	.string()
+	.trim()
+	.min(3)
+	.max(320)
+	.email();
+
+
+/** Body for PUT /api/v1/mailboxes/:mailboxId/sender-policy (upsert). */
+export const SetSenderPolicySchema = z.object({
+	address: SenderPolicyAddressSchema,
+	policy: z.enum(SENDER_POLICIES),
+});
+
+
+/**
+ * Body for POST /api/v1/mailboxes/:mailboxId/sender-policy/feedback — the
+ * one-click "Not spam" (allow) / "Block sender" (block) actions from the
+ * message panel.
+ */
+export const SenderPolicyFeedbackSchema = z.object({
+	emailId: z.string().trim().min(1).max(200),
+	action: z.enum(SENDER_POLICIES),
 });

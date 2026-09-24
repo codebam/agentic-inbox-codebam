@@ -208,6 +208,7 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX idx_rules_priority ON rules(priority, created_at);
         `),
 	},
+
 	{
 		// Trash retention. `trashed_at` is stamped when a message enters the
 		// Trash folder and cleared when it leaves (see folderMoveFields in
@@ -226,6 +227,22 @@ export const mailboxMigrations: Migration[] = [
 		// converting markup on the fly. NULL for messages with no text part.
 		name: "13_add_body_text",
 		sql: txn(`ALTER TABLE emails ADD COLUMN body_text TEXT;`),
+	},
+	{
+		// Per-mailbox sender allow/block policy (workers/lib/sender-policy.ts).
+		// The inbound pipeline reads this before the Jev classifier: `block`
+		// files mail straight into Spam (still stored — never dropped) and
+		// skips classification + auto-draft; `allow` skips the spam question
+		// but keeps category classification. Addresses are stored trimmed and
+		// lowercased by the Durable Object.
+		name: "14_add_sender_policy",
+		sql: txn(`
+            CREATE TABLE sender_policy (
+                address TEXT PRIMARY KEY,
+                policy TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        `),
 	},
 	{
 		// Backs the duplicate-delivery lookup in MailboxDO.createEmail.

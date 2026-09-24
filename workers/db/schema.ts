@@ -2,6 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import { sql } from "drizzle-orm";
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 
 export const folders = sqliteTable("folders", {
@@ -48,4 +49,18 @@ export const attachments = sqliteTable("attachments", {
 	size: integer("size").notNull(),
 	content_id: text("content_id"),
 	disposition: text("disposition"),
+});
+
+
+/**
+ * Per-mailbox sender allow/block policy. `policy` is `allow` or `block`;
+ * addresses are stored trimmed + lowercased (see workers/lib/sender-policy.ts).
+ * The inbound pipeline reads this table before the Jev classifier runs.
+ */
+export const senderPolicy = sqliteTable("sender_policy", {
+	address: text("address").primaryKey(),
+	policy: text("policy").notNull(),
+	created_at: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
 });

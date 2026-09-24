@@ -20,6 +20,7 @@ import RemoteImagesNotice from "~/components/email-panel/RemoteImagesNotice";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
 import EmailViewToggle from "~/components/EmailViewToggle";
+import SenderPolicyActions from "~/components/SenderPolicyActions";
 import {
 	blobToBase64,
 	pendingAttachmentFromStored,
@@ -288,6 +289,7 @@ export default function EmailPanel({
 			    notice is the opt-in. In a thread each message renders its own
 			    notice, so the panel-level one would be a duplicate. */}
 			{!hasThread && <RemoteImagesNotice email={email} mailboxId={mailboxId} />}
+			<SenderPolicyActions email={email} mailboxId={mailboxId} />
 
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (

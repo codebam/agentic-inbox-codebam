@@ -15,6 +15,7 @@ import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
 import EmailViewCard from "~/components/EmailViewCard";
 import WebhookCard from "~/components/WebhookCard";
+import SenderPolicyCard from "~/components/SenderPolicyCard";
 import {
 	defaultCategorizationSettings,
 	normalizeCategorizationSettings,
@@ -183,6 +184,8 @@ export default function SettingsRoute() {
 					settings={categorization}
 					onChange={setCategorization}
 				/>
+
+				<SenderPolicyCard mailboxId={mailboxId} />
 
 				{/* Agent System Prompt */}
 				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">

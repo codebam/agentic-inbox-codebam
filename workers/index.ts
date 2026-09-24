@@ -21,6 +21,9 @@ import {
 	CreateRuleSchema,
 	DraftBodySchema,
 	ReorderRulesSchema,
+	SenderPolicyAddressSchema,
+	SenderPolicyFeedbackSchema,
+	SetSenderPolicySchema,
 	UpdateRuleSchema,
 } from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
@@ -76,6 +79,12 @@ import {
 	resolveRuleFolderId,
 	runRules,
 } from "./lib/rules";
+import {
+	isSenderPolicyValidationError,
+	senderPolicyVerdict,
+	withoutSpamQuestion,
+	type SenderPolicy,
+} from "./lib/sender-policy";
 import type { Env } from "./types";
 import {
 	defaultMailboxSettings,
@@ -122,6 +131,15 @@ function ruleErrorMessage(error: z.ZodError): string {
 	if (!issue) return "Invalid rule";
 	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
 	return `Invalid rule — ${path}${issue.message}`;
+}
+
+
+/** Same shape of 400 message for the sender-policy routes. */
+function senderPolicyErrorMessage(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Invalid sender policy";
+	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+	return `Invalid sender policy — ${path}${issue.message}`;
 }
 
 // -- App & middleware -----------------------------------------------
@@ -836,6 +854,69 @@ app.post("/api/v1/mailboxes/:mailboxId/rules/reorder", async (c: AppContext) => 
 });
 
 
+// -- Sender policy (per-mailbox allow/block list) -------------------
+
+
+/** Every allow/block entry for this mailbox, oldest first. */
+app.get("/api/v1/mailboxes/:mailboxId/sender-policy", async (c: AppContext) => {
+	return c.json(await c.var.mailboxStub.listSenderPolicy());
+});
+
+
+/**
+ * Upsert one entry. The stored policy overrides the AI classifier on arrival:
+ * `block` files mail straight into Spam (still stored — never dropped — and
+ * never auto-drafted), `allow` skips spam classification for that sender but
+ * still lets categories be classified.
+ */
+app.put("/api/v1/mailboxes/:mailboxId/sender-policy", async (c: AppContext) => {
+	const parsed = SetSenderPolicySchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: senderPolicyErrorMessage(parsed.error) }, 400);
+	try {
+		return c.json(
+			await c.var.mailboxStub.setSenderPolicy(parsed.data.address, parsed.data.policy),
+		);
+	} catch (e) {
+		if (isSenderPolicyValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+/** Remove one entry by ?address=...; 404 when there is nothing to remove. */
+app.delete("/api/v1/mailboxes/:mailboxId/sender-policy", async (c: AppContext) => {
+	const parsed = SenderPolicyAddressSchema.safeParse(c.req.query("address"));
+	if (!parsed.success) return c.json({ error: senderPolicyErrorMessage(parsed.error) }, 400);
+	const removed = await c.var.mailboxStub.removeSenderPolicy(parsed.data);
+	return removed ? c.body(null, 204) : c.json({ error: "Sender policy entry not found" }, 404);
+});
+
+
+/**
+ * One-click message-panel feedback:
+ *   - `allow` ("Not spam") records an allow entry, moves the message back to
+ *     the Inbox, and clears its spam category/classification.
+ *   - `block` ("Block sender") records a block entry and moves the message to
+ *     Spam (it is still stored there — never deleted).
+ */
+app.post("/api/v1/mailboxes/:mailboxId/sender-policy/feedback", async (c: AppContext) => {
+	const parsed = SenderPolicyFeedbackSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: senderPolicyErrorMessage(parsed.error) }, 400);
+	try {
+		const entry = await c.var.mailboxStub.applySenderPolicyFeedback(
+			parsed.data.emailId,
+			parsed.data.action,
+		);
+		return entry ? c.json(entry) : c.json({ error: "Email not found" }, 404);
+	} catch (e) {
+		if (isSenderPolicyValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+
+
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
@@ -1120,22 +1201,46 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const models = await resolveMailboxModels(env, mailboxId, mailboxSettings);
 
 
+	// ── Per-mailbox sender policy overrides the AI classifier ──────
+	// One lookup plus one pure decision (workers/lib/sender-policy.ts):
+	//   block → filed straight into Spam, classification and auto-draft
+	//           skipped (the message is still STORED — never dropped)
+	//   allow → treated as not-spam: the spam question is dropped, category
+	//           classification still runs
+	//   none  → today's behaviour
+	// A lookup failure is non-fatal: the message is delivered exactly as if no
+	// entry existed, mirroring how rule-evaluation failures are handled.
+	const senderAddress = (parsedEmail.from?.address || "").toLowerCase();
+	let senderPolicy: SenderPolicy | null = null;
+	try {
+		senderPolicy = (await stub.getSenderPolicy(senderAddress))?.policy ?? null;
+	} catch (e) {
+		console.error(
+			"Sender policy lookup failed; falling back to the classifier:",
+			(e as Error).message,
+		);
+	}
+	const senderDecision = senderPolicyVerdict(senderPolicy);
+
 	// Best-effort Jev classification, skipped for messages a rule already
-	// routed (see the precedence note above). A null result (disabled,
-	// failed, or rule-routed) still delivers the email.
-	const classification = ruleResult.routed
+	// routed (see the precedence note above) and for blocked senders. A null
+	// result (disabled, failed, or skipped) still delivers the email.
+	const classification = ruleResult.routed || !senderDecision.classify
 		? null
 		: await classifyIncomingEmail(env.AI, {
-		sender: (parsedEmail.from?.address || "").toLowerCase(),
+		sender: senderAddress,
 		senderName: parsedEmail.from?.name || null,
 		recipients: [...allRecipients, ...ccRecipients].join(", "),
 		subject: parsedEmail.subject || "",
 		body: parsedEmail.html || parsedEmail.text || "",
-	}, effectiveCategorization, models.classifier);
+	}, senderDecision.forceNotSpam ? withoutSpamQuestion(effectiveCategorization) : effectiveCategorization, models.classifier);
 
 	const isSpam = classification?.isSpam === true;
-	const destinationFolder =
-		isSpam && effectiveCategorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
+	// A blocked sender is always filed in Spam, regardless of the mailbox's
+	// moveToSpam setting — blocking is an explicit per-sender instruction.
+	const destinationFolder = senderDecision.folder
+		? senderDecision.folder
+		: isSpam && effectiveCategorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
 
 	const createResult = await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
@@ -1147,9 +1252,12 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		body_text: parsedEmail.text ?? null,
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
-		// A rule's category is authoritative; the classifier only fills it in
-		// for messages no rule matched.
-		category: ruleResult.mutation.category ?? classification?.category ?? null,
+		// Blocked senders always carry the spam category; otherwise a rule's
+		// category is authoritative and the classifier only fills it in for
+		// messages no rule matched.
+		category: senderDecision.verdict === "block"
+			? SPAM_CATEGORY_ID
+			: ruleResult.mutation.category ?? classification?.category ?? null,
 		category_confidence: classification?.categoryConfidence ?? null,
 		classification: serializeClassification(classification),
 		// Rule flags; undefined (no rule matched) leaves the createEmail default.
@@ -1169,13 +1277,15 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		return;
 	}
 
-	// Do not auto-draft replies to spam: neither AI-classified spam nor mail a
-	// rule filed in Spam or stamped with the spam category. A discard rule has
-	// already returned above.
+
+	// Do not auto-draft replies to spam: neither AI-classified spam, mail a
+	// rule filed in Spam or stamped with the spam category, nor mail from a
+	// blocked sender (senderDecision.autoDraft). A discard rule has already
+	// returned above.
 	const ruleMarkedSpam =
 		destinationFolder === Folders.SPAM ||
 		ruleResult.mutation.category === SPAM_CATEGORY_ID;
-	if (!isSpam && !ruleMarkedSpam) {
+	if (senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 			method: "POST", headers: { "Content-Type": "application/json" },
