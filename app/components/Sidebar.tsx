@@ -9,6 +9,7 @@ import {
 	EnvelopeOpenIcon,
 	FileIcon,
 	FolderIcon,
+	FunnelIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
@@ -232,6 +233,22 @@ export default function Sidebar() {
 						</div>
 					</div>
 				)}
+				{/* Automation — deterministic rules run before the AI classifier */}
+				<div className="pt-5">
+					<div className="flex items-center justify-between px-3 mb-1.5">
+						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+							Automation
+						</span>
+					</div>
+					<FolderLink
+						to={`/mailbox/${mailboxId}/rules`}
+						icon={<FunnelIcon size={18} />}
+						label="Rules"
+						onClick={handleNavClick}
+					/>
+				</div>
+
+
 			</nav>
 
 			{/* Create folder dialog */}
