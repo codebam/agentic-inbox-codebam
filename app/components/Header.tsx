@@ -26,17 +26,21 @@ export default function Header() {
 	}, [urlQuery, location.pathname]);
 
 	const performSearch = () => {
-		if (mailboxId && searchQuery.trim()) {
-			const q = searchQuery.trim();
-			navigate(`/mailbox/${mailboxId}/search?q=${encodeURIComponent(q)}`);
-			setIsSearchExpanded(false);
-		}
+		const q = searchQuery.trim();
+		if (!q) return;
+		// Without a mailbox in scope (All Accounts), search every mailbox.
+		navigate(
+			mailboxId
+				? `/mailbox/${mailboxId}/search?q=${encodeURIComponent(q)}`
+				: `/search?q=${encodeURIComponent(q)}`,
+		);
+		setIsSearchExpanded(false);
 	};
 
 	const clearSearch = () => {
 		setSearchQuery("");
-		if (location.pathname.includes("/search") && mailboxId) {
-			navigate(`/mailbox/${mailboxId}/emails/inbox`);
+		if (location.pathname.includes("/search")) {
+			navigate(mailboxId ? `/mailbox/${mailboxId}/emails/inbox` : "/all");
 		}
 	};
 

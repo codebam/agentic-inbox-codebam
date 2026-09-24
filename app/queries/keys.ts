@@ -26,6 +26,8 @@ export const queryKeys = {
 	search: {
 		results: (mailboxId: string, query: string, page: number) =>
 			["search", mailboxId, query, page] as const,
+		all: (query: string, page: number) =>
+			["search", "all-mailboxes", query, page] as const,
 	},
 	config: ["config"] as const,
 	categorization: {

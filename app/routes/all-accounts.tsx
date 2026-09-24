@@ -10,6 +10,7 @@ import {
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
 	FileIcon,
+	MagnifyingGlassIcon,
 	PaperPlaneTiltIcon,
 	ProhibitIcon,
 	RobotIcon,
@@ -344,6 +345,16 @@ export default function AllAccountsRoute() {
 									onClick={handleRefresh}
 									disabled={isFetching}
 									aria-label="Refresh"
+								/>
+							</Tooltip>
+							<Tooltip content="Search all accounts" side="bottom" asChild>
+								<Button
+									variant="ghost"
+									shape="square"
+									size="sm"
+									icon={<MagnifyingGlassIcon size={18} />}
+									onClick={() => navigate("/search")}
+									aria-label="Search all accounts"
 								/>
 							</Tooltip>
 							<Tooltip

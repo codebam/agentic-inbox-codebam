@@ -58,3 +58,31 @@ export function useSearchEmails(
 		enabled: !!mailboxId && !!query,
 	});
 }
+
+
+/**
+ * Cross-mailbox search for the All Accounts view. The raw query is passed
+ * straight through as `q`; the aggregated route parses Gmail-style operators
+ * server-side (shared/search-query.ts), so results stay consistent with the
+ * agent/MCP search tools. Rows carry the mailboxId they came from.
+ */
+export function useSearchAllMailboxes(query: string, page: number) {
+	return useQuery<{ results: Email[]; totalCount: number }>({
+		queryKey: query
+			? queryKeys.search.all(query, page)
+			: ["search", "all-mailboxes", "_disabled"],
+		queryFn: async () => {
+			const params: Record<string, string> = {
+				q: query,
+				page: String(page),
+				limit: String(SEARCH_PAGE_SIZE),
+			};
+			const data = await api.searchAllMailboxes(params);
+			return {
+				results: data.emails ?? [],
+				totalCount: data.totalCount ?? 0,
+			};
+		},
+		enabled: !!query,
+	});
+}

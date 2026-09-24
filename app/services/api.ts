@@ -187,6 +187,9 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+	/** Aggregated search across every mailbox; rows carry their mailboxId. */
+	searchAllMailboxes: (params: Record<string, string>, opts?: { signal?: AbortSignal }) =>
+		get<EmailListResponse>(`/api/v1/search`, { params, signal: opts?.signal }),
 };
 
 export default api;
