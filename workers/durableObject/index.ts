@@ -12,19 +12,26 @@ import { SPAM_CATEGORY_ID } from "../../shared/categories";
 import {
 	hasActiveActions,
 	hasActiveConditions,
+	hasLocalRuleActions,
+	localRuleActions,
 	matchRule,
 	normalizeRuleActions,
 	normalizeRuleMatch,
 	RuleValidationError,
 	resolveRuleFolderId,
+	ruleNeedsChange,
 	MAX_RULE_NAME_LENGTH,
 	MAX_RULE_PRIORITY,
+	RULE_APPLY_LIMIT_DEFAULT,
+	RULE_APPLY_LIMIT_MAX,
 	RULE_PREVIEW_MAX_MATCHES,
 	RULE_PREVIEW_SCAN_LIMIT,
 	type MailRule,
 	type RuleActions,
+	type RuleApplyResult,
 	type RuleDraft,
 	type RuleEmail,
+	type RuleLocalActions,
 	type RuleMatchSpec,
 	type RulePatch,
 	type RulePreviewDraft,
@@ -2756,6 +2763,10 @@ export class MailboxDO extends DurableObject<Env> {
 	 * no email changes, no sends. Returns up to `limit` summaries plus the
 	 * total number of matches within the scanned window.
 	 *
+	 * The scanned window comes from the same `#scanRuleRows` helper the
+	 * retroactive apply uses, so a dry run and an apply always judge the
+	 * same messages.
+	 *
 	 * `enabled` is ignored on purpose: a preview of a paused rule still shows
 	 * what it would do once enabled.
 	 */
@@ -2783,17 +2794,7 @@ export class MailboxDO extends DurableObject<Env> {
 			actions: {},
 			created_at: "",
 		};
-		const rows = [
-			...this.ctx.storage.sql.exec(
-				`SELECT id, subject, sender, recipient, envelope_recipient, cc, bcc,
-				        body, category, folder_id, date,
-				        EXISTS (SELECT 1 FROM attachments WHERE attachments.email_id = emails.id) AS has_attachment
-				 FROM emails
-				 ORDER BY date DESC
-				 LIMIT ?1`,
-				RULE_PREVIEW_SCAN_LIMIT,
-			),
-		] as unknown as PreviewEmailRow[];
+		const rows = this.#scanRuleRows();
 
 		const matches: RulePreviewMatch[] = [];
 		let total = 0;
@@ -2820,6 +2821,156 @@ export class MailboxDO extends DurableObject<Env> {
 		};
 	}
 
+
+
+
+	/**
+	 * Retroactively run a stored rule's local actions over the mailbox's
+	 * existing mail — the operator-only counterpart of the arrival-time
+	 * pipeline.
+	 *
+	 * Bounded per call: the newest `RULE_PREVIEW_SCAN_LIMIT` messages are
+	 * scanned with the SAME `matchRule` matcher as the dry-run preview and
+	 * the live engine, matches already in the target state are counted as
+	 * `skipped` instead of rewritten, and at most `limit` (1..90) of the
+	 * rest are changed. A caller loops until `remaining` is 0 or a batch
+	 * applies nothing — which always terminates, because every changed
+	 * message lands in its target state and is skipped on the next pass.
+	 *
+	 * Deliberately does NOT perform the outbound actions or honour
+	 * `discard` (see `localRuleActions` in ../lib/rules.ts), does NOT bump
+	 * `rule_stats` or stamp `matched_rule_*` (those describe arriving mail,
+	 * and a repeatable operator action must not inflate them), and never
+	 * touches the agent/MCP audit log.
+	 *
+	 * Returns null when the rule does not exist (route -> 404). Throws
+	 * RuleValidationError when the rule has no stored-mail actions, or when
+	 * its folder target has since been deleted (route -> 400).
+	 */
+	applyRuleToExisting(
+		ruleId: string,
+		limit: number = RULE_APPLY_LIMIT_DEFAULT,
+	): RuleApplyResult | null {
+		const stored = this.#getRule(ruleId);
+		if (!stored) return null;
+
+		const actions = stored.actions ?? {};
+		if (!hasLocalRuleActions(actions)) {
+			throw new RuleValidationError(
+				"This rule has no folder, category, read or star action to apply to existing mail",
+			);
+		}
+		const local = localRuleActions(actions);
+		if (local.folder !== undefined && !this.#folderExists(local.folder)) {
+			// The route pre-checks this too; checking again here means a
+			// folder deleted between the route's check and this call cannot
+			// leave dangling folder ids behind.
+			throw new RuleValidationError(`Unknown folder: ${local.folder}`);
+		}
+
+		// A retroactive apply follows the dry run's rule: `enabled` is
+		// ignored on purpose, so a paused rule can still be applied to mail
+		// that predates it (the operator picked it explicitly).
+		const rule: MailRule = { ...stored, enabled: true };
+
+		// The route's schema keeps `limit` inside 1..90; clamping here is
+		// defence in depth for direct Durable Object callers, the same way
+		// `previewRule` clamps its summary limit.
+		const boundedLimit = Number.isFinite(limit)
+			? Math.min(Math.max(Math.trunc(limit), 1), RULE_APPLY_LIMIT_MAX)
+			: RULE_APPLY_LIMIT_DEFAULT;
+
+		const rows = this.#scanRuleRows();
+		let applied = 0;
+		let skipped = 0;
+		let remaining = 0;
+		let matched = 0;
+
+		for (const row of rows) {
+			if (!matchRule(rule, previewRowToRuleEmail(row))) continue;
+			matched += 1;
+			const needsChange = ruleNeedsChange(
+				{
+					folder_id: row.folder_id,
+					category: row.category,
+					read: row.read === 1 || row.read === true,
+					starred: row.starred === 1 || row.starred === true,
+				},
+				local,
+			);
+			if (!needsChange) {
+				skipped += 1;
+				continue;
+			}
+			if (applied >= boundedLimit) {
+				remaining += 1;
+				continue;
+			}
+			this.#applyLocalRuleActions(String(row.id), local);
+			applied += 1;
+		}
+
+		return {
+			rule_id: ruleId,
+			applied,
+			skipped,
+			matched,
+			remaining,
+			scanned: rows.length,
+			scan_limit: RULE_PREVIEW_SCAN_LIMIT,
+		};
+	}
+
+
+	/**
+	 * Rows one rule evaluation scans: the newest `RULE_PREVIEW_SCAN_LIMIT`
+	 * stored messages, with every field the matcher and the retroactive
+	 * apply need. Shared by `previewRule` and `applyRuleToExisting` so both
+	 * always judge the same window with the same data — the apply's extra
+	 * columns (`read`, `starred`) are simply ignored by the dry run.
+	 */
+	#scanRuleRows(): PreviewEmailRow[] {
+		return [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, subject, sender, recipient, envelope_recipient, cc, bcc,
+				        body, category, folder_id, read, starred, date,
+				        EXISTS (SELECT 1 FROM attachments WHERE attachments.email_id = emails.id) AS has_attachment
+				 FROM emails
+				 ORDER BY date DESC
+				 LIMIT ?1`,
+				RULE_PREVIEW_SCAN_LIMIT,
+			),
+		] as unknown as PreviewEmailRow[];
+	}
+
+
+	/**
+	 * Apply a reduced action set to one stored message, through the existing
+	 * primitives every other mutation path uses: `folderMoveFields` for
+	 * moves (so the Trash retention stamp is written exactly as elsewhere),
+	 * `updateEmail` for read/starred flags, and the same
+	 * `UPDATE emails SET category = ?N` shape the stored-mail mutators use
+	 * for a category stamp. No second mutation path is invented.
+	 */
+	#applyLocalRuleActions(id: string, actions: RuleLocalActions): void {
+		if (actions.folder !== undefined) {
+			this.db
+				.update(schema.emails)
+				.set(folderMoveFields(actions.folder))
+				.where(eq(schema.emails.id, id))
+				.run();
+		}
+		if (actions.category !== undefined) {
+			this.ctx.storage.sql.exec(
+				`UPDATE emails SET category = ?1 WHERE id = ?2`,
+				actions.category,
+				id,
+			);
+		}
+		if (actions.read !== undefined || actions.starred !== undefined) {
+			this.updateEmail(id, { read: actions.read, starred: actions.starred });
+		}
+	}
 
 
 
@@ -3309,8 +3460,10 @@ interface RuleRow {
 
 
 /**
- * Raw row shape for a preview scan. `has_attachment` comes back from the
- * EXISTS subquery as 0/1 (SQLite booleans).
+ * Raw row shape for a rule scan (shared by the dry-run preview and the
+ * retroactive apply). `has_attachment` comes back from the EXISTS subquery
+ * as 0/1 (SQLite booleans); `read`/`starred` are the stored 0/1 flags the
+ * retroactive apply compares against.
  */
 interface PreviewEmailRow {
 	id: string;
@@ -3323,6 +3476,9 @@ interface PreviewEmailRow {
 	body: string | null;
 	category: string | null;
 	folder_id: string | null;
+	/** Stored read/star flags (the SQLite column returns 0/1). */
+	read: number | boolean | null;
+	starred: number | boolean | null;
 	date: string | null;
 	has_attachment: number | boolean;
 }

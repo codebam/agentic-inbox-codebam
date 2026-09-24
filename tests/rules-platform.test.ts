@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
 import { SPAM_CATEGORY_ID } from "../shared/categories";
 import {
+	hasLocalRuleActions,
 	isRuleEmailAddress,
+	localRuleActions,
+	ruleNeedsChange,
 	runRules,
 	stripOutboundActions,
 	type RuleDraft,
@@ -195,6 +198,36 @@ async function postPreview(mailbox: string, body: unknown) {
 			total?: number;
 			scanned?: number;
 			matches?: { id: string; subject: string; folder_id: string }[];
+			error?: string;
+		},
+	};
+}
+
+
+/**
+ * POST the retroactive apply route for one stored rule. Registers the
+ * mailbox first, like every other rules route test.
+ */
+async function postApply(mailbox: string, ruleId: string, body: unknown = {}) {
+	await registerMailbox(mailbox, PIPELINE_SETTINGS);
+	const res = await SELF.fetch(
+		`http://example.com/api/v1/mailboxes/${mailbox}/rules/${ruleId}/apply`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		},
+	);
+	return {
+		status: res.status,
+		body: (await res.json()) as {
+			rule_id?: string;
+			applied?: number;
+			skipped?: number;
+			matched?: number;
+			remaining?: number;
+			scanned?: number;
+			scan_limit?: number;
 			error?: string;
 		},
 	};
@@ -1128,5 +1161,363 @@ describe("rule move_to_folder reaches the stored row", () => {
 
 		const inbox = (await stub.getEmails({ folder: Folders.INBOX })) as { subject: string }[];
 		expect(inbox.map((email) => email.subject)).toEqual(["Invoice 43"]);
+	});
+});
+
+
+describe("retroactive apply helpers", () => {
+	it("keeps only the stored-mail actions", () => {
+		expect(
+			localRuleActions({
+				move_to_folder: "archive",
+				set_category: "invoices",
+				mark_read: true,
+				star: true,
+				discard: true,
+				forward_to: "archive@example.org",
+				auto_reply_text: "Thanks!",
+			}),
+		).toEqual({
+			folder: "archive",
+			category: "invoices",
+			read: true,
+			starred: true,
+		});
+		expect(localRuleActions({ mark_unread: true, unstar: true })).toEqual({
+			read: false,
+			starred: false,
+		});
+
+		// Outbound-only and discard-only rules have nothing to apply.
+		expect(hasLocalRuleActions({ forward_to: "archive@example.org" })).toBe(false);
+		expect(hasLocalRuleActions({ discard: true })).toBe(false);
+		expect(hasLocalRuleActions({ unstar: true })).toBe(true);
+	});
+
+
+	it("treats a message already in the target state as needing no change", () => {
+		const actions = {
+			folder: "archive",
+			category: "invoices",
+			read: true,
+			starred: true,
+		};
+		expect(
+			ruleNeedsChange(
+				{ folder_id: "archive", category: "INVOICES", read: true, starred: true },
+				actions,
+			),
+		).toBe(false);
+		expect(
+			ruleNeedsChange({ folder_id: "inbox", category: "invoices" }, actions),
+		).toBe(true);
+		expect(ruleNeedsChange({ folder_id: "archive", category: null }, actions)).toBe(true);
+		expect(
+			ruleNeedsChange(
+				{ folder_id: "archive", category: "invoices", read: false },
+				actions,
+			),
+		).toBe(true);
+		expect(
+			ruleNeedsChange(
+				{ folder_id: "archive", category: "invoices", read: true, starred: false },
+				actions,
+			),
+		).toBe(true);
+	});
+});
+
+
+
+
+describe("retroactive apply", () => {
+	it("applies folder, category, read and star to exactly the matching mail", async () => {
+		const mailbox = "apply-route@example.com";
+		const stub = stubFor(mailbox);
+		await stub.createFolder("archive-x", "Archive X");
+		await seedEmail(stub, "a-1", Folders.INBOX, { subject: "Invoice 1" });
+		await seedEmail(stub, "a-2", Folders.INBOX, { subject: "Invoice 2" });
+		await seedEmail(stub, "a-3", Folders.INBOX, { subject: "Lunch on Friday?" });
+
+		const rule = await stub.createRule(
+			ruleDraft({
+				name: "File invoices",
+				match: { mode: "all", conditions: { subject_contains: "invoice" } },
+				actions: {
+					move_to_folder: "archive-x",
+					set_category: "invoices",
+					mark_read: true,
+					star: true,
+				},
+			}),
+		);
+
+		const res = await postApply(mailbox, rule.id);
+
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({
+			rule_id: rule.id,
+			applied: 2,
+			skipped: 0,
+			matched: 2,
+			remaining: 0,
+			scanned: 3,
+			scan_limit: 2000,
+		});
+
+		// Exactly the two matching messages changed; the third is untouched.
+		const rows = await sqlRows<{
+			id: string;
+			folder_id: string;
+			category: string | null;
+			read: number;
+			starred: number;
+			trashed_at: string | null;
+			matched_rule_id: string | null;
+		}>(
+			stub,
+			"SELECT id, folder_id, category, read, starred, trashed_at, matched_rule_id FROM emails ORDER BY id",
+		);
+		expect(rows).toEqual([
+			{
+				id: "a-1",
+				folder_id: "archive-x",
+				category: "invoices",
+				read: 1,
+				starred: 1,
+				trashed_at: null,
+				matched_rule_id: null,
+			},
+			{
+				id: "a-2",
+				folder_id: "archive-x",
+				category: "invoices",
+				read: 1,
+				starred: 1,
+				trashed_at: null,
+				matched_rule_id: null,
+			},
+			{
+				id: "a-3",
+				folder_id: Folders.INBOX,
+				category: null,
+				read: 0,
+				starred: 0,
+				trashed_at: null,
+				matched_rule_id: null,
+			},
+		]);
+
+		// A retroactive apply is not a firing: no stats, no stamp.
+		expect((await stub.listRules())[0].fired_count).toBe(0);
+		const stats = await sqlRows<{ c: number }>(
+			stub,
+			"SELECT COUNT(*) AS c FROM rule_stats",
+		);
+		expect(stats[0].c).toBe(0);
+	});
+
+
+	it("counts already-filed mail as skipped and applies nothing on a second run", async () => {
+		const stub = stubFor("apply-idempotent@example.com");
+		await stub.createFolder("archive-y", "Archive Y");
+		// Already in the target state: right folder, category and flags.
+		await seedEmail(stub, "b-1", "archive-y", {
+			subject: "Invoice 10",
+			category: "invoices",
+		});
+		await stub.updateEmail("b-1", { read: true, starred: true });
+		// Needs the move, the category and both flags.
+		await seedEmail(stub, "b-2", Folders.INBOX, { subject: "Invoice 11" });
+
+		const rule = await stub.createRule(
+			ruleDraft({
+				match: { mode: "all", conditions: { subject_contains: "invoice" } },
+				actions: {
+					move_to_folder: "archive-y",
+					set_category: "invoices",
+					mark_read: true,
+					star: true,
+				},
+			}),
+		);
+
+		const first = await stub.applyRuleToExisting(rule.id);
+		expect(first).toMatchObject({
+			rule_id: rule.id,
+			applied: 1,
+			skipped: 1,
+			matched: 2,
+			remaining: 0,
+			scanned: 2,
+			scan_limit: 2000,
+		});
+
+		// Nothing left to change: the same window now reports 0 applied.
+		const second = await stub.applyRuleToExisting(rule.id);
+		expect(second).toMatchObject({
+			applied: 0,
+			skipped: 2,
+			matched: 2,
+			remaining: 0,
+		});
+	});
+
+
+	it("clamps the limit to 1..90 and reports the overflow as remaining", async () => {
+		const stub = stubFor("apply-limit@example.com");
+		for (let index = 0; index < 95; index += 1) {
+			await seedEmail(stub, `c-${index}`, Folders.INBOX, { subject: "Invoice bulk" });
+		}
+		const rule = await stub.createRule(ruleDraft({ actions: { star: true } }));
+
+		// Above-range limits clamp down to the bulk-action cap...
+		const first = await stub.applyRuleToExisting(rule.id, 500);
+		expect(first).toMatchObject({
+			applied: 90,
+			skipped: 0,
+			matched: 95,
+			remaining: 5,
+			scanned: 95,
+			scan_limit: 2000,
+		});
+
+		// ...and the overflow is what the next batch reports.
+		const second = await stub.applyRuleToExisting(rule.id, 500);
+		expect(second).toMatchObject({
+			applied: 5,
+			skipped: 90,
+			matched: 95,
+			remaining: 0,
+		});
+
+		// Below-range limits clamp up to a single message.
+		await seedEmail(stub, "c-extra", Folders.INBOX, { subject: "Invoice bulk" });
+		const third = await stub.applyRuleToExisting(rule.id, 0);
+		expect(third).toMatchObject({
+			applied: 1,
+			skipped: 95,
+			matched: 96,
+			remaining: 0,
+			scanned: 96,
+		});
+	});
+
+
+	it("applies a paused rule the way the dry run previews it", async () => {
+		const stub = stubFor("apply-paused@example.com");
+		await seedEmail(stub, "p-1", Folders.INBOX, { subject: "Invoice 41" });
+		const rule = await stub.createRule(
+			ruleDraft({ enabled: false, actions: { star: true } }),
+		);
+
+		const result = await stub.applyRuleToExisting(rule.id, 90);
+		expect(result).toMatchObject({ applied: 1, matched: 1 });
+
+		const rows = await sqlRows<{ starred: number }>(stub, "SELECT starred FROM emails");
+		expect(rows).toEqual([{ starred: 1 }]);
+	});
+
+
+	it("refuses a rule with no stored-mail actions and sends nothing", async () => {
+		const mailbox = "apply-outbound-only@example.com";
+		const stub = stubFor(mailbox);
+		await seedEmail(stub, "d-1", Folders.INBOX, { subject: "Invoice 20" });
+		const forwardOnly = await stub.createRule(
+			ruleDraft({
+				name: "Forward only",
+				actions: { forward_to: "archive@example.org" },
+			}),
+		);
+		const replyOnly = await stub.createRule(
+			ruleDraft({
+				name: "Auto-reply only",
+				actions: { auto_reply_text: "Thanks for your mail!" },
+			}),
+		);
+
+		// A sender is wired up but must never be consulted: a retroactive
+		// apply has no outbound path at all.
+		const { sender, sent } = fakeSender();
+		setRuleOutboundSenderFactory(() => sender);
+		// Both refusals come from the route's own checks: no RPC rejection
+		// is logged, no send is attempted, nothing is changed.
+		const results: Awaited<ReturnType<typeof postApply>>[] = [];
+		try {
+			results.push(await postApply(mailbox, forwardOnly.id));
+			results.push(await postApply(mailbox, replyOnly.id));
+		} finally {
+			setRuleOutboundSenderFactory(null);
+		}
+
+		expect(results.map((result) => result.status)).toEqual([400, 400]);
+		expect(results[0].body.error).toMatch(
+			/no folder, category, read or star action/,
+		);
+		expect(sent).toHaveLength(0);
+
+		// The message the rules match is untouched: nothing sent, nothing changed.
+		const rows = await sqlRows<{ read: number; starred: number }>(
+			stub,
+			"SELECT read, starred FROM emails",
+		);
+		expect(rows).toEqual([{ read: 0, starred: 0 }]);
+	});
+
+
+	it("ignores discard, keeps the message stored, and never bumps firing stats", async () => {
+		const mailbox = "apply-discard@example.com";
+		const stub = stubFor(mailbox);
+		await seedEmail(stub, "e-1", Folders.INBOX, { subject: "Invoice 30" });
+		const rule = await stub.createRule(
+			ruleDraft({
+				name: "Drop and read",
+				actions: { discard: true, mark_read: true },
+			}),
+		);
+
+		const res = await postApply(mailbox, rule.id);
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ applied: 1, matched: 1 });
+
+		// Discard is a delivery-time action: the stored message survives and
+		// only the read flag was applied.
+		const rows = await sqlRows<{ id: string; read: number }>(
+			stub,
+			"SELECT id, read FROM emails",
+		);
+		expect(rows).toEqual([{ id: "e-1", read: 1 }]);
+
+		expect((await stub.listRules())[0].fired_count).toBe(0);
+		const stats = await sqlRows<{ c: number }>(
+			stub,
+			"SELECT COUNT(*) AS c FROM rule_stats",
+		);
+		expect(stats[0].c).toBe(0);
+	});
+
+
+	it("answers 404 for an unknown rule and 400 for a bad limit or dead folder", async () => {
+		const mailbox = "apply-errors@example.com";
+		const stub = stubFor(mailbox);
+		await stub.createFolder("temp-z", "Temp Z");
+		const rule = await stub.createRule(
+			ruleDraft({ actions: { move_to_folder: "temp-z", star: true } }),
+		);
+
+		const unknown = await postApply(mailbox, "no-such-rule");
+		expect(unknown.status).toBe(404);
+		expect(unknown.body.error).toMatch(/Rule not found/);
+
+		const badLimit = await postApply(mailbox, rule.id, { limit: 0 });
+		expect(badLimit.status).toBe(400);
+		expect(badLimit.body.error).toMatch(/limit/);
+
+		// Folder validation mirrors rules/preview: a dead target is a 400,
+		// not a 500 from the Durable Object.
+		await stub.deleteFolder("temp-z");
+		const deadFolder = await postApply(mailbox, rule.id);
+		expect(deadFolder.status).toBe(400);
+		expect(deadFolder.body.error).toMatch(/Unknown folder/);
 	});
 });

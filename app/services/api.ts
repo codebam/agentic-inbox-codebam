@@ -8,6 +8,7 @@ import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type {
 	MailRule,
+	RuleApplyResult,
 	RuleDraft,
 	RulePatch,
 	RulePreviewDraft,
@@ -349,6 +350,19 @@ const api = {
 		post<RulePreviewResult>(
 			`/api/v1/mailboxes/${mailboxId}/rules/preview`,
 			draft,
+		),
+
+
+	/**
+	 * Retroactively run one stored rule over the mailbox's existing mail.
+	 * Operator-only and bounded: `limit` caps the messages changed by this
+	 * call and the returned `remaining` says whether another call would do
+	 * more. Never sends, never deletes, never records a firing.
+	 */
+	applyRule: (mailboxId: string, ruleId: string, limit?: number) =>
+		post<RuleApplyResult>(
+			`/api/v1/mailboxes/${mailboxId}/rules/${ruleId}/apply`,
+			limit != null ? { limit } : {},
 		),
 
 
