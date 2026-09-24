@@ -4,11 +4,18 @@
 
 import DOMPurify from "dompurify";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { blockRemoteImages, buildEmailIframeCsp } from "shared/remote-images";
 
 interface EmailIframeProps {
 	body: string;
 	/** When true, iframe auto-sizes to content height instead of filling parent */
 	autoSize?: boolean;
+	/**
+	 * Load remote images (tracking pixels) in this message. Defaults to
+	 * false: the body is passed through `blockRemoteImages` and the CSP
+	 * omits every remote host until the user opts in.
+	 */
+	allowRemoteImages?: boolean;
 }
 
 /**
@@ -26,8 +33,15 @@ interface EmailIframeProps {
  *   the opaque-origin sandbox cannot access anything useful.
  * - A strict CSP meta tag blocks external resource loads inside the
  *   iframe as a defense-in-depth layer.
+ * - Remote images (tracking pixels) are blocked by default: the sanitised
+ *   body is passed through `blockRemoteImages` and the CSP allows no remote
+ *   host, so they load only after an explicit opt-in (`allowRemoteImages`).
  */
-export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
+export default function EmailIframe({
+	body,
+	autoSize,
+	allowRemoteImages = false,
+}: EmailIframeProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const [height, setHeight] = useState(autoSize ? 100 : 0);
 
@@ -59,12 +73,25 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 		const iframe = iframeRef.current;
 		if (!iframe || !body) return;
 
-		const cleanBody = DOMPurify.sanitize(body, {
+		const sanitizedBody = DOMPurify.sanitize(body, {
 			USE_PROFILES: { html: true },
 			FORBID_TAGS: ["style"],
 			ADD_ATTR: ["target"],
 			FORCE_BODY: true,
 		});
+
+		// Tracking pixels stay blocked unless the user opted in for this
+		// message or the sender sits on the mailbox's image allowlist.
+		const cleanBody = allowRemoteImages
+			? sanitizedBody
+			: blockRemoteImages(sanitizedBody).html;
+
+		// Inline attachments are rewritten to same-origin API URLs, so the
+		// blocked CSP keeps the app's own origin while dropping remote hosts.
+		const csp = buildEmailIframeCsp(
+			allowRemoteImages,
+			typeof window === "undefined" ? "" : window.location.origin,
+		);
 
 		const padding = autoSize ? "0" : "24px";
 
@@ -91,7 +118,7 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https:; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
 * { box-sizing: border-box; }
 html {
@@ -137,7 +164,7 @@ ul, ol { padding-left: 20px; margin: 4px 0; }
 </head>
 <body>${cleanBody}${heightScript}</body>
 </html>`;
-	}, [body, autoSize]);
+	}, [body, autoSize, allowRemoteImages]);
 
 	return (
 		<iframe

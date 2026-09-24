@@ -4,6 +4,7 @@
 
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
+import { useRemoteImagesAllowed } from "~/hooks/useRemoteImages";
 import { formatDetailDate, rewriteInlineImages } from "~/lib/utils";
 import type { Email } from "~/types";
 
@@ -18,6 +19,7 @@ export default function SingleMessageView({
 	mailboxId,
 	onPreviewImage,
 }: SingleMessageViewProps) {
+	const allowRemoteImages = useRemoteImagesAllowed(email, mailboxId);
 	return (
 		<div className="flex flex-col h-full">
 			<div className="px-4 py-4 border-b border-kumo-line md:px-6">
@@ -50,6 +52,7 @@ export default function SingleMessageView({
 						email.id,
 						email.attachments,
 					)}
+					allowRemoteImages={allowRemoteImages}
 				/>
 			</div>
 

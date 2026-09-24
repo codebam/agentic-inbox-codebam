@@ -13,6 +13,8 @@ import {
 } from "@phosphor-icons/react";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
+import RemoteImagesNotice from "~/components/email-panel/RemoteImagesNotice";
+import { useRemoteImagesAllowed } from "~/hooks/useRemoteImages";
 import {
 	formatDetailDate,
 	formatShortDate,
@@ -69,6 +71,7 @@ export default function ThreadMessage({
 	onPreviewImage,
 }: ThreadMessageProps) {
 	const isSelf = email.sender === mailboxEmail;
+	const allowRemoteImages = useRemoteImagesAllowed(email, mailboxId);
 	const containerClassName = `${!isLast ? "border-b border-kumo-line" : ""} ${isDraft ? "border-l-2 border-l-kumo-warning bg-kumo-warning/[0.02]" : ""}`;
 	const senderLabel = isDraft ? "Draft reply" : isSelf ? "You" : email.sender;
 
@@ -159,6 +162,9 @@ export default function ThreadMessage({
 					</div>
 				</div>
 
+				<RemoteImagesNotice email={email} mailboxId={mailboxId} />
+
+
 				<div className="md:ml-[42px]">
 					<EmailIframe
 						body={rewriteInlineImages(
@@ -168,6 +174,7 @@ export default function ThreadMessage({
 							email.attachments,
 						)}
 						autoSize
+						allowRemoteImages={allowRemoteImages}
 					/>
 				</div>
 
