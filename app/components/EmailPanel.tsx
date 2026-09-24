@@ -19,6 +19,7 @@ import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
 import RemoteImagesNotice from "~/components/email-panel/RemoteImagesNotice";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
+import UnsubscribeBanner from "~/components/email-panel/UnsubscribeBanner";
 import EmailViewToggle from "~/components/EmailViewToggle";
 import SenderPolicyActions from "~/components/SenderPolicyActions";
 import {
@@ -398,6 +399,7 @@ export default function EmailPanel({
 			    notice, so the panel-level one would be a duplicate. */}
 			{!hasThread && <RemoteImagesNotice email={email} mailboxId={mailboxId} />}
 			<SenderPolicyActions email={email} mailboxId={mailboxId} />
+			<UnsubscribeBanner email={email} mailboxId={mailboxId} />
 
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (
