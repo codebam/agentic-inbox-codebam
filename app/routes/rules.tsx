@@ -1194,8 +1194,8 @@ export default function RulesRoute() {
 					</Dialog.Description>
 					<div className="flex justify-end gap-2">
 						<Dialog.Close
-							render={(props) => (
-								<Button {...props} variant="secondary">
+							render={({ className, ...props }) => (
+								<Button {...props} {...(className ? { className } : {})} variant="secondary">
 									Cancel
 								</Button>
 							)}

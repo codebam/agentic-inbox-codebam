@@ -89,7 +89,7 @@ function getQueryClient() {
 
 const KumoLink = forwardRef<
 	HTMLAnchorElement,
-	React.AnchorHTMLAttributes<HTMLAnchorElement> & { href?: string }
+	React.AnchorHTMLAttributes<HTMLAnchorElement>
 >(function KumoLink({ href, ...props }, ref) {
 	if (href && !href.startsWith("http")) {
 		return (

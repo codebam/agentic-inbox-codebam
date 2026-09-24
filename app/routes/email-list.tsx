@@ -126,7 +126,7 @@ function FolderEmptyState({
 	folder,
 	onCompose,
 }: {
-	folder?: string;
+	folder?: string | undefined;
 	onCompose: () => void;
 }) {
 	const config = (folder && FOLDER_EMPTY_STATES[folder]) || {
