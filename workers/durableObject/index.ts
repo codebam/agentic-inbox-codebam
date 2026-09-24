@@ -52,6 +52,16 @@ import {
 	DEFAULT_CONTACT_SEARCH_LIMIT,
 } from "../lib/contacts";
 import {
+	normalizeTemplateBody,
+	normalizeTemplateName,
+	normalizeTemplateSubject,
+	TemplateValidationError,
+	MAX_TEMPLATES,
+	type Template,
+	type TemplateInput,
+	type TemplatePatch,
+} from "../lib/templates";
+import {
 	generateMessageId,
 	validateSender,
 } from "../lib/email-helpers";
@@ -2893,6 +2903,115 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 
+
+
+	// ── Templates (mailbox snippets) ───────────────────────────────
+
+	/**
+	 * Every template for this mailbox, ordered by name (case-insensitive),
+	 * then creation order, then id (the tie-break that keeps the list stable
+	 * when two templates share a name and a timestamp). Name and subject are
+	 * metadata; the body is the operator-authored content the composer
+	 * inserts into a draft.
+	 */
+	listTemplates(): Template[] {
+		return this.db
+			.select()
+			.from(schema.templates)
+			.orderBy(
+				sql`${schema.templates.name} COLLATE NOCASE ASC`,
+				asc(schema.templates.created_at),
+				asc(schema.templates.id),
+			)
+			.all();
+	}
+
+	/** How many templates this mailbox holds (the create-time cap check). */
+	#countTemplates(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.templates)
+			.get();
+		return row?.total ?? 0;
+	}
+
+	/**
+	 * Store a new template. Every field is validated and bounded
+	 * (workers/lib/templates.ts) and a mailbox already holding MAX_TEMPLATES
+	 * refuses the write, so a runaway caller cannot grow the table without
+	 * limit — templates are kept, never pruned. Throws
+	 * TemplateValidationError so routes can answer with a 400.
+	 */
+	createTemplate(input: TemplateInput): Template {
+		const name = normalizeTemplateName(input?.name);
+		const subject = normalizeTemplateSubject(input?.subject);
+		const body = normalizeTemplateBody(input?.body);
+		if (this.#countTemplates() >= MAX_TEMPLATES) {
+			throw new TemplateValidationError(
+				`A mailbox can hold at most ${MAX_TEMPLATES} templates`,
+			);
+		}
+		const now = new Date().toISOString();
+		const row: Template = {
+			id: crypto.randomUUID(),
+			name,
+			subject,
+			body,
+			created_at: now,
+			updated_at: now,
+		};
+		this.db.insert(schema.templates).values(row).run();
+		return row;
+	}
+
+	/**
+	 * Apply a partial change to one template: omitted fields keep their
+	 * stored value, an explicit null (or blank) subject clears it, and every
+	 * supplied field is validated and bounded before it is stored. Returns
+	 * the updated row, or null when the id is unknown (the route answers
+	 * 404). updated_at is stamped on every successful write.
+	 */
+	updateTemplate(id: string, patch: TemplatePatch): Template | null {
+		const existing = this.db
+			.select()
+			.from(schema.templates)
+			.where(eq(schema.templates.id, id))
+			.get();
+		if (!existing) return null;
+
+		const name =
+			patch?.name === undefined
+				? existing.name
+				: normalizeTemplateName(patch.name);
+		const subject =
+			patch?.subject === undefined
+				? existing.subject
+				: normalizeTemplateSubject(patch.subject);
+		const body =
+			patch?.body === undefined
+				? existing.body
+				: normalizeTemplateBody(patch.body);
+		const updatedAt = new Date().toISOString();
+
+		this.db
+			.update(schema.templates)
+			.set({ name, subject, body, updated_at: updatedAt })
+			.where(eq(schema.templates.id, id))
+			.run();
+		return { ...existing, name, subject, body, updated_at: updatedAt };
+	}
+
+	/** Remove one template. Returns false when the id is unknown. */
+	deleteTemplate(id: string): boolean {
+		const existing = this.db
+			.select({ id: schema.templates.id })
+			.from(schema.templates)
+			.where(eq(schema.templates.id, id))
+			.get();
+		if (!existing) return false;
+		this.db.delete(schema.templates).where(eq(schema.templates.id, id)).run();
+		return true;
+	}
 
 
 	// ── Sender policy CRUD (per-mailbox allow/block list) ──────────
