@@ -9,6 +9,7 @@ import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import { useUIStore } from "~/hooks/useUIStore";
 import AttachmentPicker from "./AttachmentPicker";
+import RecipientField from "./RecipientField";
 
 const ComposeBodyEditor = lazy(() => import("./ComposeBodyEditor"));
 
@@ -67,13 +68,12 @@ export default function ComposeEmail() {
 					{error && <Banner variant="error" text={error} />}
 					<div className="flex items-center gap-2">
 						<div className="flex-1">
-							<Input
+							<RecipientField
 								label="To"
-								type="text"
-								placeholder="recipient@example.com, another@example.com"
-								size="sm"
+								mailboxId={mailboxId}
 								value={to}
-								onChange={(e) => setTo(e.target.value)}
+								onChange={setTo}
+								placeholder="recipient@example.com, another@example.com"
 								required
 							/>
 						</div>
@@ -88,22 +88,20 @@ export default function ComposeEmail() {
 						)}
 					</div>
 					{showCcBcc && (
-						<Input
+						<RecipientField
 							label="CC"
-							type="text"
-							size="sm"
+							mailboxId={mailboxId}
 							value={cc}
-							onChange={(e) => setCc(e.target.value)}
+							onChange={setCc}
 							placeholder="Separate multiple addresses with commas"
 						/>
 					)}
 					{showCcBcc && (
-						<Input
+						<RecipientField
 							label="BCC"
-							type="text"
-							size="sm"
+							mailboxId={mailboxId}
 							value={bcc}
-							onChange={(e) => setBcc(e.target.value)}
+							onChange={setBcc}
 							placeholder="Separate multiple addresses with commas"
 						/>
 					)}

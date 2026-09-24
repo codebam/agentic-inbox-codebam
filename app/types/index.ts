@@ -46,6 +46,26 @@ export interface Mailbox {
 	settings?: MailboxSettings;
 }
 
+/**
+ * One address in a mailbox's contact index, as returned by
+ * `GET /api/v1/mailboxes/:mailboxId/contacts`. The server ranks matches by
+ * how often, and how recently, the mailbox has exchanged mail with them.
+ */
+export interface Contact {
+	id: string;
+	email: string;
+	/** Display name learned from the mail headers; null for unnamed addresses. */
+	name: string | null;
+	/** Messages this mailbox has sent to the address. */
+	sent_count: number;
+	/** Messages this mailbox has received from the address. */
+	received_count: number;
+	/** ISO 8601 time the address was first seen. */
+	first_seen_at: string;
+	/** ISO 8601 time the address was last seen. */
+	last_seen_at: string;
+}
+
 export interface Email {
 	id: string;
 	thread_id?: string | null;
