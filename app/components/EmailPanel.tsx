@@ -53,7 +53,7 @@ export default function EmailPanel({
 }: {
 	emailId: string;
 	/** Optional override used by the All Accounts view. Falls back to the route param. */
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 }) {
 	const params = useParams<{ mailboxId: string; folder: string }>();
 	const mailboxId = mailboxIdProp ?? params.mailboxId;
@@ -175,8 +175,8 @@ export default function EmailPanel({
 
 	const handleEditDraft = (draftMsg?: Email) => {
 		const target = draftMsg || email;
-		if (target.in_reply_to) { startCompose({ mode: "reply", originalEmail: allMessages.find((msg) => msg.id === target.in_reply_to), draftEmail: target }); }
-		else { startCompose({ mode: "new", originalEmail: undefined, draftEmail: target }); }
+		if (target.in_reply_to) { startCompose({ mode: "reply", originalEmail: allMessages.find((msg) => msg.id === target.in_reply_to) ?? null, draftEmail: target }); }
+		else { startCompose({ mode: "new", draftEmail: target }); }
 	};
 
 	const handleDeleteDraft = async (draftMsg?: Email) => {
@@ -247,12 +247,12 @@ export default function EmailPanel({
 				onSendDraft={() => handleSendDraft()}
 				onEditDraft={() => handleEditDraft()}
 				onReply={() =>
-					startCompose({ mode: "reply", originalEmail: lastReceivedMessage })
+					startCompose({ mode: "reply", originalEmail: lastReceivedMessage ?? null })
 				}
 				onReplyAll={() =>
 					startCompose({
 						mode: "reply-all",
-						originalEmail: lastReceivedMessage,
+						originalEmail: lastReceivedMessage ?? null,
 					})
 				}
 				onForward={() => startCompose({ mode: "forward", originalEmail: email })}

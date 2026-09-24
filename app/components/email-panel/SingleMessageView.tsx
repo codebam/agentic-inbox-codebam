@@ -11,7 +11,7 @@ import type { Email } from "~/types";
 
 interface SingleMessageViewProps {
 	email: Email;
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	/** Effective HTML | plain text mode for the panel. */
 	viewMode: EmailViewMode;
 	onPreviewImage: (url: string, filename: string) => void;

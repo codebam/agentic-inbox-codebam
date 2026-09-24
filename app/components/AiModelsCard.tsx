@@ -23,7 +23,7 @@ interface AiModelsCardProps {
 	 * Inherited model ids shown as placeholders: the app-wide overrides for
 	 * a mailbox card, or the built-in defaults in Global Settings.
 	 */
-	inherited?: ModelConfig;
+	inherited?: ModelConfig | undefined;
 	title?: string;
 	description?: string;
 }
@@ -77,7 +77,7 @@ export default function AiModelsCard({
 							label={MODEL_CONFIG_LABELS[key]}
 							value={value}
 							placeholder={placeholderFor(key)}
-							error={error ?? undefined}
+							{...(error ? { error } : {})}
 							onChange={(e) => update(key, e.target.value)}
 						/>
 					);

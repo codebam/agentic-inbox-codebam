@@ -7,10 +7,10 @@ import { formatBytes, getAttachmentUrl, getNonInlineAttachments } from "~/lib/ut
 import type { Attachment } from "~/types";
 
 interface EmailAttachmentListProps {
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	emailId: string;
-	attachments?: Attachment[];
-	onPreviewImage?: (url: string, filename: string) => void;
+	attachments?: Attachment[] | undefined;
+	onPreviewImage?: ((url: string, filename: string) => void) | undefined;
 	className?: string;
 	showHeading?: boolean;
 }

@@ -13,7 +13,7 @@ export default function ComposePanel({
 	mailboxId: mailboxIdProp,
 }: {
 	/** Optional override used by the All Accounts view. Falls back to the route param. */
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 } = {}) {
 	const params = useParams<{
 		mailboxId: string;

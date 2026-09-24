@@ -28,7 +28,7 @@ export default function SenderPolicyActions({
 	mailboxId,
 }: {
 	email: Email;
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 }) {
 	const toastManager = useKumoToastManager();
 	const feedback = useSenderPolicyFeedback();

@@ -14,7 +14,7 @@ import {
 
 interface EmailViewCardProps {
 	/** Configured value for this scope. Blank/undefined means inherit. */
-	value?: EmailViewMode | null;
+	value?: EmailViewMode | null | undefined;
 	onChange: (value: EmailViewMode | undefined) => void;
 	/**
 	 * Effective mode this scope inherits when nothing is configured: the

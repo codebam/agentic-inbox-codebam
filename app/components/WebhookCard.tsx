@@ -83,7 +83,7 @@ export default function WebhookCard({
 					label="Webhook URL"
 					placeholder="https://example.com/hooks/inbound"
 					value={url}
-					error={urlError ?? undefined}
+					{...(urlError ? { error: urlError } : {})}
 					onChange={(e) => onChange({ url: e.target.value, secret })}
 				/>
 				<Input

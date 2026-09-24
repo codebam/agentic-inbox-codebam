@@ -9,13 +9,13 @@ import { blockRemoteImages, buildEmailIframeCsp } from "shared/remote-images";
 interface EmailIframeProps {
 	body: string;
 	/** When true, iframe auto-sizes to content height instead of filling parent */
-	autoSize?: boolean;
+	autoSize?: boolean | undefined;
 	/**
 	 * Load remote images (tracking pixels) in this message. Defaults to
 	 * false: the body is passed through `blockRemoteImages` and the CSP
 	 * omits every remote host until the user opts in.
 	 */
-	allowRemoteImages?: boolean;
+	allowRemoteImages?: boolean | undefined;
 }
 
 /**

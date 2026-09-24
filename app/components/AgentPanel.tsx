@@ -359,7 +359,7 @@ function AgentChatConnected({
 	useAgentChat,
 }: {
 	agentName: string;
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	allMailboxes: boolean;
 	useAgent: typeof import("agents/react").useAgent;
 	useAgentChat: typeof import("@cloudflare/ai-chat/react").useAgentChat;

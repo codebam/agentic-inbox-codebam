@@ -95,8 +95,8 @@ export default function KeyboardCheatsheet({
 					{/* render= keeps Dialog.Close and the Button one element: nesting two
 					    buttons is invalid HTML and trips React hydration warnings. */}
 					<Dialog.Close
-						render={(closeProps) => (
-							<Button variant="secondary" size="sm" {...closeProps}>
+						render={({ className, ...closeProps }) => (
+							<Button variant="secondary" size="sm" {...closeProps} {...(className ? { className } : {})}>
 								Close
 							</Button>
 						)}
