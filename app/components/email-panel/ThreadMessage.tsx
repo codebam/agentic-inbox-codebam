@@ -11,12 +11,12 @@ import {
 	PencilSimpleIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
+import type { EmailViewMode } from "shared/email-view";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
-import EmailIframe from "~/components/EmailIframe";
+import MessageBody from "~/components/MessageBody";
 import {
 	formatDetailDate,
 	formatShortDate,
-	rewriteInlineImages,
 	stripHtml,
 } from "~/lib/utils";
 import type { Email } from "~/types";
@@ -25,6 +25,8 @@ interface ThreadMessageProps {
 	email: Email;
 	mailboxId?: string;
 	mailboxEmail?: string;
+	/** Effective HTML | plain text mode for the panel. */
+	viewMode: EmailViewMode;
 	isLast: boolean;
 	isDraft?: boolean;
 	isSending?: boolean;
@@ -57,6 +59,7 @@ export default function ThreadMessage({
 	email,
 	mailboxId,
 	mailboxEmail,
+	viewMode,
 	isLast,
 	isDraft,
 	isSending,
@@ -160,15 +163,7 @@ export default function ThreadMessage({
 				</div>
 
 				<div className="md:ml-[42px]">
-					<EmailIframe
-						body={rewriteInlineImages(
-							email.body || "",
-							mailboxId || "",
-							email.id,
-							email.attachments,
-						)}
-						autoSize
-					/>
+					<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} autoSize />
 				</div>
 
 				{isDraft && (onSendDraft || onEditDraft || onDeleteDraft) && (

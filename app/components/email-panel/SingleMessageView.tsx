@@ -2,20 +2,24 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type { EmailViewMode } from "shared/email-view";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
-import EmailIframe from "~/components/EmailIframe";
-import { formatDetailDate, rewriteInlineImages } from "~/lib/utils";
+import MessageBody from "~/components/MessageBody";
+import { formatDetailDate } from "~/lib/utils";
 import type { Email } from "~/types";
 
 interface SingleMessageViewProps {
 	email: Email;
 	mailboxId?: string;
+	/** Effective HTML | plain text mode for the panel. */
+	viewMode: EmailViewMode;
 	onPreviewImage: (url: string, filename: string) => void;
 }
 
 export default function SingleMessageView({
 	email,
 	mailboxId,
+	viewMode,
 	onPreviewImage,
 }: SingleMessageViewProps) {
 	return (
@@ -43,14 +47,7 @@ export default function SingleMessageView({
 			</div>
 
 			<div className="flex-1 min-h-0">
-				<EmailIframe
-					body={rewriteInlineImages(
-						email.body || "",
-						mailboxId || "",
-						email.id,
-						email.attachments,
-					)}
-				/>
+				<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} />
 			</div>
 
 			<EmailAttachmentList

@@ -129,6 +129,12 @@ const BLOCK_TAGS = [
 const COMMENT_RE = /<!--[\s\S]*?-->/g;
 /** Two or more <br> in a row are a deliberate blank line. */
 const MULTI_BR_RE = /(?:<br\b[^>]*>\s*){2,}/gi;
+/**
+ * Temporary marker for a deliberate blank line. Block boundaries collapse to
+ * a single newline (so `<div>a</div><div>b</div>` reads as two lines, not
+ * two lines plus an empty one); the marker is restored to "\n\n" afterwards.
+ */
+const BLANK_LINE_MARKER = "\u0000";
 const BLOCK_BOUNDARY_RE = new RegExp(
 	`<br\\b[^>]*>|<hr\\b[^>]*>|<\\/?(?:${BLOCK_TAGS.join("|")})\\b[^>]*>`,
 	"gi",
@@ -194,14 +200,15 @@ function collapseWhitespace(value: string): string {
  * Render HTML email as readable plain text.
  *
  * - script/style/head content is dropped outright
- * - block elements and <br> become line breaks (a run of <br> keeps its blank line)
+ * - block elements and <br> become line breaks (a run of <br> keeps its blank
+ *   line; consecutive block boundaries do not add one)
  * - links keep their target as `label (href)`; unsafe URL schemes are dropped
  * - entities are decoded and whitespace is collapsed
  */
 export function htmlToPlainText(html: string): string {
 	if (typeof html !== "string" || html.length === 0) return "";
 
-	let text = html.replace(COMMENT_RE, "");
+	let text = html.replace(COMMENT_RE, "").replaceAll(BLANK_LINE_MARKER, "");
 	for (const tag of DROP_CONTENT_TAGS) {
 		text = text.replace(
 			new RegExp(`<${tag}\\b[^>]*(?:/>|>[\\s\\S]*?<\\/${tag}\\s*>|>[\\s\\S]*$)`, "gi"),
@@ -220,8 +227,11 @@ export function htmlToPlainText(html: string): string {
 		return `${label} (${url})`;
 	});
 
-	text = text.replace(MULTI_BR_RE, "\n\n");
+	text = text.replace(MULTI_BR_RE, BLANK_LINE_MARKER);
 	text = text.replace(BLOCK_BOUNDARY_RE, "\n");
+	// Consecutive block boundaries are one line break, never a blank line.
+	text = text.replace(/\n{2,}/g, "\n");
+	text = text.replaceAll(BLANK_LINE_MARKER, "\n\n");
 	text = text.replace(TAG_RE, "");
 	text = decodeEntities(text);
 	return collapseWhitespace(text);

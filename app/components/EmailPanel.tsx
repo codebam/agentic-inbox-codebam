@@ -11,22 +11,26 @@ import {
 	categoryLabel,
 	mergeCategorizationCategories,
 } from "shared/categories";
+import { resolveDefaultEmailView } from "shared/email-view";
 import EmailPanelDialogs from "~/components/email-panel/EmailPanelDialogs";
 import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
+import EmailViewToggle from "~/components/EmailViewToggle";
 import {
 	blobToBase64,
 	pendingAttachmentFromStored,
 	toAttachmentPayloads,
 } from "~/lib/attachments";
 import { getNonInlineAttachments, splitEmailList, toEmailListValue } from "~/lib/utils";
+import { useSessionEmailViewMode, setSessionEmailViewMode } from "~/lib/email-view-mode";
 import api from "~/services/api";
 import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useRestoreEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
+import { useGlobalEmailView } from "~/queries/email-view";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email, Folder, Mailbox } from "~/types";
 
@@ -66,6 +70,8 @@ export default function EmailPanel({
 		data?: Mailbox;
 	};
 	const { data: globalCategorization } = useGlobalCategorization();
+	const { data: globalEmailView } = useGlobalEmailView();
+	const sessionViewMode = useSessionEmailViewMode();
 	const { closePanel, startCompose } = useUIStore();
 	const toastManager = useKumoToastManager();
 	const [isSending, setIsSending] = useState(false);
@@ -126,6 +132,11 @@ export default function EmailPanel({
 	const category = email?.category
 		? categoryLabel(email.category, categoryNames)
 		: null;
+	// The manual toggle wins for the session; otherwise the mailbox override,
+	// then the app-wide default, then HTML.
+	const viewMode =
+		sessionViewMode ??
+		resolveDefaultEmailView(currentMailbox?.settings, globalEmailView);
 
 	if (!email) return <EmailPanelSkeleton />;
 
@@ -267,6 +278,8 @@ export default function EmailPanel({
 				isSpam={email.category === SPAM_CATEGORY_ID}
 			/>
 
+			<div className="flex justify-end px-4 pt-3 md:px-6"><EmailViewToggle value={viewMode} onChange={setSessionEmailViewMode} /></div>
+
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (
 					allMessages.map((msg, idx) => {
@@ -277,6 +290,7 @@ export default function EmailPanel({
 								email={msg}
 								mailboxId={mailboxId}
 								mailboxEmail={currentMailbox?.email}
+								viewMode={viewMode}
 								isLast={idx === allMessages.length - 1}
 								isDraft={isDraft}
 								isSending={isDraft ? isSending : false}
@@ -296,6 +310,7 @@ export default function EmailPanel({
 					<SingleMessageView
 						email={email}
 						mailboxId={mailboxId}
+						viewMode={viewMode}
 						onPreviewImage={(url, filename) =>
 							setPreviewImage({ url, filename })
 						}

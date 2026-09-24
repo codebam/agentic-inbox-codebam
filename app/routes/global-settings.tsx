@@ -15,13 +15,16 @@ import {
 	normalizeModelConfig,
 	type ModelConfig,
 } from "shared/models";
+import { DEFAULT_EMAIL_VIEW, type EmailViewMode } from "shared/email-view";
 import AiModelsCard from "~/components/AiModelsCard";
 import CategoryEditor from "~/components/CategoryEditor";
+import EmailViewCard from "~/components/EmailViewCard";
 import {
 	useGlobalCategorization,
 	useUpdateGlobalCategorization,
 } from "~/queries/categorization";
 import { useGlobalModels, useUpdateGlobalModels } from "~/queries/models";
+import { useGlobalEmailView, useUpdateGlobalEmailView } from "~/queries/email-view";
 
 export function meta() {
 	return [{ title: "Global Settings · Agentic Inbox Codebam" }];
@@ -31,11 +34,14 @@ export default function GlobalSettingsRoute() {
 	const toastManager = useKumoToastManager();
 	const { data, isLoading } = useGlobalCategorization();
 	const { data: modelData } = useGlobalModels();
+	const { data: emailViewData } = useGlobalEmailView();
 	const updateGlobalCategorization = useUpdateGlobalCategorization();
 	const updateGlobalModels = useUpdateGlobalModels();
+	const updateGlobalEmailView = useUpdateGlobalEmailView();
 
 	const [categories, setCategories] = useState<EmailCategory[]>([]);
 	const [models, setModels] = useState<ModelConfig>({});
+	const [defaultEmailView, setDefaultEmailView] = useState<EmailViewMode | undefined>(undefined);
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
@@ -45,6 +51,10 @@ export default function GlobalSettingsRoute() {
 	useEffect(() => {
 		if (modelData) setModels(modelData.models ?? {});
 	}, [modelData]);
+
+	useEffect(() => {
+		setDefaultEmailView(emailViewData?.defaultEmailView);
+	}, [emailViewData]);
 
 	const modelErrors = modelConfigErrors({ models });
 
@@ -67,6 +77,7 @@ export default function GlobalSettingsRoute() {
 			await updateGlobalModels.mutateAsync({
 				models: normalizeModelConfig(models),
 			});
+			await updateGlobalEmailView.mutateAsync({ defaultEmailView });
 			toastManager.add({ title: "Global settings saved!" });
 		} catch {
 			toastManager.add({
@@ -129,6 +140,16 @@ export default function GlobalSettingsRoute() {
 						description="App-wide model choice for every mailbox that has no override of its own. Leave a field empty to use the built-in default (shown as the placeholder)."
 						models={models}
 						onChange={setModels}
+					/>
+				</div>
+
+				<div className="mt-6">
+					<EmailViewCard
+						title="Message view"
+						description="How messages open for every mailbox that has no override of its own. Leave it blank to use the built-in HTML default."
+						value={defaultEmailView}
+						onChange={setDefaultEmailView}
+						inherited={DEFAULT_EMAIL_VIEW}
 					/>
 				</div>
 
