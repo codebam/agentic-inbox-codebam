@@ -15,8 +15,14 @@ import {
 	buildThreadingHeaders,
 	listMailboxes,
 } from "./lib/email-helpers";
-import { SendEmailRequestSchema, BulkEmailActionSchema } from "./lib/schemas";
+import {
+	SendEmailRequestSchema,
+	BulkEmailActionSchema,
+	DraftBodySchema,
+} from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
+import { applySignatureToBody } from "../shared/signature";
+import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -40,6 +46,11 @@ import {
 	getGlobalCategorization,
 	putGlobalCategorization,
 } from "./lib/global-categorization";
+import { getGlobalModels, putGlobalModels } from "./lib/global-models";
+import {
+	loadMailboxSignature,
+	resolveMailboxModels,
+} from "./lib/mailbox-settings";
 import {
 	classifyIncomingEmail,
 	serializeClassification,
@@ -60,30 +71,6 @@ const CreateMailboxBody = z.object({
 	email: z.string().email(),
 	name: z.string().min(1),
 	settings: z.record(z.any()).optional(), // unvalidated — agentSystemPrompt goes straight to AI
-});
-
-const DraftBody = z.object({
-	to: z.string().optional(),
-	cc: z.string().optional(),
-	bcc: z.string().optional(),
-	subject: z.string().optional(),
-	body: z.string(),
-	// Same shape as SendEmailRequestSchema.attachments: the composer sends the
-	// files it is holding so a saved draft keeps them.
-	attachments: z
-		.array(
-			z.object({
-				content: z.string(), // base64 encoded
-				filename: z.string(),
-				type: z.string(),
-				disposition: z.enum(["attachment", "inline"]),
-				contentId: z.string().optional(),
-			}),
-		)
-		.optional(),
-	in_reply_to: z.string().optional(),
-	thread_id: z.string().optional(),
-	draft_id: z.string().optional(),
 });
 
 // -- Helpers --------------------------------------------------------
@@ -157,6 +144,24 @@ app.put("/api/v1/categorization", async (c) => {
 	return c.json(await putGlobalCategorization(c.env.BUCKET, body));
 });
 
+// -- Global AI models -----------------------------------------------
+
+app.get("/api/v1/models", async (c) => {
+	return c.json(await getGlobalModels(c.env.BUCKET));
+});
+
+app.put("/api/v1/models", async (c) => {
+	const body = await c.req.json().catch(() => null);
+	if (!body || typeof body !== "object") {
+		return c.json({ error: "Invalid model settings" }, 400);
+	}
+	const errors = modelConfigErrors(body);
+	if (Object.keys(errors).length > 0) {
+		return c.json({ error: "Invalid model ID", details: errors }, 400);
+	}
+	return c.json(await putGlobalModels(c.env.BUCKET, body));
+});
+
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
@@ -205,10 +210,12 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	// Normalize server-side so an edited stale client cannot store malformed
-	// categorization settings that would break inbound classification.
+	// categorization or model settings that would break inbound
+	// classification and AI calls.
 	const normalizedSettings = {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings.categorization),
+		models: normalizeModelConfig(settings.models),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
@@ -380,7 +387,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
+	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id, applySignature } = DraftBodySchema.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
 
 	// Draft replies to spam are refused at the same layer as the agent and MCP
@@ -452,16 +459,23 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	}
 	const messageId = crypto.randomUUID();
 	const now = new Date().toISOString();
+	// Programmatic callers (agent/MCP integrations) can ask for the mailbox
+	// signature server-side. The browser composer prefills the signature
+	// client-side and never sets applySignature, so a draft is never signed
+	// twice and sending a saved draft never appends another one.
+	const storedBody = applySignature
+		? applySignatureToBody(body, await loadMailboxSignature(c.env, mailboxId))
+		: body;
 	// Persist the composer's files with the draft so re-opening and sending it
 	// keeps the attachments (the previous draft's copies are deleted above).
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 	await stub.createEmail(Folders.DRAFT, {
 		id: messageId, subject: subject || "", sender: mailboxId.toLowerCase(),
 		recipient: (to || "").toLowerCase(), cc: cc?.toLowerCase() || null, bcc: bcc?.toLowerCase() || null,
-		date: now, body, in_reply_to: replyTarget || null, email_references: null,
+		date: now, body: storedBody, in_reply_to: replyTarget || null, email_references: null,
 		thread_id: threadTarget || replyTarget || messageId,
 	}, attachmentData);
-	return c.json({ id: messageId, draft_id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
+	return c.json({ id: messageId, draft_id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now, signatureApplied: storedBody !== body }, 201);
 });
 
 app.get("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
@@ -887,6 +901,10 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		),
 	};
 
+	// Model ids come from the mailbox settings, falling back to app-wide
+	// settings and the built-in defaults.
+	const models = await resolveMailboxModels(env, mailboxId, mailboxSettings);
+
 	// Best-effort Jev classification. A null result (disabled/failed) still
 	// delivers the email to the Inbox.
 	const classification = await classifyIncomingEmail(env.AI, {
@@ -895,7 +913,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		recipients: [...allRecipients, ...ccRecipients].join(", "),
 		subject: parsedEmail.subject || "",
 		body: parsedEmail.html || parsedEmail.text || "",
-	}, effectiveCategorization);
+	}, effectiveCategorization, models.classifier);
 
 	const isSpam = classification?.isSpam === true;
 	const destinationFolder =

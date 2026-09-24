@@ -4,6 +4,7 @@
 
 import type { GlobalCategorizationSettings } from "shared/categories";
 import type { AttachmentPayload } from "~/lib/attachments";
+import type { GlobalModelSettings } from "shared/models";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -112,6 +113,11 @@ const api = {
 	updateGlobalCategorization: (settings: GlobalCategorizationSettings) =>
 		put<GlobalCategorizationSettings>("/api/v1/categorization", settings),
 
+	// Global AI model overrides (apply to every mailbox without its own)
+	getGlobalModels: () => get<GlobalModelSettings>("/api/v1/models"),
+	updateGlobalModels: (settings: GlobalModelSettings) =>
+		put<GlobalModelSettings>("/api/v1/models", settings),
+
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
 	createMailbox: (email: string, name: string, settings?: unknown) =>
@@ -168,6 +174,8 @@ const api = {
 		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
+	// The composer prefills the signature client-side, so it never sends
+	// applySignature — the server would append the signature a second time.
 	saveDraft: (
 		mailboxId: string,
 		draft: {

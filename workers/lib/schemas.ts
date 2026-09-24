@@ -134,3 +134,36 @@ export const BulkEmailActionSchema = z
 		message: "folderId is required when action is 'move'",
 		path: ["folderId"],
 	});
+
+
+/**
+ * Draft save payload (POST /api/v1/mailboxes/:mailboxId/drafts).
+ *
+ * `applySignature` is opt-in: when true the mailbox signature is appended
+ * to the stored body server-side. The browser composer prefills the
+ * signature client-side and never sets it, so a draft is never signed twice.
+ */
+export const DraftBodySchema = z.object({
+	to: z.string().optional(),
+	cc: z.string().optional(),
+	bcc: z.string().optional(),
+	subject: z.string().optional(),
+	body: z.string(),
+	// Same shape as SendEmailRequestSchema.attachments: the composer sends the
+	// files it is holding so a saved draft keeps them.
+	attachments: z
+		.array(
+			z.object({
+				content: z.string(), // base64 encoded
+				filename: z.string(),
+				type: z.string(),
+				disposition: z.enum(["attachment", "inline"]),
+				contentId: z.string().optional(),
+			}),
+		)
+		.optional(),
+	in_reply_to: z.string().optional(),
+	thread_id: z.string().optional(),
+	draft_id: z.string().optional(),
+	applySignature: z.boolean().optional(),
+});

@@ -300,6 +300,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					body: bodyHtml,
 					isPlainText: false,
 					runVerifyDraft: true,
+					applySignature: true,
 				});
 				return mcpResult(result);
 			},
@@ -335,6 +336,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					body: bodyHtml,
 					isPlainText: false,
 					runVerifyDraft: true,
+					applySignature: true,
 					in_reply_to,
 					thread_id,
 				});
@@ -346,7 +348,10 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					status: "draft_created",
 					draftId: result.draftId,
 					threadId: result.threadId,
-					message: "Draft created in Drafts folder.",
+					message: result.signatureApplied
+						? "Draft created in Drafts folder with the mailbox signature."
+						: "Draft created in Drafts folder.",
+					signatureApplied: result.signatureApplied,
 				});
 			},
 		);
