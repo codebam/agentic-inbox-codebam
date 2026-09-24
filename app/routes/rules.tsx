@@ -315,6 +315,8 @@ function formatRelativeTime(iso: string): string {
 
 interface RulePreviewPanelProps {
 	result: RulePreviewResult;
+	/** Optional id -> display name map for the folder column. */
+	folderNames?: Map<string, string>;
 	onClose: () => void;
 }
 
@@ -326,7 +328,11 @@ interface RulePreviewPanelProps {
  * in the editor and under a row. A preview never moves, changes, or sends
  * anything — it only reads stored mail with the live matcher.
  */
-function RulePreviewPanel({ result, onClose }: RulePreviewPanelProps) {
+function RulePreviewPanel({
+	result,
+	folderNames,
+	onClose,
+}: RulePreviewPanelProps) {
 	const matches = result.matches;
 	return (
 		<div className="mt-3 rounded-md border border-kumo-line bg-kumo-recessed p-4">
@@ -362,7 +368,8 @@ function RulePreviewPanel({ result, onClose }: RulePreviewPanelProps) {
 									{match.subject || "(no subject)"}
 								</div>
 								<div className="truncate text-xs text-kumo-subtle">
-									{match.sender} · {match.folder_id}
+									{match.sender} ·{" "}
+									{folderNames?.get(match.folder_id) ?? match.folder_id}
 								</div>
 							</div>
 							<span className="shrink-0 text-xs text-kumo-subtle">
@@ -819,6 +826,9 @@ function RuleEditor({
 				{previewResult && (
 					<RulePreviewPanel
 						result={previewResult}
+						folderNames={
+							new Map(folderItems.map((item) => [item.value, item.label]))
+						}
 						onClose={() => setPreviewResult(null)}
 					/>
 				)}
@@ -1096,7 +1106,8 @@ export default function RulesRoute() {
 				Rules run on arrival, before the AI classifier. Messages a rule handles
 				skip AI categorization, and a rule that discards a message drops it
 				entirely — nothing is stored. Rules run top to bottom; when two rules set
-				the same field, the first one wins.
+				the same field, the first one wins. Rules that forward or auto-reply send
+				mail automatically, and are skipped for spam and discarded messages.
 			</p>
 
 
@@ -1156,6 +1167,7 @@ export default function RulesRoute() {
 								rowPreview?.ruleId === rule.id ? (
 									<RulePreviewPanel
 										result={rowPreview.result}
+										folderNames={folderNames}
 										onClose={() => setRowPreview(null)}
 									/>
 								) : null

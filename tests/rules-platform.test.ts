@@ -14,6 +14,7 @@ import {
 	type RuleOutboundAction,
 } from "../workers/lib/rules";
 import {
+	createRuleOutboundSender,
 	handleInboundRuleOutbound,
 	runRuleOutboundActions,
 	setRuleOutboundSenderFactory,
@@ -525,9 +526,10 @@ describe("inbound pipeline: stats, stamp, and outbound actions", () => {
 			ruleDraft({ actions: { forward_to: "archive@example.org" } }),
 		);
 
-		// wrangler.test.jsonc has no send_email binding, so env.EMAIL is unset
-		// and the real sender is null — nothing may leave the mailbox.
-		expect((env as unknown as { EMAIL?: unknown }).EMAIL).toBeUndefined();
+		// wrangler.test.jsonc has no send_email binding, so the real sender
+		// factory returns null — nothing may leave the mailbox. (The
+		// `deps(null)` case above covers the skip reason.)
+		expect(createRuleOutboundSender({})).toBeNull();
 		await deliver(mailbox, { subject: "Invoice 78" });
 
 		const stored = await sqlRows<{ matched_rule_id: string | null }>(
