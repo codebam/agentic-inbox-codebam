@@ -1170,6 +1170,48 @@ export async function toolSearchContacts(
 	return { mailboxId, query, contacts, totalCount };
 }
 
+// ── templates (list_templates) ─────────────────────────────────────
+
+/** One stored template row, as MailboxDO.listTemplates returns it. */
+type MailboxTemplateRow = Awaited<ReturnType<MailboxDO["listTemplates"]>>[number];
+
+/**
+ * The template RPC the list_templates tool calls. Declared structurally for
+ * the same reason as the contacts and snooze tools: the stub's own RPC
+ * result types carry `& Disposable`, which the MCP result wrapper cannot
+ * accept.
+ */
+type MailboxTemplatesStub = {
+	listTemplates: () => Promise<MailboxTemplateRow[]>;
+};
+
+function mailboxTemplatesStub(env: Env, mailboxId: string): MailboxTemplatesStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * The mailbox's templates — operator-authored reusable snippets — ordered by
+ * name. Read-only, and deliberately the only template surface the agent and
+ * the MCP server have: nothing here creates, edits or deletes a template,
+ * and nothing sends mail. Each entry carries the template's id, name,
+ * optional subject and body, so the agent can use one as a starting point
+ * for a draft.
+ */
+export async function toolListTemplates(env: Env, mailboxId: string) {
+	const templates = await mailboxTemplatesStub(env, mailboxId).listTemplates();
+	return {
+		mailboxId,
+		templates: templates.map((template) => ({
+			id: template.id,
+			name: template.name,
+			subject: template.subject,
+			body: template.body,
+		})),
+		note:
+			"Templates are operator-authored snippets. This tool is read-only: templates can only be created, edited or deleted by the operator in the app.",
+	};
+}
+
 // ── send_reply ─────────────────────────────────────────────────────
 
 export async function toolSendReply(

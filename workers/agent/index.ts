@@ -53,6 +53,7 @@ import {
 	toolUpdateRule,
 	toolUndoAgentAction,
 	toolSearchContacts,
+	toolListTemplates,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
@@ -1043,6 +1044,18 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					args.query ?? "",
 					args.limit ?? DEFAULT_CONTACT_SEARCH_LIMIT,
 				);
+			},
+		}),
+
+
+		list_templates: defineTool({
+			description:
+				"The mailbox's message templates — operator-authored reusable snippets (name, optional subject, body). Read-only: use a template as a starting point for a draft, but templates can only be created, edited or deleted by the operator in the app.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListTemplates(env, mailboxId);
 			},
 		}),
 	};

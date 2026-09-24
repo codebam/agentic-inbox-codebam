@@ -37,6 +37,7 @@ import {
 	toolUpdateRule,
 	toolUndoAgentAction,
 	toolSearchContacts,
+	toolListTemplates,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
@@ -926,6 +927,21 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 						limit ?? DEFAULT_CONTACT_SEARCH_LIMIT,
 					),
 				);
+			},
+		);
+
+
+		// ── list_templates ─────────────────────────────────────────
+		this.server.tool(
+			"list_templates",
+			"List the mailbox's message templates — operator-authored reusable snippets (name, optional subject, body). Read-only: use a template as a starting point for a draft, but templates can only be created, edited or deleted by the operator in the app.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListTemplates(env, mailboxId));
 			},
 		);
 	}
