@@ -105,6 +105,12 @@ export const SendEmailResponseSchema = z.object({
  * threaded list row's unread badge clears even when only the latest message
  * was selected.
  *
+ * Delete semantics: `trash` always moves messages to the Trash folder,
+ * `restore` moves Trash messages back to the inbox, and `delete` is
+ * trash-aware — a message already in Trash is purged permanently, anything
+ * else moves to Trash. The bulk route answers with the per-action counts
+ * (`trashed`, `purged`, `restored`) so the UI can report what happened.
+ *
  * Batches are capped well under SQLite's 100-bound-parameter limit, which
  * counts the SET values of an UPDATE alongside the ids in the IN clause.
  */
@@ -116,6 +122,8 @@ export const BulkEmailActionSchema = z
 			"star",
 			"unstar",
 			"move",
+			"trash",
+			"restore",
 			"delete",
 		]),
 		ids: z.array(z.string().min(1)).min(1).max(90),

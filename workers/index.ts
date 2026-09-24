@@ -472,7 +472,6 @@ app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 	const id = c.req.param("id")!;
 	const stub = c.var.mailboxStub;
 
-
 	if (!boolQuery(c, "permanent")) {
 		const { trashed } = (await stub.trashEmails([id])) as {
 			trashed: string[];
@@ -480,7 +479,6 @@ app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 		};
 		if (trashed.length > 0) return c.json({ status: "trashed", trashed: 1, purged: 0 });
 	}
-
 
 	const attachments = await stub.deleteEmail(id);
 	if (attachments === null) return c.json({ error: "Not found" }, 404);
@@ -492,6 +490,15 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) =
 	const { folderId } = (await c.req.json()) as { folderId: string };
 	const success = await c.var.mailboxStub.moveEmail(c.req.param("id")!, folderId);
 	return success ? c.json({ status: "moved" }) : c.json({ error: "Folder not found" }, 400);
+});
+
+
+/** Move a trashed email back to the inbox. */
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/restore", async (c: AppContext) => {
+	const restored = (await c.var.mailboxStub.restoreEmails([
+		c.req.param("id")!,
+	])) as string[];
+	return c.json({ restored: restored.length });
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------
@@ -521,20 +528,24 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 				? c.json({ updated: ids.length })
 				: c.json({ error: "Folder not found" }, 400);
 		}
+		// Trash semantics, per action:
+		//   trash   — always move to the Trash folder
+		//   restore — move Trash messages back to the inbox
+		//   delete  — trash-aware: messages already in Trash are purged for
+		//             good, everything else moves to Trash. Only the purge
+		//             path touches R2.
 		case "trash": {
 			const { trashed } = (await stub.trashEmails(ids)) as {
 				trashed: string[];
 				alreadyInTrash: string[];
 			};
-			return c.json({ trashed: trashed.length });
+			return c.json({ trashed: trashed.length, purged: 0, restored: 0 });
 		}
 		case "restore": {
 			const restored = (await stub.restoreEmails(ids)) as string[];
-			return c.json({ restored: restored.length });
+			return c.json({ trashed: 0, purged: 0, restored: restored.length });
 		}
 		case "delete": {
-			// Per-message rule: messages already in Trash are purged for good,
-			// everything else moves to Trash. Only the purge path touches R2.
 			const { trashed, alreadyInTrash } = (await stub.trashEmails(ids)) as {
 				trashed: string[];
 				alreadyInTrash: string[];
@@ -553,13 +564,13 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 					);
 				}
 			}
-			return c.json({ trashed: trashed.length, purged: alreadyInTrash.length });
+			return c.json({ trashed: trashed.length, purged: alreadyInTrash.length, restored: 0 });
 		}
 	}
 });
 
-// -- Trash ----------------------------------------------------------
 
+// -- Trash ----------------------------------------------------------
 
 /**
  * Permanently delete every message in the Trash folder, including its R2
