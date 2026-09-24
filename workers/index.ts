@@ -38,6 +38,10 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
 import {
+	DEFAULT_CONTACT_SEARCH_LIMIT,
+	MAX_CONTACT_SEARCH_LIMIT,
+} from "./lib/contacts";
+import {
 	searchAllMailboxes,
 	type MailboxSearchRow,
 	type SearchAllFilters,
@@ -457,6 +461,19 @@ type MailboxAgentActionsStub = {
 	listAgentActions: (limit?: number) => Promise<MailboxAgentActionRow[]>;
 	countAgentActions: () => Promise<number>;
 	undoAgentAction: (id: string) => Promise<MailboxAgentActionUndo | null>;
+};
+
+
+/** One stored contact row, as MailboxDO.searchContacts returns it. */
+type MailboxContactRow = Awaited<ReturnType<MailboxDO["searchContacts"]>>[number];
+
+/**
+ * The contact RPCs the contacts route calls. `searchContacts` answers the
+ * ranked page for one query, `countContacts` the total matching it.
+ */
+type MailboxContactsStub = {
+	searchContacts: (query: string, limit?: number) => Promise<MailboxContactRow[]>;
+	countContacts: (query: string) => Promise<number>;
 };
 
 
@@ -898,6 +915,35 @@ app.post("/api/v1/mailboxes/:mailboxId/agent-actions/:actionId/undo", async (c: 
 	if (!result) return c.json({ error: "Agent action not found" }, 404);
 	if (!result.ok) return c.json({ error: result.error }, 400);
 	return c.json({ action: result.action, email: result.email });
+});
+
+// -- Contacts --------------------------------------------------------
+
+/** Narrow the mailbox stub to the contact RPCs the contacts route uses. */
+function contactsStub(c: AppContext): MailboxContactsStub {
+	return c.var.mailboxStub;
+}
+
+/**
+ * The mailbox's contacts — the addresses it has exchanged mail with —
+ * ranked by sent count, then received count, then recency. `q` is an
+ * optional case-insensitive prefix matched against the address or the
+ * display name; `limit` defaults to 10 and is capped at 50. Read-only:
+ * metadata only (address, display name, counts, timestamps), never message
+ * bodies.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/contacts", async (c: AppContext) => {
+	const query = c.req.query("q") ?? "";
+	const limit = Math.min(
+		Math.max(intQuery(c, "limit") ?? DEFAULT_CONTACT_SEARCH_LIMIT, 1),
+		MAX_CONTACT_SEARCH_LIMIT,
+	);
+	const stub = contactsStub(c);
+	const [contacts, totalCount] = await Promise.all([
+		stub.searchContacts(query, limit),
+		stub.countContacts(query),
+	]);
+	return c.json({ contacts, totalCount });
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------
@@ -1545,6 +1591,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const createResult = await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
+		sender_name: parsedEmail.from?.name || null,
 		envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
 		reply_to: replyToRecipients.join(", ") || null,

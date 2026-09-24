@@ -42,6 +42,15 @@ import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { findDuplicateEmailId, type CreateEmailResult } from "./dedupe";
 import { likePatternsFor } from "../lib/like-terms";
+import {
+	contactDeltasForEmail,
+	normalizeContactAddress,
+	normalizeContactName,
+	type ContactDelta,
+	MAX_CONTACTS,
+	MAX_CONTACT_SEARCH_LIMIT,
+	DEFAULT_CONTACT_SEARCH_LIMIT,
+} from "../lib/contacts";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -99,6 +108,20 @@ export function folderMoveFields(
 	};
 }
 
+/**
+ * Case-insensitive prefix condition for the contacts search: the stored
+ * value, lowercased, starts with the term (already lowercased). Written with
+ * substr/eq rather than LIKE so a long search term cannot trip Durable
+ * Object SQLite's LIKE pattern-length cap, and so `%`/`_` in the term stay
+ * literal characters instead of wildcards.
+ */
+function contactPrefixCondition(
+	column: typeof schema.contacts.email | typeof schema.contacts.name,
+	term: string,
+): SQL {
+	return sql`substr(LOWER(${column}), 1, length(${term})) = ${term}`;
+}
+
 interface SearchFilterOptions {
 	query: string;
 	folder?: string;
@@ -128,6 +151,8 @@ interface EmailData {
 	subject: string;
 	sender: string;
 	recipient: string;
+	/** Display name from the sender's From header, when the message carries one. */
+	sender_name?: string | null;
 	envelope_recipient?: string | null;
 	cc?: string | null;
 	bcc?: string | null;
@@ -1960,6 +1985,19 @@ export class MailboxDO extends DurableObject<Env> {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
 
+		// Contacts feed: a Sent copy counts every addressee as a sent contact,
+		// any other folder counts the sender as received. Metadata only and
+		// bounded (workers/lib/contacts.ts), and best-effort on purpose — a
+		// contact bookkeeping failure must never fail message storage.
+		try {
+			this.recordContacts(contactDeltasForEmail(folderId, email));
+		} catch (e) {
+			console.error(
+				`Contact recording failed for ${email.id}:`,
+				(e as Error).message,
+			);
+		}
+
 		// A message landing anywhere but Sent means the thread is active
 		// again: wake its snoozed messages right away so new mail is not
 		// hidden behind a snooze that was set before it arrived.
@@ -1973,6 +2011,137 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 
 		return { id: email.id, duplicate: false };
+	}
+
+	// ── Contacts (mail-flow address book) ──────────────────────────
+
+	/**
+	 * Apply one batch of contact deltas: upsert each address by its
+	 * lowercased form, add the sent/received increments to the stored
+	 * counters, refresh the display name from a non-empty arrival, stamp
+	 * `last_seen_at`, then prune the mailbox back to its newest MAX_CONTACTS
+	 * rows so the store is bounded on every write. Returns how many contacts
+	 * were written.
+	 *
+	 * Deltas that do not normalize to a usable address, and deltas that carry
+	 * no increment, are skipped. The upsert targets the UNIQUE email column,
+	 * so a repeat sighting increments the existing row instead of inserting a
+	 * duplicate. `first_seen_at` is set on insert only; the update path never
+	 * touches it.
+	 */
+	recordContacts(deltas: ContactDelta[]) {
+		const now = new Date().toISOString();
+		let written = 0;
+
+		for (const delta of deltas) {
+			const email = normalizeContactAddress(delta.email);
+			if (!email) continue;
+			const sent = Math.max(Math.trunc(delta.sent ?? 0), 0);
+			const received = Math.max(Math.trunc(delta.received ?? 0), 0);
+			if (sent === 0 && received === 0) continue;
+
+			this.ctx.storage.sql.exec(
+				`INSERT INTO contacts
+					(id, email, name, sent_count, received_count, first_seen_at, last_seen_at)
+				 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+				 ON CONFLICT(email) DO UPDATE SET
+					sent_count = sent_count + excluded.sent_count,
+					received_count = received_count + excluded.received_count,
+					name = COALESCE(excluded.name, contacts.name),
+					last_seen_at = excluded.last_seen_at`,
+				crypto.randomUUID(),
+				email,
+				normalizeContactName(delta.name),
+				sent,
+				received,
+				now,
+			);
+			written += 1;
+		}
+
+		if (written > 0) {
+			// Keep only the newest rows. Ties on last_seen_at fall back to
+			// rowid (insertion order) so the prune is deterministic.
+			this.ctx.storage.sql.exec(
+				`DELETE FROM contacts
+				 WHERE id NOT IN (
+					SELECT id FROM contacts
+					ORDER BY last_seen_at DESC, rowid DESC
+					LIMIT ?1
+				 )`,
+				MAX_CONTACTS,
+			);
+		}
+
+		return written;
+	}
+
+	/**
+	 * One stored contact by address, matched case-insensitively (addresses
+	 * are stored lowercased), or null when this mailbox has never seen it.
+	 */
+	getContact(email: string) {
+		const address = normalizeContactAddress(email);
+		if (!address) return null;
+		return (
+			this.db
+				.select()
+				.from(schema.contacts)
+				.where(eq(schema.contacts.email, address))
+				.get() ?? null
+		);
+	}
+
+	/**
+	 * The mailbox's contacts, ranked by how much it sent to them
+	 * (`sent_count DESC`), then how much they sent (`received_count DESC`),
+	 * then recency (`last_seen_at DESC`). A non-empty query prefix-matches
+	 * the address or the display name case-insensitively; an empty query
+	 * returns the top-ranked contacts. The page is capped at
+	 * MAX_CONTACT_SEARCH_LIMIT rows.
+	 */
+	searchContacts(query: string, limit = DEFAULT_CONTACT_SEARCH_LIMIT) {
+		const capped = Math.min(
+			Math.max(Math.trunc(limit), 1),
+			MAX_CONTACT_SEARCH_LIMIT,
+		);
+		const term = (query ?? "").trim().toLowerCase();
+		const conditions = term
+			? [
+					contactPrefixCondition(schema.contacts.email, term),
+					contactPrefixCondition(schema.contacts.name, term),
+				]
+			: [];
+
+		return this.db
+			.select()
+			.from(schema.contacts)
+			.where(conditions.length > 0 ? or(...conditions) : undefined)
+			.orderBy(
+				desc(schema.contacts.sent_count),
+				desc(schema.contacts.received_count),
+				desc(schema.contacts.last_seen_at),
+			)
+			.limit(capped)
+			.all();
+	}
+
+	/** How many contacts match the same query searchContacts reads. */
+	countContacts(query = "") {
+		const term = (query ?? "").trim().toLowerCase();
+		const conditions = term
+			? [
+					contactPrefixCondition(schema.contacts.email, term),
+					contactPrefixCondition(schema.contacts.name, term),
+				]
+			: [];
+
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.contacts)
+			.where(conditions.length > 0 ? or(...conditions) : undefined)
+			.get();
+		return row?.total ?? 0;
 	}
 
 

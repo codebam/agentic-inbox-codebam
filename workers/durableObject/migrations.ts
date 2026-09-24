@@ -349,4 +349,30 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_agent_actions_created_at ON agent_actions(created_at);
         `),
 	},
+	{
+		// Mail-flow contacts (workers/lib/contacts.ts): one row per address
+		// this mailbox has exchanged mail with. Metadata only — address,
+		// display name, sent/received counts and first/last seen timestamps —
+		// never message bodies. Fed by MailboxDO.createEmail: a message
+		// stored in Sent counts every addressee as a sent contact, any other
+		// folder counts its sender as received. recordContacts prunes each
+		// mailbox back to its newest 5000 rows on every write. The UNIQUE
+		// email column is the upsert target; the two indexes back the
+		// lowercased address lookup and the recency-ranked page.
+		name: "21_add_contacts",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                name TEXT,
+                sent_count INTEGER NOT NULL DEFAULT 0,
+                received_count INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
+            CREATE INDEX IF NOT EXISTS idx_contacts_last_seen_at ON contacts(last_seen_at);
+        `),
+	},
 ];
