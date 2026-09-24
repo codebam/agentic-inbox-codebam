@@ -19,6 +19,7 @@ export default [
 		route("settings", "routes/settings.tsx"),
 		route("search", "routes/search-results.tsx"),
 		route("rules", "routes/rules.tsx"),
+		route("activity", "routes/activity.tsx"),
 	]),
 	route("*", "routes/not-found.tsx"),
 ] satisfies RouteConfig;

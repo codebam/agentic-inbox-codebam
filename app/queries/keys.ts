@@ -22,6 +22,11 @@ export const queryKeys = {
 		reminders: (mailboxId: string) =>
 			["emails", mailboxId, "reminders"] as const,
 	},
+	agentActions: {
+		/** One bounded page of the agent/MCP action log, newest first. */
+		list: (mailboxId: string, limit: number) =>
+			["agent-actions", mailboxId, limit] as const,
+	},
 	folders: {
 		list: (mailboxId: string) => ["folders", mailboxId] as const,
 	},
