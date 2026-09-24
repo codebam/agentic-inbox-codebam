@@ -1,0 +1,33 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "agentic-inbox-test",
+	"compatibility_date": "2025-11-28",
+	"main": "./workers/app.ts",
+	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"DOMAINS": "example.com",
+		"EMAIL_ADDRESSES": [],
+		"name": "EMAIL_ADDRESSES"
+	},
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "agentic-inbox-test"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "MAILBOX", "class_name": "MailboxDO" },
+			{ "name": "EMAIL_AGENT", "class_name": "EmailAgent" },
+			{ "name": "EMAIL_MCP", "class_name": "EmailMCP" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["MailboxDO"] },
+		{ "tag": "v2", "new_sqlite_classes": ["EmailAgent"] },
+		{ "tag": "v3", "new_sqlite_classes": ["EmailMCP"] }
+	]
+}

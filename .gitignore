@@ -17,3 +17,5 @@ opencode.jsonc
 skills-lock.json
 .DS_Store
 worker-configuration.d.ts
+.worktrees/
+.hermes/
