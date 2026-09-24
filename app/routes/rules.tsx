@@ -837,7 +837,7 @@ function RuleEditor({
 				<div className="flex justify-end gap-2">
 					<Button
 						variant="secondary"
-						onClick={handleTest}
+						onClick={() => void handleTest()}
 						loading={previewTest.isPending}
 						disabled={isSaving}
 						icon={<MagnifyingGlassIcon size={16} />}
@@ -975,16 +975,18 @@ export default function RulesRoute() {
 		updateRule.mutate(
 			{ mailboxId, ruleId: rule.id, patch: { enabled } },
 			{
-				onSuccess: () =>
+				onSuccess: () => {
 					toastManager.add({
 						title: enabled ? "Rule enabled" : "Rule paused",
-					}),
-				onError: (toggleError) =>
+					});
+				},
+				onError: (toggleError) => {
 					toastManager.add({
 						title: "Failed to update rule",
 						description: errorMessage(toggleError),
 						variant: "error",
-					}),
+					});
+				},
 			},
 		);
 	};
@@ -1001,14 +1003,16 @@ export default function RulesRoute() {
 		reorderRules.mutate(
 			{ mailboxId, ids },
 			{
-				onSuccess: () =>
-					toastManager.add({ title: "Rule order updated" }),
-				onError: (moveError) =>
+				onSuccess: () => {
+					toastManager.add({ title: "Rule order updated" });
+				},
+				onError: (moveError) => {
 					toastManager.add({
 						title: "Failed to reorder rules",
 						description: errorMessage(moveError),
 						variant: "error",
-					}),
+					});
+				},
 			},
 		);
 	};
@@ -1079,7 +1083,7 @@ export default function RulesRoute() {
 					<p className="mb-4 max-w-sm text-sm text-kumo-subtle">
 						{errorMessage(error)}
 					</p>
-					<Button variant="secondary" size="sm" onClick={() => refetch()}>
+					<Button variant="secondary" size="sm" onClick={() => void refetch()}>
 						Try again
 					</Button>
 				</div>
@@ -1122,7 +1126,7 @@ export default function RulesRoute() {
 					isSaving={createRule.isPending || updateRule.isPending}
 					error={editorError}
 					onCancel={closeEditor}
-					onSave={handleSave}
+					onSave={(form) => void handleSave(form)}
 				/>
 			)}
 
@@ -1162,7 +1166,7 @@ export default function RulesRoute() {
 							onMove={handleMove}
 							onEdit={openEdit}
 							onDelete={setDeleteTarget}
-							onTest={handleTestRow}
+							onTest={(rule) => void handleTestRow(rule)}
 							isTesting={previewRule.isPending}
 							previewPanel={
 								rowPreview?.ruleId === rule.id ? (
@@ -1203,7 +1207,7 @@ export default function RulesRoute() {
 						/>
 						<Button
 							variant="destructive"
-							onClick={handleDelete}
+							onClick={() => void handleDelete()}
 							loading={deleteRule.isPending}
 						>
 							Delete

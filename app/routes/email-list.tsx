@@ -214,7 +214,8 @@ export default function EmailListRoute() {
 		isFetching: isRefreshing,
 	} = useEmails(mailboxId, params, { refetchInterval: 30_000 });
 
-	const emails = emailData?.emails ?? [];
+	// Stable reference: a fresh array here would invalidate every memo below.
+	const emails = useMemo(() => emailData?.emails ?? [], [emailData]);
 	const totalCount = emailData?.totalCount ?? 0;
 
 	const { data: folders = [] } = useFolders(mailboxId);
@@ -396,8 +397,8 @@ export default function EmailListRoute() {
 
 	const handleRefresh = () => {
 		if (mailboxId) {
-			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
-			queryClient.invalidateQueries({
+			void queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			void queryClient.invalidateQueries({
 				queryKey: queryKeys.folders.list(mailboxId),
 			});
 		}

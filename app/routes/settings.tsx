@@ -9,7 +9,7 @@ import {
 	SignatureIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
@@ -45,6 +45,7 @@ import { getSignatureBlock } from "~/lib/utils";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import { useGlobalModels } from "~/queries/models";
 import { useGlobalEmailView } from "~/queries/email-view";
+import type { Mailbox } from "~/types";
 
 // Placeholder shown in the textarea when no custom prompt is set.
 // The authoritative default prompt lives in workers/agent/index.ts (DEFAULT_SYSTEM_PROMPT).
@@ -77,30 +78,33 @@ export default function SettingsRoute() {
 	const [webhook, setWebhook] = useState({ url: "", secret: "" });
 	const [isSaving, setIsSaving] = useState(false);
 
-	useEffect(() => {
-		if (mailbox) {
-			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
-			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
-			setCategorization(
-				normalizeCategorizationSettings(mailbox.settings?.categorization),
-			);
-			setSignature(
-				normalizeSignatureSettings(mailbox.settings?.signature) ?? {
-					enabled: false,
-					text: "",
-				},
-			);
-			setModels(mailbox.settings?.models ?? {});
-			setDefaultEmailView(normalizeEmailViewMode(mailbox.settings?.defaultEmailView));
-			setTrashRetentionDays(
-				String(normalizeTrashRetentionDays(mailbox.settings?.trashRetentionDays)),
-			);
-			setWebhook({
-				url: mailbox.settings?.notifyWebhookUrl ?? "",
-				secret: mailbox.settings?.notifyWebhookSecret ?? "",
-			});
-		}
-	}, [mailbox]);
+	// Re-seed the editable copies whenever a freshly loaded mailbox arrives (its
+	// identity changes on each refetch). Adjusting state during render instead of
+	// in an effect avoids painting the stale values for a frame first.
+	const [seededMailbox, setSeededMailbox] = useState<Mailbox | undefined>(undefined);
+	if (mailbox && mailbox !== seededMailbox) {
+		setSeededMailbox(mailbox);
+		setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
+		setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+		setCategorization(
+			normalizeCategorizationSettings(mailbox.settings?.categorization),
+		);
+		setSignature(
+			normalizeSignatureSettings(mailbox.settings?.signature) ?? {
+				enabled: false,
+				text: "",
+			},
+		);
+		setModels(mailbox.settings?.models ?? {});
+		setDefaultEmailView(normalizeEmailViewMode(mailbox.settings?.defaultEmailView));
+		setTrashRetentionDays(
+			String(normalizeTrashRetentionDays(mailbox.settings?.trashRetentionDays)),
+		);
+		setWebhook({
+			url: mailbox.settings?.notifyWebhookUrl ?? "",
+			secret: mailbox.settings?.notifyWebhookSecret ?? "",
+		});
+	}
 
 	const modelErrors = modelConfigErrors({ models });
 	const webhookUrlError = webhook.url.trim() ? validateWebhookUrl(webhook.url) : null;
@@ -354,7 +358,7 @@ export default function SettingsRoute() {
 
 				{/* Save */}
 				<div className="flex justify-end">
-					<Button variant="primary" onClick={handleSave} loading={isSaving}>
+					<Button variant="primary" onClick={() => void handleSave()} loading={isSaving}>
 						Save Changes
 					</Button>
 				</div>

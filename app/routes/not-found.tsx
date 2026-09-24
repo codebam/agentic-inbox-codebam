@@ -16,7 +16,7 @@ export default function NotFoundRoute() {
 				title="404 -- Page Not Found"
 				description="The page you're looking for doesn't exist."
 				contents={
-					<Button variant="primary" size="sm" onClick={() => navigate("/")}>
+					<Button variant="primary" size="sm" onClick={() => void navigate("/")}>
 						Go Home
 					</Button>
 				}
