@@ -37,8 +37,41 @@ export interface SearchAllFilters {
 }
 
 
+/**
+ * Fields a per-mailbox search row carries (mirrors MailboxDO.searchEmails).
+ * Only the fields the fan-out and the UI rely on are declared; rows may carry
+ * more (snippet, folder_name, ...), which the merged type preserves.
+ */
+export interface MailboxSearchRow {
+	id: string;
+	subject: string | null;
+	sender: string | null;
+	recipient: string | null;
+	date: string;
+	read: boolean;
+	starred: boolean;
+	thread_id: string | null;
+	folder_id: string | null;
+	category: string | null;
+	envelope_recipient?: string | null;
+	cc?: string | null;
+	bcc?: string | null;
+	in_reply_to?: string | null;
+	email_references?: string | null;
+	category_confidence?: number | null;
+	snippet?: string | null;
+	folder_name?: string | null;
+}
+
+
+/** A merged cross-mailbox search result: the row plus its source mailbox. */
+export interface SearchAllRow extends MailboxSearchRow {
+	mailboxId: string;
+}
+
+
 export interface SearchAllResult {
-	emails: Record<string, unknown>[];
+	emails: SearchAllRow[];
 	totalCount: number;
 }
 
@@ -46,7 +79,7 @@ export interface SearchAllResult {
 type MailboxSearchStub = {
 	searchEmails: (
 		options: Record<string, unknown>,
-	) => Promise<Record<string, unknown>[]>;
+	) => Promise<MailboxSearchRow[]>;
 	countSearchResults: (options: Record<string, unknown>) => Promise<number>;
 };
 
@@ -103,7 +136,7 @@ export async function searchAllMailboxes(
 
 	const perMailbox = await Promise.all(
 		stubs.map(async ({ mailboxId, stub }) => {
-			const emails: Record<string, unknown>[] = [];
+			const emails: MailboxSearchRow[] = [];
 			for (let offset = 0; offset < top; offset += SEARCH_CHUNK) {
 				const chunkLimit = Math.min(SEARCH_CHUNK, top - offset);
 				const chunkPage = Math.floor(offset / SEARCH_CHUNK) + 1;
