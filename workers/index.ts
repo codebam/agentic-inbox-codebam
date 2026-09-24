@@ -45,7 +45,10 @@ import {
 	putGlobalCategorization,
 } from "./lib/global-categorization";
 import { getGlobalModels, putGlobalModels } from "./lib/global-models";
-import { loadMailboxSignature } from "./lib/mailbox-settings";
+import {
+	loadMailboxSignature,
+	resolveMailboxModels,
+} from "./lib/mailbox-settings";
 import {
 	classifyIncomingEmail,
 	serializeClassification,
@@ -786,6 +789,10 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		),
 	};
 
+	// Model ids come from the mailbox settings, falling back to app-wide
+	// settings and the built-in defaults.
+	const models = await resolveMailboxModels(env, mailboxId, mailboxSettings);
+
 	// Best-effort Jev classification. A null result (disabled/failed) still
 	// delivers the email to the Inbox.
 	const classification = await classifyIncomingEmail(env.AI, {
@@ -794,7 +801,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		recipients: [...allRecipients, ...ccRecipients].join(", "),
 		subject: parsedEmail.subject || "",
 		body: parsedEmail.html || parsedEmail.text || "",
-	}, effectiveCategorization);
+	}, effectiveCategorization, models.classifier);
 
 	const isSpam = classification?.isSpam === true;
 	const destinationFolder =

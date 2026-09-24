@@ -13,6 +13,7 @@ import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
 import type { EmailFull, EmailMetadata } from "../lib/schemas";
 import { verifyDraft, isPromptInjection } from "../lib/ai";
+import { resolveMailboxModels } from "../lib/mailbox-settings";
 import {
 	getMailboxStub,
 	stripHtmlToText,
@@ -450,8 +451,14 @@ export class EmailAgent extends AIChatAgent<any> {
 			? `${DEFAULT_SYSTEM_PROMPT}${ALL_MAILBOXES_SYSTEM_PROMPT}`
 			: await getSystemPrompt(env, agentName);
 
+		// Model ids come from the mailbox settings. The all-mailboxes agent
+		// has no mailbox of its own, so it uses the app-wide/default model.
+		const models = allMailboxes
+			? await resolveMailboxModels(env, agentName, {})
+			: await resolveMailboxModels(env, agentName);
+
 		const result = streamText({
-			model: workersai("@cf/qwen/qwen3.8-27b"),
+			model: workersai(models.agent),
 			system: systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
@@ -510,6 +517,9 @@ export class EmailAgent extends AIChatAgent<any> {
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, emailData.mailboxId);
 		const systemPrompt = await getSystemPrompt(env, emailData.mailboxId);
+		// Model ids come from the mailbox settings, falling back to app-wide
+		// settings and the built-in defaults.
+		const models = await resolveMailboxModels(env, emailData.mailboxId);
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
@@ -532,7 +542,7 @@ export class EmailAgent extends AIChatAgent<any> {
 				return { status: "skipped_spam" as const };
 			}
 			if (email?.body) {
-				const isInjection = await isPromptInjection(env.AI, email.body);
+				const isInjection = await isPromptInjection(env.AI, email.body, models.promptInjection);
 				if (isInjection) {
 					console.warn("Skipping auto-draft due to detected prompt injection:", emailData.emailId);
 					
@@ -580,7 +590,7 @@ export class EmailAgent extends AIChatAgent<any> {
 			// could plant an injection in an earlier email in the thread
 			// that gets included in the agent's prompt.
 			if (threadContext) {
-				const threadInjection = await isPromptInjection(env.AI, threadContext);
+				const threadInjection = await isPromptInjection(env.AI, threadContext, models.promptInjection);
 				if (threadInjection) {
 					console.warn("Skipping auto-draft due to prompt injection in thread context:", emailData.threadId);
 					const newMessages = [
@@ -648,7 +658,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai("@cf/qwen/qwen3.8-27b"),
+				model: workersai(models.agent),
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,
