@@ -189,14 +189,14 @@ describe("MailboxDO body_text", () => {
 		expect(email?.body).toBe("<p>Hello <b>HTML</b></p>");
 
 
-		// The list select exposes body_text too.
+		// List rows stay lean: the message panel reads the detail endpoint
+		// (which selects every column), so a list response must not ship
+		// whole bodies — body_text included.
 		const listed = (await stub.getEmails({ folder: Folders.INBOX })) as {
 			id: string;
-			body_text: string | null;
+			body_text?: string | null;
 		}[];
-		expect(listed.find((row) => row.id === "bt-1")?.body_text).toBe(
-			"Hello plain text",
-		);
+		expect(listed.find((row) => row.id === "bt-1")?.body_text).toBeUndefined();
 	});
 
 

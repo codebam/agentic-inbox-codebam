@@ -229,7 +229,6 @@ export class MailboxDO extends DurableObject<Env> {
 				category: schema.emails.category,
 				category_confidence: schema.emails.category_confidence,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
-				body_text: schema.emails.body_text,
 			})
 			.from(schema.emails)
 			.where(conditions.length > 0 ? and(...conditions) : undefined)
