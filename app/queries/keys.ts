@@ -27,6 +27,11 @@ export const queryKeys = {
 		list: (mailboxId: string, limit: number) =>
 			["agent-actions", mailboxId, limit] as const,
 	},
+	contacts: {
+		/** One ranked recipient-autocomplete lookup, keyed by the typed token. */
+		search: (mailboxId: string, query: string) =>
+			["contacts", mailboxId, query] as const,
+	},
 	folders: {
 		list: (mailboxId: string) => ["folders", mailboxId] as const,
 	},

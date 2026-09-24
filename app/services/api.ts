@@ -15,9 +15,12 @@ import type {
 } from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
-import type { AgentAction, BulkEmailAction, Email, Folder, Mailbox } from "~/types";
+import type { AgentAction, BulkEmailAction, Contact, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Contact suggestions requested per recipient lookup; the server caps it too. */
+const CONTACT_SEARCH_LIMIT = 8;
 
 export class ApiError extends Error {
 	status: number;
@@ -107,6 +110,11 @@ interface EmailListResponse {
 
 interface AgentActionListResponse {
 	actions: AgentAction[];
+	totalCount: number;
+}
+
+interface ContactListResponse {
+	contacts: Contact[];
 	totalCount: number;
 }
 
@@ -236,6 +244,12 @@ const api = {
 		post<{ action: AgentAction; email: Email }>(
 			`/api/v1/mailboxes/${mailboxId}/agent-actions/${actionId}/undo`,
 		),
+	// Contacts — the address book aggregated from a mailbox's mail history.
+	/** Ranked contact lookup for recipient autocomplete; `limit` bounds the page. */
+	searchContacts: (mailboxId: string, query: string, limit = CONTACT_SEARCH_LIMIT) =>
+		get<ContactListResponse>(`/api/v1/mailboxes/${mailboxId}/contacts`, {
+			params: { q: query, limit: String(limit) },
+		}),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
