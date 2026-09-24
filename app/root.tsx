@@ -27,18 +27,32 @@ import "./index.css";
 
 /**
  * Runs before styles/hydration so Kumo's `data-mode` theme switches with the
- * OS setting without a flash of the wrong theme. Lives in <head>, then keeps
- * tracking live `prefers-color-scheme` changes.
+ * OS setting without a flash of the wrong theme. Sits after the favicon
+ * links, which it also keeps in step, then follows live `prefers-color-scheme`
+ * changes.
  */
 const SYSTEM_THEME_SCRIPT = `
 (function () {
 	try {
 		var mql = window.matchMedia("(prefers-color-scheme: dark)");
 		var apply = function (event) {
+			var dark = event.matches;
 			document.documentElement.setAttribute(
 				"data-mode",
-				event.matches ? "dark" : "light",
+				dark ? "dark" : "light",
 			);
+			// The tab icon cannot use the signals the page itself relies on: given
+			// several <link rel="icon"> candidates the browser picks its own (Chrome
+			// takes the .ico that declares sizes and never fetches the SVG), and a
+			// favicon SVG ignores the media queries inside it (Safari, and Chrome's
+			// favicon renderer runs with the default scheme). Pointing both links at
+			// the artwork for the active scheme keeps the tab legible everywhere.
+			var links = document.querySelectorAll("link[data-favicon]");
+			for (var i = 0; i < links.length; i++) {
+				var link = links[i];
+				var href = dark ? link.getAttribute("data-dark") : link.getAttribute("data-light");
+				if (href && link.getAttribute("href") !== href) link.setAttribute("href", href);
+			}
 		};
 		apply(mql);
 		if (mql.addEventListener) mql.addEventListener("change", apply);
@@ -105,14 +119,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
 			<head>
 				<meta charSet="UTF-8" />
 				<meta name="color-scheme" content="light dark" />
-				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />
-				<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+				<link
+					rel="icon"
+					type="image/svg+xml"
+					href="/favicon.svg"
+					data-favicon
+					data-light="/favicon.svg"
+					data-dark="/favicon-dark.svg"
+					suppressHydrationWarning
+				/>
 				<link
 					rel="icon"
 					type="image/x-icon"
 					href="/favicon.ico"
+					data-favicon
+					data-light="/favicon.ico"
+					data-dark="/favicon-dark.ico"
 					sizes="48x48 32x32 16x16"
+					suppressHydrationWarning
 				/>
+				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />
 				<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 				<title>Agentic Inbox Codebam</title>
 				<Meta />
