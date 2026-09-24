@@ -111,3 +111,28 @@ export const senderPolicy = sqliteTable("sender_policy", {
 		.notNull()
 		.default(sql`(datetime('now'))`),
 });
+
+
+/**
+ * Metadata-only audit log of mutating agent/MCP tool calls (migration
+ * 20_add_agent_actions). `args`/`before_state`/`after_state` are JSON
+ * strings bounded to ~1000 characters by workers/lib/agent-actions.ts --
+ * never message bodies, attachment bytes or credentials. `undoable` marks
+ * the reversible tools (move_email, star_email, mark_email_read);
+ * `undone_at` is stamped when undo_action restores the before-state.
+ * MailboxDO prunes each mailbox back to its newest 500 rows.
+ */
+export const agentActions = sqliteTable("agent_actions", {
+	id: text("id").primaryKey(),
+	source: text("source").notNull(),
+	tool: text("tool").notNull(),
+	email_id: text("email_id"),
+	email_subject: text("email_subject"),
+	thread_id: text("thread_id"),
+	args: text("args"),
+	before_state: text("before_state"),
+	after_state: text("after_state"),
+	undoable: integer("undoable").notNull().default(0),
+	undone_at: text("undone_at"),
+	created_at: text("created_at").notNull(),
+});

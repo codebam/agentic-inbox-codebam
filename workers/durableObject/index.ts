@@ -165,6 +165,52 @@ interface AttachmentData {
 	disposition?: string | null;
 }
 
+/** Most recent agent actions kept per mailbox; older rows are pruned on write. */
+export const MAX_AGENT_ACTIONS = 500;
+
+/**
+ * A mutating agent/MCP tool call to record. Metadata only — ids, flags,
+ * folder names, a subject and a thread id; `args`/`beforeState`/`afterState`
+ * are JSON strings the caller has already bounded (see
+ * workers/lib/agent-actions.ts).
+ */
+export interface AgentActionInput {
+	id: string;
+	source: "agent" | "mcp";
+	tool: string;
+	emailId?: string | null;
+	emailSubject?: string | null;
+	threadId?: string | null;
+	args?: string | null;
+	beforeState?: string | null;
+	afterState?: string | null;
+	undoable: boolean;
+	createdAt?: string;
+}
+
+/** One stored audit row; `undoable` reads back as a boolean. */
+export interface AgentActionRow {
+	id: string;
+	source: string;
+	tool: string;
+	email_id: string | null;
+	email_subject: string | null;
+	thread_id: string | null;
+	args: string | null;
+	before_state: string | null;
+	after_state: string | null;
+	undoable: boolean;
+	undone_at: string | null;
+	created_at: string;
+}
+
+/** The three reversible fields undo restores from `before_state`. */
+interface AgentActionState {
+	read?: unknown;
+	starred?: unknown;
+	folder_id?: unknown;
+}
+
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
@@ -1492,6 +1538,168 @@ export class MailboxDO extends DurableObject<Env> {
 			.run();
 
 		return this.getEmail(id);
+	}
+
+	// ── Agent action audit (agent + MCP tools) ─────────────────────
+
+	/** Read a raw audit row as the API shape (`undoable` as a boolean). */
+	#agentActionRow(row: typeof schema.agentActions.$inferSelect): AgentActionRow {
+		return { ...row, undoable: !!row.undoable };
+	}
+
+	/**
+	 * Record one mutating agent/MCP tool call, then prune the mailbox back
+	 * to its newest MAX_AGENT_ACTIONS rows so the log is bounded on every
+	 * write. Metadata only: `args`/`beforeState`/`afterState` arrive as JSON
+	 * strings the caller has already bounded. Returns the stored row.
+	 */
+	recordAgentAction(action: AgentActionInput) {
+		const row = this.db
+			.insert(schema.agentActions)
+			.values({
+				id: action.id,
+				source: action.source,
+				tool: action.tool,
+				email_id: action.emailId ?? null,
+				email_subject: action.emailSubject ?? null,
+				thread_id: action.threadId ?? null,
+				args: action.args ?? null,
+				before_state: action.beforeState ?? null,
+				after_state: action.afterState ?? null,
+				undoable: action.undoable ? 1 : 0,
+				created_at: action.createdAt ?? new Date().toISOString(),
+			})
+			.returning()
+			.get();
+
+		// Keep only the newest rows. Ties on created_at fall back to rowid
+		// (insertion order) so the prune is deterministic.
+		this.ctx.storage.sql.exec(
+			`DELETE FROM agent_actions
+			 WHERE id NOT IN (
+				SELECT id FROM agent_actions
+				ORDER BY created_at DESC, rowid DESC
+				LIMIT ?1
+			 )`,
+			MAX_AGENT_ACTIONS,
+		);
+
+		return this.#agentActionRow(row);
+	}
+
+	/** The newest `limit` audit rows for this mailbox, newest first. */
+	listAgentActions(limit = 50) {
+		const capped = Math.min(Math.max(Math.trunc(limit), 1), MAX_AGENT_ACTIONS);
+		return this.db
+			.select()
+			.from(schema.agentActions)
+			.orderBy(desc(schema.agentActions.created_at), sql`rowid DESC`)
+			.limit(capped)
+			.all()
+			.map((row) => this.#agentActionRow(row));
+	}
+
+	/** How many audit rows this mailbox currently stores. */
+	countAgentActions() {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.agentActions)
+			.get();
+		return row?.total ?? 0;
+	}
+
+	/**
+	 * Undo one recorded action: restore the message's read state, star state
+	 * and folder from `before_state`, then stamp `undone_at`. The folder
+	 * restore goes through folderMoveFields so the Trash retention invariant
+	 * holds when the restore moves a message into or out of Trash. Never
+	 * sends and never deletes mail — the three reversible fields are the
+	 * whole effect.
+	 *
+	 * Returns `{ ok: true, action, email }` on success, `{ ok: false, error }`
+	 * when the action is not undoable, was already undone, or its message is
+	 * gone, and null for an unknown id. A failed undo changes nothing: the
+	 * stamp and the restore share one transaction.
+	 */
+	undoAgentAction(id: string) {
+		const action = this.db
+			.select()
+			.from(schema.agentActions)
+			.where(eq(schema.agentActions.id, id))
+			.get();
+
+		if (!action) return null;
+		if (!action.undoable) {
+			return { ok: false as const, error: "This action is not undoable." };
+		}
+		if (action.undone_at) {
+			return {
+				ok: false as const,
+				error: "This action has already been undone.",
+			};
+		}
+
+		const emailId = action.email_id;
+		if (!emailId) {
+			return { ok: false as const, error: "This action has no message to restore." };
+		}
+
+		const before = safeJsonParse(action.before_state) as AgentActionState | null;
+		if (!before) {
+			return {
+				ok: false as const,
+				error: "This action has no recorded state to restore.",
+			};
+		}
+
+		// The message must still exist: restoring a row that is gone would
+		// stamp the action undone while changing nothing.
+		const current = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, emailId))
+			.get();
+		if (!current) {
+			return { ok: false as const, error: "The message no longer exists." };
+		}
+
+		const fields: {
+			read?: number;
+			starred?: number;
+			folder_id?: string;
+			trashed_at?: string | null;
+		} = {};
+		if (typeof before.read === "boolean") fields.read = before.read ? 1 : 0;
+		if (typeof before.starred === "boolean") fields.starred = before.starred ? 1 : 0;
+		if (typeof before.folder_id === "string") {
+			Object.assign(fields, folderMoveFields(before.folder_id));
+		}
+
+		const undoneAt = new Date().toISOString();
+		this.ctx.storage.transactionSync(() => {
+			if (Object.keys(fields).length > 0) {
+				this.db
+					.update(schema.emails)
+					.set(fields)
+					.where(eq(schema.emails.id, emailId))
+					.run();
+			}
+			this.db
+				.update(schema.agentActions)
+				.set({ undone_at: undoneAt })
+				.where(eq(schema.agentActions.id, id))
+				.run();
+		});
+
+		const email = this.getEmail(emailId);
+		if (!email) {
+			return { ok: false as const, error: "The message no longer exists." };
+		}
+		return {
+			ok: true as const,
+			action: { ...this.#agentActionRow(action), undone_at: undoneAt },
+			email,
+		};
 	}
 
 

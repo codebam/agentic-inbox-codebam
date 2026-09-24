@@ -318,4 +318,35 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN unsubscribed_at TEXT;
         `),
 	},
+	{
+		// Metadata-only audit log for mutating agent/MCP tool calls
+		// (workers/lib/agent-actions.ts). Deliberately narrow: ids, flags,
+		// folder names, a subject and a thread id — never message bodies,
+		// attachment bytes or credentials. `args`/`before_state`/`after_state`
+		// are JSON strings the caller has already bounded to ~1000
+		// characters. `undoable` marks the reversible tools (move_email,
+		// star_email, mark_email_read); `undone_at` is stamped when
+		// undo_action restores the before-state, which also makes a second
+		// undo of the same row fail. MailboxDO.recordAgentAction prunes each
+		// mailbox back to its newest 500 rows on every write.
+		name: "20_add_agent_actions",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS agent_actions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                email_id TEXT,
+                email_subject TEXT,
+                thread_id TEXT,
+                args TEXT,
+                before_state TEXT,
+                after_state TEXT,
+                undoable INTEGER NOT NULL DEFAULT 0,
+                undone_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_actions_created_at ON agent_actions(created_at);
+        `),
+	},
 ];
