@@ -34,11 +34,16 @@ import {
 	toolCreateRule,
 	toolUpdateRule,
 	toolUndoAgentAction,
+	toolSearchContacts,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
 } from "../lib/tools";
 import { runAudited } from "../lib/agent-actions";
+import {
+	DEFAULT_CONTACT_SEARCH_LIMIT,
+	MAX_CONTACT_SEARCH_LIMIT,
+} from "../lib/contacts";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -853,6 +858,41 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				return mcpResult(await toolUndoAgentAction(env, mailboxId, actionId));
+			},
+		);
+
+
+		// ── search_contacts ────────────────────────────────────────
+		this.server.tool(
+			"search_contacts",
+			"Search this mailbox's contacts — the addresses it has exchanged mail with — ranked by how often it sent to them and how recently they were seen. Use it to resolve a recipient address before send_email or send_reply. Read-only: it returns address metadata only (address, display name, sent/received counts, last seen), never message bodies.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				query: z
+					.string()
+					.optional()
+					.describe(
+						"Prefix matched against the contact's address or display name (case-insensitive). Omit for the most-contacted addresses.",
+					),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(MAX_CONTACT_SEARCH_LIMIT)
+					.optional()
+					.describe("How many contacts to return (default 10, max 50)"),
+			},
+			async ({ mailboxId, query, limit }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(
+					await toolSearchContacts(
+						env,
+						mailboxId,
+						query ?? "",
+						limit ?? DEFAULT_CONTACT_SEARCH_LIMIT,
+					),
+				);
 			},
 		);
 	}

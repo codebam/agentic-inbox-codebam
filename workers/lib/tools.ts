@@ -51,6 +51,7 @@ import { Folders } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
+import { DEFAULT_CONTACT_SEARCH_LIMIT } from "./contacts";
 import type { Env } from "../types";
 
 // ── Type casts for DO methods not on the base stub type ────────────
@@ -1062,6 +1063,49 @@ export async function toolUndoAgentAction(
 	if (!result) return { error: "Agent action not found" };
 	if (!result.ok) return { error: result.error };
 	return { action: result.action, email: result.email };
+}
+
+// ── contacts (search_contacts) ─────────────────────────────────────
+
+/** One stored contact row, as MailboxDO.searchContacts returns it. */
+type MailboxContactRow = Awaited<ReturnType<MailboxDO["searchContacts"]>>[number];
+
+/**
+ * The contact RPCs the search_contacts tool calls. Declared structurally so
+ * the rows read as plain objects — the stub's own RPC result types carry
+ * `& Disposable`, which the MCP result wrapper cannot accept — the same way
+ * the audit and snooze tools declare their surface.
+ */
+type MailboxContactsStub = {
+	searchContacts: (query: string, limit?: number) => Promise<MailboxContactRow[]>;
+	countContacts: (query: string) => Promise<number>;
+};
+
+function mailboxContactsStub(env: Env, mailboxId: string): MailboxContactsStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * Search the mailbox's contacts — the addresses it has exchanged mail with
+ * — ranked by sent count, then received count, then recency. `query` is an
+ * optional case-insensitive prefix matched against the address or the
+ * display name; an empty query returns the top-ranked contacts. Read-only
+ * and metadata only (address, display name, counts, timestamps): this is
+ * how the agent resolves a recipient address before send_email or
+ * send_reply.
+ */
+export async function toolSearchContacts(
+	env: Env,
+	mailboxId: string,
+	query = "",
+	limit = DEFAULT_CONTACT_SEARCH_LIMIT,
+) {
+	const stub = mailboxContactsStub(env, mailboxId);
+	const [contacts, totalCount] = await Promise.all([
+		stub.searchContacts(query, limit),
+		stub.countContacts(query),
+	]);
+	return { mailboxId, query, contacts, totalCount };
 }
 
 // ── send_reply ─────────────────────────────────────────────────────
