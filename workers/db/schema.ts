@@ -49,6 +49,12 @@ export const emails = sqliteTable("emails", {
 	remind_at: text("remind_at"),
 	/** When the follow-up fired; NULL when it has not (or the reminder was cancelled). */
 	reminded_at: text("reminded_at"),
+	/** Raw List-Unsubscribe header as received; NULL when the sender set none. */
+	list_unsubscribe: text("list_unsubscribe"),
+	/** Raw List-Unsubscribe-Post header (RFC 8058 one-click marker); NULL when absent. */
+	list_unsubscribe_post: text("list_unsubscribe_post"),
+	/** When this mailbox completed a one-click unsubscribe for this message; NULL until then. */
+	unsubscribed_at: text("unsubscribed_at"),
 });
 
 
