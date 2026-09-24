@@ -36,7 +36,11 @@ import { normalizeImageAllowlist } from "../shared/remote-images";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
-import { searchAllMailboxes } from "./lib/search-all";
+import {
+	searchAllMailboxes,
+	type MailboxSearchRow,
+	type SearchAllFilters,
+} from "./lib/search-all";
 import {
 	mergeCategorizationCategories,
 	normalizeCategorizationSettings,
@@ -352,6 +356,51 @@ app.post("/api/v1/mailboxes/:mailboxId/webhook/test", async (c) => {
 
 const ALL_EMAILS_CHUNK = 100;
 
+// -- Durable Object RPC shapes --------------------------------------
+//
+// The Mailbox DO's option types are not exported, and instantiating several of
+// its calls straight off DurableObjectStub<MailboxDO> is excessively deep
+// (TS2589 — getThreadedEmails infers its return type from getEmails). These
+// types declare the RPC surface the routes actually use, the same way
+// lib/search-all.ts does, deriving every shape from the Durable Object itself
+// so none of them can drift.
+
+
+/** One row of a mailbox list page, as returned by the Durable Object. */
+type MailboxEmailRow = Awaited<ReturnType<MailboxDO["getEmails"]>>[number];
+
+/** Options MailboxDO.getEmails accepts, derived from the Durable Object. */
+type GetEmailsOptions = NonNullable<Parameters<MailboxDO["getEmails"]>[0]>;
+
+/** Options MailboxDO.countEmails accepts, derived from the Durable Object. */
+type CountEmailsOptions = NonNullable<Parameters<MailboxDO["countEmails"]>[0]>;
+
+/** Columns MailboxDO.getEmails can order by. */
+type SortColumn = NonNullable<GetEmailsOptions["sortColumn"]>;
+
+/** The list RPCs the email routes call. */
+type MailboxEmailsStub = {
+	getEmails: (options: GetEmailsOptions) => Promise<MailboxEmailRow[]>;
+	countEmails: (options: CountEmailsOptions) => Promise<number>;
+	getThreadedEmails: (options: GetEmailsOptions) => Promise<MailboxEmailRow[]>;
+	countThreadedEmails: (folder: string, category?: string) => Promise<number>;
+};
+
+/** One email of a thread: the row MailboxDO.getEmail returns. */
+type MailboxThreadEmailRow = NonNullable<Awaited<ReturnType<MailboxDO["getEmail"]>>>;
+
+/** The thread RPC the thread route and the draft spam check call. */
+type MailboxThreadStub = {
+	getThreadEmails: (threadId: string) => Promise<MailboxThreadEmailRow[]>;
+};
+
+/** The search RPCs the search route calls; the DO requires a query string. */
+type MailboxSearchStub = {
+	searchEmails: (options: SearchAllFilters & { query: string }) => Promise<MailboxSearchRow[]>;
+	countSearchResults: (options: SearchAllFilters & { query: string }) => Promise<number>;
+};
+
+
 /**
  * Fetch the top `top` rows from one mailbox, chunking past the Durable
  * Object's 100-row page limit. Per-mailbox top-K is sufficient to compute
@@ -362,12 +411,9 @@ async function getTopMailboxEmails(
 	stub: DurableObjectStub<MailboxDO>,
 	folder: string | undefined,
 	top: number,
-) {
-	// RPC method types get excessively deep through DurableObjectStub<MailboxDO>,
-	// so keep the dynamic dispatch behind `any` (same pattern as the mailbox
-	// middleware call sites).
-	const mailbox = stub as any;
-	const emails: any[] = [];
+): Promise<MailboxEmailRow[]> {
+	const mailbox = stub as unknown as MailboxEmailsStub;
+	const emails: MailboxEmailRow[] = [];
 	for (let offset = 0; offset < top; offset += ALL_EMAILS_CHUNK) {
 		const limit = Math.min(ALL_EMAILS_CHUNK, top - offset);
 		const page = Math.floor(offset / ALL_EMAILS_CHUNK) + 1;
@@ -397,8 +443,8 @@ app.get("/api/v1/all-emails", async (c) => {
 	const counts = await Promise.all(
 		stubs.map(({ stub }) =>
 			folder
-				? (stub as any).countThreadedEmails(folder)
-				: (stub as any).countEmails({}),
+				? stub.countThreadedEmails(folder)
+				: stub.countEmails({}),
 		),
 	);
 	const totalCount = counts.reduce((sum, count) => sum + count, 0);
@@ -441,13 +487,16 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const threaded = boolQuery(c, "threaded");
 	const page = intQuery(c, "page");
 	const limit = intQuery(c, "limit");
-	const sortColumn = c.req.query("sortColumn") as any;
+	// Defaulted rather than passed through as undefined so the option is always
+	// defined (exactOptionalPropertyTypes); the DO validates the name against its
+	// own allowlist and falls back to "date".
+	const sortColumn = (c.req.query("sortColumn") ?? "date") as SortColumn;
 	const sortDirection = c.req.query("sortDirection") as "ASC" | "DESC" | undefined;
-	const stub = c.var.mailboxStub;
+	const stub = c.var.mailboxStub as unknown as MailboxEmailsStub;
 
 	if (threaded && folder) {
-		const emails = await (stub as any).getThreadedEmails({ folder, category, page, limit });
-		const totalCount = await (stub as any).countThreadedEmails(folder, category);
+		const emails = await stub.getThreadedEmails({ folder, category, page, limit });
+		const totalCount = await stub.countThreadedEmails(folder, category);
 		return c.json({ emails, totalCount });
 	}
 	const emails = await stub.getEmails({ folder, thread_id, category, page, limit, sortColumn, sortDirection });
@@ -473,7 +522,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 	const stub = c.var.mailboxStub;
-	const rateLimitError = await (stub as any).checkSendRateLimit();
+	const rateLimitError = await stub.checkSendRateLimit();
 	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
@@ -508,6 +557,9 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id, applySignature } = DraftBodySchema.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
+	// Thread lookups go through their structural shape: the real RPC type is
+	// excessively deep to instantiate (see the Durable Object RPC shapes above).
+	const threadStub = stub as unknown as MailboxThreadStub;
 
 	// Draft replies to spam are refused at the same layer as the agent and MCP
 	// tools, so a human saving from the composer cannot create one either.
@@ -546,11 +598,7 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 			);
 		}
 	} else if (threadTarget) {
-		const threadEmails = (await (stub as any).getThreadEmails(threadTarget)) as Array<{
-			folder_id?: string | null;
-			category?: string | null;
-			classification?: string | null;
-		}>;
+		const threadEmails = await threadStub.getThreadEmails(threadTarget);
 		if (threadEmails.some((email) => isSpamMarkedEmail(email))) {
 			return c.json(
 				{
@@ -565,9 +613,7 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	if (draft_id && currentDraft) {
 		// Delete after validation; clean up R2 attachments just like the
 		// regular email-delete route.
-		const attachments = (await stub.deleteEmail(draft_id)) as
-			| { id: string; filename: string }[]
-			| null;
+		const attachments = await stub.deleteEmail(draft_id);
 		if (attachments && attachments.length > 0) {
 			await c.env.BUCKET.delete(
 				attachments.map(
@@ -624,16 +670,13 @@ app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 	const stub = c.var.mailboxStub;
 
 	if (!boolQuery(c, "permanent")) {
-		const { trashed } = (await stub.trashEmails([id])) as {
-			trashed: string[];
-			alreadyInTrash: string[];
-		};
+		const { trashed } = await stub.trashEmails([id]);
 		if (trashed.length > 0) return c.json({ status: "trashed", trashed: 1, purged: 0 });
 	}
 
 	const attachments = await stub.deleteEmail(id);
 	if (attachments === null) return c.json({ error: "Not found" }, 404);
-	if (attachments.length > 0) await c.env.BUCKET.delete(attachments.map((att: any) => `attachments/${id}/${att.id}/${att.filename}`));
+	if (attachments.length > 0) await c.env.BUCKET.delete(attachments.map((att) => `attachments/${id}/${att.id}/${att.filename}`));
 	return c.json({ status: "deleted", trashed: 0, purged: 1 });
 });
 
@@ -660,7 +703,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 		return c.json({ error: "Invalid bulk action request" }, 400);
 	}
 	const { action, ids, threadIds, folderId } = parsed.data;
-	const stub = c.var.mailboxStub as any;
+	const stub = c.var.mailboxStub;
 
 	switch (action) {
 		case "mark_read":
@@ -686,27 +729,17 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 		//             good, everything else moves to Trash. Only the purge
 		//             path touches R2.
 		case "trash": {
-			const { trashed } = (await stub.trashEmails(ids)) as {
-				trashed: string[];
-				alreadyInTrash: string[];
-			};
+			const { trashed } = await stub.trashEmails(ids);
 			return c.json({ trashed: trashed.length, purged: 0, restored: 0 });
 		}
 		case "restore": {
-			const restored = (await stub.restoreEmails(ids)) as string[];
+			const restored = await stub.restoreEmails(ids);
 			return c.json({ trashed: 0, purged: 0, restored: restored.length });
 		}
 		case "delete": {
-			const { trashed, alreadyInTrash } = (await stub.trashEmails(ids)) as {
-				trashed: string[];
-				alreadyInTrash: string[];
-			};
+			const { trashed, alreadyInTrash } = await stub.trashEmails(ids);
 			if (alreadyInTrash.length > 0) {
-				const attachments = (await stub.bulkDeleteEmails(alreadyInTrash)) as Array<{
-					id: string;
-					email_id: string;
-					filename: string;
-				}>;
+				const attachments = await stub.bulkDeleteEmails(alreadyInTrash);
 				if (attachments.length > 0) {
 					await c.env.BUCKET.delete(
 						attachments.map(
@@ -729,10 +762,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
  * always a deliberate action, never a side effect of a plain delete.
  */
 app.post("/api/v1/mailboxes/:mailboxId/trash/empty", async (c: AppContext) => {
-	const { purged, attachments } = (await c.var.mailboxStub.emptyTrash()) as {
-		purged: number;
-		attachments: { id: string; email_id: string; filename: string }[];
-	};
+	const { purged, attachments } = await c.var.mailboxStub.emptyTrash();
 	if (attachments.length > 0) {
 		await c.env.BUCKET.delete(
 			attachments.map(
@@ -747,7 +777,8 @@ app.post("/api/v1/mailboxes/:mailboxId/trash/empty", async (c: AppContext) => {
 // -- Threads --------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId", async (c: AppContext) => {
-	return c.json(await (c.var.mailboxStub as any).getThreadEmails(c.req.param("threadId")!));
+	const stub = c.var.mailboxStub as unknown as MailboxThreadStub;
+	return c.json(await stub.getThreadEmails(c.req.param("threadId")!));
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppContext) => {
@@ -937,14 +968,14 @@ app.post("/api/v1/mailboxes/:mailboxId/sender-policy/feedback", async (c: AppCon
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
-	const searchOpts: Record<string, unknown> = {
+	const searchOpts: SearchAllFilters & { query: string } = {
 		query: c.req.query("query") || "", folder: c.req.query("folder"), category: c.req.query("category"),
 		from: c.req.query("from"),
 		to: c.req.query("to"), subject: c.req.query("subject"), date_start: c.req.query("date_start"),
 		date_end: c.req.query("date_end"), is_read: boolQuery(c, "is_read"),
 		is_starred: boolQuery(c, "is_starred"), has_attachment: boolQuery(c, "has_attachment"),
 	};
-	const stub = c.var.mailboxStub as any;
+	const stub = c.var.mailboxStub as unknown as MailboxSearchStub;
 	const emails = await stub.searchEmails({ ...searchOpts, page: intQuery(c, "page"), limit: intQuery(c, "limit") });
 	const totalCount = await stub.countSearchResults(searchOpts);
 	return c.json({ emails, totalCount });
@@ -1027,7 +1058,7 @@ async function streamToArrayBuffer(
 }
 
 export interface InboundEmailEvent {
-	readonly raw: ReadableStream;
+	readonly raw: ReadableStream<Uint8Array>;
 	readonly rawSize: number;
 	/** SMTP envelope recipient supplied by Cloudflare Email Routing. */
 	readonly to?: string;
@@ -1214,7 +1245,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	let threadId = emailReferences[0] || inReplyTo || messageId;
 
 	if (!inReplyTo && emailReferences.length === 0) {
-		const subjectThread = await (stub as any).findThreadBySubject(parsedEmail.subject || "", parsedEmail.from?.address || undefined);
+		const subjectThread = await stub.findThreadBySubject(parsedEmail.subject || "", parsedEmail.from?.address || undefined);
 		if (subjectThread) threadId = subjectThread;
 	}
 
