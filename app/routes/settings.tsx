@@ -14,6 +14,7 @@ import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
 import EmailViewCard from "~/components/EmailViewCard";
+import ItemsCard from "~/components/ItemsCard";
 import WebhookCard from "~/components/WebhookCard";
 import SenderPolicyCard from "~/components/SenderPolicyCard";
 import DigestCard from "~/components/DigestCard";
@@ -193,6 +194,8 @@ export default function SettingsRoute() {
 					settings={categorization}
 					onChange={setCategorization}
 				/>
+
+				<ItemsCard mailboxId={mailboxId} />
 
 				<SenderPolicyCard mailboxId={mailboxId} />
 

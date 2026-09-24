@@ -216,3 +216,29 @@ export const digestDeliveries = sqliteTable("digest_deliveries", {
 	status: integer("status"),
 	error: text("error"),
 });
+
+
+/**
+ * Tasks and deadlines extracted from inbound mail (migration
+ * 26_add_extracted_items): one row per concrete task or deadline a message
+ * states, written by the extractor off the receive path
+ * (workers/lib/items.ts). Metadata only — `title` and `details` are clamped
+ * (200 / 1000 characters) and `due_at` is an ISO 8601 UTC instant within two
+ * years of extraction, or null. `kind` is task | deadline, `status` is
+ * open | done | dismissed; MailboxDO prunes closed rows back to
+ * MAX_EXTRACTED_ITEMS on every insert and never deletes open ones. The
+ * agent/MCP surfaces read this table through one read-only tool
+ * (list_items).
+ */
+export const extractedItems = sqliteTable("extracted_items", {
+	id: text("id").primaryKey(),
+	email_id: text("email_id").notNull(),
+	thread_id: text("thread_id"),
+	kind: text("kind").notNull(),
+	title: text("title").notNull(),
+	details: text("details"),
+	due_at: text("due_at"),
+	status: text("status").notNull().default("open"),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});

@@ -54,6 +54,7 @@ import {
 	toolUndoAgentAction,
 	toolSearchContacts,
 	toolListTemplates,
+	toolListItems,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
@@ -1056,6 +1057,41 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolListTemplates(env, mailboxId);
+			},
+		}),
+
+
+		list_items: defineTool({
+			description:
+				"The tasks and deadlines extracted from this mailbox's mail — one entry per concrete task or deadline, with its source message id, kind (task | deadline), title, details, due date and status (open | done | dismissed). Read-only: items are closed or dismissed by the operator in the app, this tool changes nothing, and nothing here sends mail.",
+			parameters: z.object({
+				...mailboxIdField,
+				status: z
+					.enum(["open", "done", "dismissed"])
+					.optional()
+					.describe("Only items in this state. Omit for every state."),
+				due: z
+					.enum(["overdue", "today", "upcoming", "none"])
+					.optional()
+					.describe(
+						"Only items whose due date is overdue, due today, upcoming, or absent. Omit for all due dates.",
+					),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(50)
+					.optional()
+					.describe("How many items to return (default 50, max 50)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListItems(env, mailboxId, {
+					status: args.status,
+					due: args.due,
+					limit: args.limit,
+				});
 			},
 		}),
 	};

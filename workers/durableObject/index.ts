@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, isNull, lt, lte } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, isNull, lt, lte, gte } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -69,6 +69,21 @@ import {
 	type TemplateInput,
 	type TemplatePatch,
 } from "../lib/templates";
+import {
+	isItemDueFilter,
+	isItemKind,
+	isItemStatus,
+	ITEM_LIST_LIMIT_DEFAULT,
+	ITEM_LIST_LIMIT_MAX,
+	MAX_EXTRACTED_ITEMS,
+	MAX_ITEM_DETAILS_LENGTH,
+	MAX_ITEM_TITLE_LENGTH,
+	type ExtractedItem,
+	type ExtractedItemInput,
+	type ItemListFilters,
+	type ItemListPage,
+	type ItemStatus,
+} from "../lib/items";
 import {
 	generateMessageId,
 	validateSender,
@@ -3540,6 +3555,258 @@ export class MailboxDO extends DurableObject<Env> {
 		);
 	}
 
+	// ── Extracted items (tasks & deadlines) ────────────────────────
+
+	/**
+	 * Store the items extracted from one inbound email. Ids and timestamps
+	 * are minted here (crypto.randomUUID, ISO now) so a direct RPC caller
+	 * cannot invent an id or a created_at; every item is bounded again before
+	 * it is written. Returns the stored rows.
+	 *
+	 * After the insert the mailbox is pruned back to MAX_EXTRACTED_ITEMS rows
+	 * by deleting the oldest CLOSED items (done or dismissed). Open items are
+	 * never deleted: a mailbox holding more open items than the cap keeps
+	 * them all rather than losing work.
+	 */
+	insertItems(
+		emailId: string,
+		threadId: string | null,
+		items: ExtractedItemInput[],
+	): ExtractedItem[] {
+		const now = new Date().toISOString();
+		const rows: ExtractedItem[] = [];
+		for (const item of items ?? []) {
+			const normalized = this.#normalizeItemInput(item);
+			if (!normalized) continue;
+			rows.push({
+				id: crypto.randomUUID(),
+				email_id: emailId,
+				thread_id: threadId ?? null,
+				kind: normalized.kind,
+				title: normalized.title,
+				details: normalized.details,
+				due_at: normalized.due_at,
+				status: "open",
+				created_at: now,
+				updated_at: now,
+			});
+		}
+		if (rows.length === 0) return [];
+		this.db.insert(schema.extractedItems).values(rows).run();
+		this.#pruneExtractedItems();
+		return rows;
+	}
+
+
+	/**
+	 * One page of stored items, newest first, plus the total matching the
+	 * filters. `status` narrows to one lifecycle state (omit for all),
+	 * `due` to one due bucket, `limit` defaults to 50 and is capped at
+	 * ITEM_LIST_LIMIT_MAX, and `page` is 1-based. Due buckets are computed
+	 * against UTC day boundaries (overdue = before today, today = today,
+	 * upcoming = after today, none = no due date); due_at is stored as ISO
+	 * 8601 UTC, so string comparison orders it correctly.
+	 */
+	listItems(filters: ItemListFilters = {}): ItemListPage {
+		const rawLimit = Math.trunc(filters.limit ?? ITEM_LIST_LIMIT_DEFAULT);
+		const limit = Number.isFinite(rawLimit)
+			? Math.min(Math.max(rawLimit, 1), ITEM_LIST_LIMIT_MAX)
+			: ITEM_LIST_LIMIT_DEFAULT;
+		const rawPage = Math.trunc(filters.page ?? 1);
+		const page = Number.isFinite(rawPage) ? Math.max(rawPage, 1) : 1;
+
+		const conditions = this.#itemConditions(filters);
+		const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+		const totalCount =
+			this.db
+				.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+				.from(schema.extractedItems)
+				.where(where)
+				.get()?.total ?? 0;
+
+		const items = this.db
+			.select()
+			.from(schema.extractedItems)
+			.where(where)
+			.orderBy(desc(schema.extractedItems.created_at), sql`rowid DESC`)
+			.limit(limit)
+			.offset((page - 1) * limit)
+			.all()
+			.map(parseExtractedItemRow)
+			.filter((item): item is ExtractedItem => item !== null);
+
+		return { items, totalCount };
+	}
+
+
+	/**
+	 * Every item one message contributed, newest first — the message panel's
+	 * card. The extractor stores at most MAX_EXTRACTED_ITEMS_PER_EMAIL rows
+	 * per message; the limit is a safety net for a directly seeded database.
+	 */
+	listItemsForEmail(emailId: string): ExtractedItem[] {
+		return this.db
+			.select()
+			.from(schema.extractedItems)
+			.where(eq(schema.extractedItems.email_id, emailId))
+			.orderBy(desc(schema.extractedItems.created_at), sql`rowid DESC`)
+			.limit(ITEM_LIST_LIMIT_MAX)
+			.all()
+			.map(parseExtractedItemRow)
+			.filter((item): item is ExtractedItem => item !== null);
+	}
+
+
+	/**
+	 * Move one item to a new lifecycle state (open | done | dismissed),
+	 * stamping updated_at, and return the stored row. An unknown id — and a
+	 * status outside the vocabulary, so a direct RPC caller cannot write
+	 * junk — answers null; the route validates the status first and answers
+	 * 404 for the id.
+	 */
+	updateItemStatus(id: string, status: ItemStatus): ExtractedItem | null {
+		if (!isItemStatus(status)) return null;
+		const existing = this.db
+			.select()
+			.from(schema.extractedItems)
+			.where(eq(schema.extractedItems.id, id))
+			.get();
+		if (!existing) return null;
+
+		this.db
+			.update(schema.extractedItems)
+			.set({ status, updated_at: new Date().toISOString() })
+			.where(eq(schema.extractedItems.id, id))
+			.run();
+
+		const stored = this.db
+			.select()
+			.from(schema.extractedItems)
+			.where(eq(schema.extractedItems.id, id))
+			.get();
+		return stored ? parseExtractedItemRow(stored) : null;
+	}
+
+
+	/** How many items this mailbox stores. */
+	#countExtractedItems(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.extractedItems)
+			.get();
+		return row?.total ?? 0;
+	}
+
+
+	/** How many stored items are closed (done or dismissed). */
+	#countClosedExtractedItems(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.extractedItems)
+			.where(ne(schema.extractedItems.status, "open"))
+			.get();
+		return row?.total ?? 0;
+	}
+
+
+	/**
+	 * Keep the mailbox at MAX_EXTRACTED_ITEMS rows by deleting the oldest
+	 * CLOSED items (done or dismissed), oldest first. Open items are never
+	 * deleted, so a mailbox whose rows above the cap are all open is left as
+	 * it is — the cap is housekeeping for finished work, not a reason to
+	 * lose a task. One statement, run after every insert.
+	 */
+	#pruneExtractedItems(): void {
+		const total = this.#countExtractedItems();
+		if (total <= MAX_EXTRACTED_ITEMS) return;
+		const closed = this.#countClosedExtractedItems();
+		const doomed = Math.min(total - MAX_EXTRACTED_ITEMS, closed);
+		if (doomed <= 0) return;
+		this.ctx.storage.sql.exec(
+			`DELETE FROM extracted_items
+			 WHERE id IN (
+				SELECT id FROM extracted_items
+				WHERE status != 'open'
+				ORDER BY created_at ASC, rowid ASC
+				LIMIT ?1
+			 )`,
+			doomed,
+		);
+	}
+
+
+	/**
+	 * SQL conditions for one items page: status and due bucket, nothing else.
+	 * Values outside the vocabulary are ignored rather than rejected, so a
+	 * direct RPC caller passing junk gets the unfiltered list back.
+	 */
+	#itemConditions(filters: ItemListFilters): SQL[] {
+		const conditions: SQL[] = [];
+		if (isItemStatus(filters.status)) {
+			conditions.push(eq(schema.extractedItems.status, filters.status));
+		}
+		const due = filters.due;
+		if (!isItemDueFilter(due)) return conditions;
+		if (due === "none") {
+			conditions.push(isNull(schema.extractedItems.due_at));
+			return conditions;
+		}
+		const startOfToday = new Date();
+		startOfToday.setUTCHours(0, 0, 0, 0);
+		const startIso = startOfToday.toISOString();
+		const endIso = new Date(
+			startOfToday.getTime() + 24 * 60 * 60 * 1000,
+		).toISOString();
+		if (due === "overdue") {
+			conditions.push(
+				and(
+					isNotNull(schema.extractedItems.due_at),
+					lt(schema.extractedItems.due_at, startIso),
+				)!,
+			);
+		} else if (due === "today") {
+			conditions.push(
+				and(
+					gte(schema.extractedItems.due_at, startIso),
+					lt(schema.extractedItems.due_at, endIso),
+				)!,
+			);
+		} else {
+			conditions.push(gte(schema.extractedItems.due_at, endIso));
+		}
+		return conditions;
+	}
+
+
+	/**
+	 * Bound one caller-supplied item before it is stored: a missing title
+	 * makes the row unusable (null, dropped), kind falls back to task, text
+	 * is trimmed and clamped, and an unparseable due date becomes null.
+	 */
+	#normalizeItemInput(item: ExtractedItemInput): ExtractedItemInput | null {
+		const title =
+			typeof item?.title === "string"
+				? item.title.trim().slice(0, MAX_ITEM_TITLE_LENGTH)
+				: "";
+		if (!title) return null;
+		const details =
+			typeof item.details === "string" && item.details.trim()
+				? item.details.trim().slice(0, MAX_ITEM_DETAILS_LENGTH)
+				: null;
+		const dueAt =
+			typeof item.due_at === "string" &&
+			Number.isFinite(Date.parse(item.due_at))
+				? new Date(item.due_at).toISOString()
+				: null;
+		return {
+			kind: isItemKind(item?.kind) ? item.kind : "task",
+			title,
+			details,
+			due_at: dueAt,
+		};
+	}
+
 
 	// ── Sender policy CRUD (per-mailbox allow/block list) ──────────
 
@@ -3731,6 +3998,35 @@ type EmailRow = typeof schema.emails.$inferSelect;
 
 /** A raw `attachments` row, exactly as `SELECT *` returns it. */
 type AttachmentRow = typeof schema.attachments.$inferSelect;
+
+
+/** A raw `extracted_items` row, exactly as `SELECT *` returns it. */
+type ExtractedItemRow = typeof schema.extractedItems.$inferSelect;
+
+
+/**
+ * Parse a stored item row into the shared shape, or null for a row that is
+ * unusable (no title, or a kind/status value the vocabulary does not know).
+ * Unknown rows are ignored rather than trusted, so a hand-edited database
+ * cannot put a bogus status or kind in front of the UI or the agent.
+ */
+function parseExtractedItemRow(row: ExtractedItemRow): ExtractedItem | null {
+	const title = typeof row.title === "string" ? row.title.trim() : "";
+	if (!title) return null;
+	if (!isItemKind(row.kind) || !isItemStatus(row.status)) return null;
+	return {
+		id: String(row.id),
+		email_id: String(row.email_id),
+		thread_id: row.thread_id ?? null,
+		kind: row.kind,
+		title,
+		details: row.details ?? null,
+		due_at: row.due_at ?? null,
+		status: row.status,
+		created_at: String(row.created_at ?? ""),
+		updated_at: String(row.updated_at ?? ""),
+	};
+}
 
 
 /**

@@ -53,6 +53,11 @@ import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
 import { DEFAULT_CONTACT_SEARCH_LIMIT } from "./contacts";
 import {
+	type ItemDueFilter,
+	type ItemListFilters,
+	type ItemStatus,
+} from "./items";
+import {
 	DEFAULT_SCHEDULED_SEND_LIMIT,
 	type ScheduledSendActionResult,
 	type ScheduledSendRow,
@@ -1210,6 +1215,57 @@ export async function toolListTemplates(env: Env, mailboxId: string) {
 		note:
 			"Templates are operator-authored snippets. This tool is read-only: templates can only be created, edited or deleted by the operator in the app.",
 	};
+}
+
+
+// ── items (list_items) ─────────────────────────────────────────────
+
+/** One stored item, as MailboxDO.listItems returns it. */
+type MailboxExtractedItem = Awaited<
+	ReturnType<MailboxDO["listItems"]>
+>["items"][number];
+
+/**
+ * The items RPC the list_items tool calls. Declared structurally for the
+ * same reason as the contacts and template tools: the stub's own RPC result
+ * types carry `& Disposable`, which the MCP result wrapper cannot accept.
+ */
+type MailboxItemsStub = {
+	listItems: (
+		filters: ItemListFilters,
+	) => Promise<{ items: MailboxExtractedItem[]; totalCount: number }>;
+};
+
+function mailboxItemsStub(env: Env, mailboxId: string): MailboxItemsStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * The mailbox's extracted tasks and deadlines, newest first, with the total
+ * matching the filters. Read-only, and deliberately the only items surface
+ * the agent and the MCP server have: nothing here creates, closes or
+ * dismisses an item, and nothing sends mail. Each entry carries the source
+ * message id, kind, title, details, due date and status, so the agent can
+ * answer "what is due?" without reading the mailbox again.
+ */
+export async function toolListItems(
+	env: Env,
+	mailboxId: string,
+	options: {
+		status?: ItemStatus | undefined;
+		due?: ItemDueFilter | undefined;
+		limit?: number | undefined;
+	} = {},
+) {
+	const { items, totalCount } = await mailboxItemsStub(env, mailboxId).listItems(
+		{
+			status: options.status,
+			due: options.due,
+			limit: options.limit,
+			page: 1,
+		},
+	);
+	return { items, totalCount };
 }
 
 // ── send_reply ─────────────────────────────────────────────────────

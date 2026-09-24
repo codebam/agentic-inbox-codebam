@@ -4,6 +4,7 @@
 
 import type { EmailViewMode } from "shared/email-view";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
+import ItemsCard from "~/components/email-panel/ItemsCard";
 import MessageBody from "~/components/MessageBody";
 import { useRemoteImagesAllowed } from "~/hooks/useRemoteImages";
 import { formatDetailDate } from "~/lib/utils";
@@ -50,6 +51,8 @@ export default function SingleMessageView({
 					</span>
 				</div>
 			</div>
+
+			<ItemsCard email={email} mailboxId={mailboxId} />
 
 			<div className="flex-1 min-h-0">
 				<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} allowRemoteImages={allowRemoteImages} />

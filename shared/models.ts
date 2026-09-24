@@ -24,6 +24,8 @@ export const DEFAULT_MODELS = {
 	promptInjection: "@cf/meta/llama-3.1-8b-instruct-fast",
 	/** Model that classifies inbound mail (spam + categories). */
 	classifier: "typesafe/jev",
+	/** Model that extracts tasks and deadlines from inbound mail. */
+	extractor: "@cf/meta/llama-3.1-8b-instruct-fast",
 } as const;
 
 
@@ -36,6 +38,7 @@ export const MODEL_CONFIG_KEYS: readonly ModelConfigKey[] = [
 	"draftVerify",
 	"promptInjection",
 	"classifier",
+	"extractor",
 ];
 
 
@@ -45,6 +48,7 @@ export const MODEL_CONFIG_LABELS: Record<ModelConfigKey, string> = {
 	draftVerify: "Draft verifier model",
 	promptInjection: "Prompt-injection scanner model",
 	classifier: "Email classifier model",
+	extractor: "Items extractor model",
 };
 
 
@@ -58,6 +62,7 @@ export interface ModelConfig {
 	draftVerify?: string;
 	promptInjection?: string;
 	classifier?: string;
+	extractor?: string;
 }
 
 

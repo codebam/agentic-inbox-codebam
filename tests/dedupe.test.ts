@@ -213,8 +213,10 @@ describe("Inbound dedupe ingest", () => {
 
 		const first = recordingContext();
 		await receiveEmail(inboundEvent(mailbox, "<ingest-dup@example.org>"), env, first.ctx);
-		// The first delivery is stored and schedules the auto-draft.
-		expect(first.pending).toHaveLength(1);
+		// The first delivery is stored and schedules the two receive-path
+		// tasks: the auto-draft and the items extraction (both best-effort,
+		// both off the delivery path).
+		expect(first.pending).toHaveLength(2);
 
 		const second = recordingContext();
 		await receiveEmail(inboundEvent(mailbox, "<ingest-dup@example.org>"), env, second.ctx);

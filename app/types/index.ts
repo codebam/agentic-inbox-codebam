@@ -5,6 +5,7 @@
 import type { CategorizationSettings } from "shared/categories";
 import type { ModelConfig } from "shared/models";
 import type { EmailViewMode } from "shared/email-view";
+import type { ItemKind, ItemStatus, ItemsSettings } from "shared/items";
 
 export interface SignatureSettings {
 	enabled: boolean;
@@ -39,6 +40,8 @@ export interface MailboxSettings {
 	 * to lowercase by the mailbox settings route; see shared/remote-images.ts.
 	 */
 	imageAllowlist?: string[];
+	/** Whether inbound mail is scanned for tasks and deadlines. Defaults to on. */
+	items?: ItemsSettings;
 }
 
 export interface Mailbox {
@@ -271,4 +274,28 @@ export interface Digest {
 	recent: DigestEmailRef[];
 	/** At most 10 most recently fired follow-ups. */
 	reminders: DigestReminderRef[];
+}
+
+
+/**
+ * One extracted task or deadline, as `GET /api/v1/mailboxes/:mailboxId/items`
+ * and `GET .../emails/:emailId/items` return it.
+ *
+ * Rows are metadata only: the extractor stores a short title and optional
+ * details, never the message body. `email_id` names the message the item came
+ * from (the Tasks page links to it, the message panel filters by it), `due_at`
+ * is the ISO 8601 UTC instant the message stated or null, and `status` is
+ * open | done | dismissed.
+ */
+export interface ExtractedItem {
+	id: string;
+	email_id: string;
+	thread_id: string | null;
+	kind: ItemKind;
+	title: string;
+	details: string | null;
+	due_at: string | null;
+	status: ItemStatus;
+	created_at: string;
+	updated_at: string;
 }
