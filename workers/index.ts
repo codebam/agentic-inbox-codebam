@@ -187,7 +187,7 @@ app.get("/api/v1/categorization", async (c) => {
 });
 
 app.put("/api/v1/categorization", async (c) => {
-	const body = await c.req.json().catch(() => null);
+	const body = await c.req.json<unknown>().catch(() => null);
 	if (!body || typeof body !== "object") {
 		return c.json({ error: "Invalid categorization settings" }, 400);
 	}
@@ -201,7 +201,7 @@ app.get("/api/v1/models", async (c) => {
 });
 
 app.put("/api/v1/models", async (c) => {
-	const body = await c.req.json().catch(() => null);
+	const body = await c.req.json<unknown>().catch(() => null);
 	if (!body || typeof body !== "object") {
 		return c.json({ error: "Invalid model settings" }, 400);
 	}
@@ -219,7 +219,7 @@ app.get("/api/v1/email-view", async (c) => {
 });
 
 app.put("/api/v1/email-view", async (c) => {
-	const body = await c.req.json().catch(() => null);
+	const body = await c.req.json<unknown>().catch(() => null);
 	if (!body || typeof body !== "object") {
 		return c.json({ error: "Invalid email view settings" }, 400);
 	}
@@ -262,15 +262,15 @@ app.post("/api/v1/mailboxes", async (c) => {
 });
 
 app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
-	const mailboxId = c.req.param("mailboxId")!;
+	const mailboxId = c.req.param("mailboxId");
 	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 	if (!obj) return c.json({ error: "Not found" }, 404);
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
-	const mailboxId = c.req.param("mailboxId")!;
-	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
+	const mailboxId = c.req.param("mailboxId");
+	const { settings } = await c.req.json<{ settings?: Record<string, unknown> }>();
 	if (!settings || typeof settings !== "object") {
 		return c.json({ error: "settings must be an object" }, 400);
 	}
@@ -300,7 +300,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
-	const mailboxId = c.req.param("mailboxId")!;
+	const mailboxId = c.req.param("mailboxId");
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
@@ -321,7 +321,7 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
  * UI can show exactly what the endpoint said.
  */
 app.post("/api/v1/mailboxes/:mailboxId/webhook/test", async (c) => {
-	const mailboxId = c.req.param("mailboxId")!;
+	const mailboxId = c.req.param("mailboxId");
 	const body = (await c.req.json().catch(() => ({}))) as { url?: unknown; secret?: unknown };
 	const settings = await readMailboxSettings(c.env, mailboxId);
 
@@ -389,7 +389,7 @@ app.get("/api/v1/all-emails", async (c) => {
 	const mailboxes = await listMailboxes(c.env.BUCKET);
 	const stubs = mailboxes.map(({ id }) => ({
 		id,
-		stub: c.env.MAILBOX.get(c.env.MAILBOX.idFromName(id)) as DurableObjectStub<MailboxDO>,
+		stub: c.env.MAILBOX.get(c.env.MAILBOX.idFromName(id)),
 	}));
 
 	// Count first so we can clamp the requested global page and size each
@@ -606,7 +606,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 });
 
 app.put("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
-	const { read, starred } = (await c.req.json()) as { read?: boolean; starred?: boolean };
+	const { read, starred } = await c.req.json<{ read?: boolean; starred?: boolean }>();
 	const email = await c.var.mailboxStub.updateEmail(c.req.param("id")!, { read, starred });
 	return email ? c.json(email) : c.json({ error: "Email not found" }, 404);
 });
@@ -638,7 +638,7 @@ app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) => {
-	const { folderId } = (await c.req.json()) as { folderId: string };
+	const { folderId } = await c.req.json<{ folderId: string }>();
 	const success = await c.var.mailboxStub.moveEmail(c.req.param("id")!, folderId);
 	return success ? c.json({ status: "moved" }) : c.json({ error: "Folder not found" }, 400);
 });
@@ -765,7 +765,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/forward", handleForwardEmail);
 app.get("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => c.json(await c.var.mailboxStub.getFolders()));
 
 app.post("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => {
-	const { name } = (await c.req.json()) as { name: string };
+	const { name } = await c.req.json<{ name: string }>();
 	const slug = slugify(name);
 	if (!slug) return c.json({ error: "Folder name must contain alphanumeric characters" }, 400);
 	const f = await c.var.mailboxStub.createFolder(slug, name);
@@ -773,7 +773,7 @@ app.post("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => {
 });
 
 app.put("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => {
-	const { name } = (await c.req.json()) as { name: string };
+	const { name } = await c.req.json<{ name: string }>();
 	const f = await c.var.mailboxStub.updateFolder(c.req.param("id")!, name);
 	return f ? c.json(f) : c.json({ error: "Folder not found" }, 404);
 });
@@ -992,6 +992,8 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	if (!obj) return c.json({ error: "Attachment file not found" }, 404);
 	const headers = new Headers();
 	headers.set("Content-Type", attachment.mimetype);
+	// Control characters are exactly what has to go from a header value.
+	// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
 	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");
 	headers.set("Content-Disposition", `attachment; filename="${sanitized}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
 	return new Response(obj.body, { headers });
@@ -1001,7 +1003,10 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 
 const MAX_EMAIL_SIZE = 25 * 1024 * 1024;
 
-async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
+async function streamToArrayBuffer(
+	stream: ReadableStream<Uint8Array>,
+	streamSize: number,
+): Promise<Uint8Array> {
 	if (streamSize > MAX_EMAIL_SIZE) throw new Error(`Email too large: ${streamSize} bytes exceeds ${MAX_EMAIL_SIZE} byte limit`);
 	if (streamSize <= 0) throw new Error(`Invalid stream size: ${streamSize}`);
 	const result = new Uint8Array(streamSize);
@@ -1010,7 +1015,11 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	while (true) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		if (bytesRead + value.length > streamSize) { reader.cancel(); throw new Error(`Stream exceeds declared size`); }
+		if (bytesRead + value.length > streamSize) {
+			// Best effort: the read is being abandoned, so the cancel is not awaited.
+			void reader.cancel();
+			throw new Error(`Stream exceeds declared size`);
+		}
 		result.set(value, bytesRead);
 		bytesRead += value.length;
 	}
@@ -1120,7 +1129,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		const localPart = mailboxId.split("@")[0] || mailboxId;
 		mailboxSettings = defaultMailboxSettings(
 			isCatchAllAddress(mailboxId) ? "Catch-all" : localPart,
-		) as unknown as Record<string, unknown>;
+		);
 		await env.BUCKET.put(mailboxKey, JSON.stringify(mailboxSettings));
 		console.log(`Catch-all mailbox created: ${mailboxId}`);
 	} else {
@@ -1189,7 +1198,9 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	if (parsedEmail.attachments) {
 		for (const att of parsedEmail.attachments) {
 			const attId = crypto.randomUUID();
-			const filename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
+			// Control characters and path separators are exactly what has to go.
+			// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
+			const filename = (att.filename || "untitled").replace(/[/\\:*?"<>|\x00-\x1f]/g, "_");
 			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, att.content);
 			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
 				size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
