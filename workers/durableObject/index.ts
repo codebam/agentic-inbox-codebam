@@ -172,7 +172,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Email CRUD (Drizzle) ───────────────────────────────────────
 
-	async getEmails(options: GetEmailsOptions = {}) {
+	getEmails(options: GetEmailsOptions = {}) {
 		const {
 			folder,
 			thread_id,
@@ -186,9 +186,7 @@ export class MailboxDO extends DurableObject<Env> {
 		// Cap pagination limit to prevent unbounded queries
 		const limit = Math.min(Math.max(rawLimit, 1), 100);
 
-		const sortColumn: SortColumn = ALLOWED_SORT_COLUMNS.includes(
-			rawSortColumn as SortColumn,
-		)
+		const sortColumn: SortColumn = ALLOWED_SORT_COLUMNS.includes(rawSortColumn)
 			? rawSortColumn
 			: "date";
 
@@ -253,7 +251,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Used by the bulk spam-delete tool so classification-only rows are not
 	 * missed when a mailbox had `moveToSpam` disabled.
 	 */
-	async getSpamEmails(options: { page?: number; limit?: number } = {}) {
+	getSpamEmails(options: { page?: number; limit?: number } = {}) {
 		const limit = Math.min(Math.max(options.limit ?? 100, 1), 100);
 		const offset = ((options.page ?? 1) - 1) * limit;
 		return [
@@ -281,7 +279,7 @@ export class MailboxDO extends DurableObject<Env> {
 		}[];
 	}
 
-	async countEmails(
+	countEmails(
 		options: {
 			folder?: string | undefined;
 			thread_id?: string | undefined;
@@ -323,7 +321,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Threaded queries (raw SQL — too complex for Drizzle's builder) ──
 
-	async getThreadedEmails(options: GetEmailsOptions = {}) {
+	getThreadedEmails(options: GetEmailsOptions = {}) {
 		const {
 			folder,
 			category,
@@ -397,8 +395,8 @@ export class MailboxDO extends DurableObject<Env> {
 				...categoryArgs
 			);
 
-			const rows = [...result];
-			return rows.map((row: any) => ({
+			const rows = [...result] as unknown as ThreadedEmailRow[];
+			return rows.map((row) => ({
 				...row,
 				read: !!row.read,
 				starred: !!row.starred,
@@ -494,8 +492,8 @@ export class MailboxDO extends DurableObject<Env> {
 			...categoryArgs
 		);
 
-		const rows = [...result];
-		return rows.map((row: any) => ({
+		const rows = [...result] as unknown as ThreadedEmailRow[];
+		return rows.map((row) => ({
 			...row,
 			read: !!row.read,
 			starred: !!row.starred,
@@ -511,7 +509,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Count threaded conversations in a folder (for pagination).
 	 * Returns the number of conversation groups, not individual emails.
 	 */
-	async countThreadedEmails(folder: string, category?: string) {
+	countThreadedEmails(folder: string, category?: string) {
 		const isDraftFolder = folder === Folders.DRAFT;
 		const categoryClause = category ? "AND category = ?2" : "";
 		const countArgs: (string | number)[] = category
@@ -564,7 +562,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Single email operations (Drizzle) ──────────────────────────
 
-	async getEmail(id: string) {
+	getEmail(id: string) {
 		const email = this.db
 			.select()
 			.from(schema.emails)
@@ -592,17 +590,17 @@ export class MailboxDO extends DurableObject<Env> {
 	 * two queries (one for emails, one for attachments) instead of
 	 * N+1 individual getEmail calls.
 	 */
-	async getThreadEmails(threadId: string) {
+	getThreadEmails(threadId: string) {
 		const emailRows = [
 			...this.ctx.storage.sql.exec(
 				`SELECT * FROM emails WHERE thread_id = ?1 ORDER BY date ASC`,
 				threadId,
 			),
-		] as any[];
+		] as unknown as EmailRow[];
 
 		if (emailRows.length === 0) return [];
 
-		const emailIds = emailRows.map((e) => e.id as string);
+		const emailIds = emailRows.map((e) => e.id);
 
 		// Batch-fetch all attachments for the thread in a single query
 		const placeholders = emailIds.map((_, i) => `?${i + 1}`).join(",");
@@ -611,10 +609,10 @@ export class MailboxDO extends DurableObject<Env> {
 				`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
 				...emailIds,
 			),
-		] as any[];
+		] as unknown as AttachmentRow[];
 
 		// Group attachments by email_id
-		const attachmentsByEmail = new Map<string, any[]>();
+		const attachmentsByEmail = new Map<string, AttachmentRow[]>();
 		for (const att of attachmentRows) {
 			const list = attachmentsByEmail.get(att.email_id) || [];
 			list.push(att);
@@ -629,7 +627,7 @@ export class MailboxDO extends DurableObject<Env> {
 		}));
 	}
 
-	async updateEmail(
+	updateEmail(
 		id: string,
 		{ read, starred }: { read?: boolean | undefined; starred?: boolean | undefined },
 	) {
@@ -654,7 +652,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return this.getEmail(id);
 	}
 
-	async markThreadRead(threadId: string) {
+	markThreadRead(threadId: string) {
 		this.ctx.storage.sql.exec(
 			`UPDATE emails SET read = 1 WHERE thread_id = ? AND read = 0`,
 			threadId,
@@ -662,7 +660,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return { threadId, markedRead: true };
 	}
 
-	async deleteEmail(id: string) {
+	deleteEmail(id: string) {
 		const email = this.db
 			.select({ id: schema.emails.id })
 			.from(schema.emails)
@@ -688,7 +686,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return emailAttachments;
 	}
 
-	async getAttachment(id: string) {
+	getAttachment(id: string) {
 		return (
 			this.db
 				.select()
@@ -700,7 +698,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Folders (Drizzle) ──────────────────────────────────────────
 
-	async getFolders() {
+	getFolders() {
 		const result = this.db
 			.select({
 				id: schema.folders.id,
@@ -714,7 +712,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return result;
 	}
 
-	async createFolder(id: string, name: string, is_deletable: number = 1) {
+	createFolder(id: string, name: string, is_deletable: number = 1) {
 		try {
 			const result = this.db
 				.insert(schema.folders)
@@ -730,7 +728,7 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 	}
 
-	async updateFolder(id: string, name: string) {
+	updateFolder(id: string, name: string) {
 		const result = this.db
 			.update(schema.folders)
 			.set({ name })
@@ -740,7 +738,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return result;
 	}
 
-	async deleteFolder(id: string) {
+	deleteFolder(id: string) {
 		const folder = this.db
 			.select({ is_deletable: schema.folders.is_deletable })
 			.from(schema.folders)
@@ -759,7 +757,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return true;
 	}
 
-	async moveEmail(id: string, folderId: string) {
+	moveEmail(id: string, folderId: string) {
 		const folder = this.db
 			.select({ id: schema.folders.id })
 			.from(schema.folders)
@@ -787,7 +785,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * conversation, so toggling only the latest message would leave the row's
 	 * unread badge out of sync.
 	 */
-	async bulkUpdateEmails(
+	bulkUpdateEmails(
 		ids: string[],
 		{ read, starred }: { read?: boolean; starred?: boolean },
 		threadIds: string[] = [],
@@ -816,7 +814,7 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	/** Move multiple emails into an existing folder. Returns false when the folder is unknown. */
-	async bulkMoveEmails(ids: string[], folderId: string) {
+	bulkMoveEmails(ids: string[], folderId: string) {
 		if (ids.length === 0) return false;
 
 		const folder = this.db
@@ -841,7 +839,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * the Worker can remove the corresponding R2 objects (attachments rows
 	 * cascade away with the email).
 	 */
-	async bulkDeleteEmails(ids: string[]) {
+	bulkDeleteEmails(ids: string[]) {
 		if (ids.length === 0) return [];
 
 		const emailAttachments = this.db
@@ -873,7 +871,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * and the ids that were already in Trash — the partition the API needs to
 	 * apply the per-message "delete from Trash = delete forever" rule.
 	 */
-	async trashEmails(ids: string[]) {
+	trashEmails(ids: string[]) {
 		if (ids.length === 0) return { trashed: [], alreadyInTrash: [] };
 
 
@@ -911,7 +909,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 	/** Move messages from Trash back to the Inbox. Returns the ids that moved. */
-	async restoreEmails(ids: string[]) {
+	restoreEmails(ids: string[]) {
 		if (ids.length === 0) return [];
 
 
@@ -937,7 +935,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * belonged to them, so the Worker can remove the corresponding R2 objects
 	 * (attachment rows cascade away with their email).
 	 */
-	async emptyTrash() {
+	emptyTrash() {
 		const trashRows = this.db
 			.select({ id: schema.emails.id })
 			.from(schema.emails)
@@ -981,7 +979,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * a fresh stamp. Mirrors emptyTrash: returns the number of purged messages
 	 * plus their attachment rows so the Worker can delete the R2 objects.
 	 */
-	async purgeTrashedBefore(cutoffIso: string) {
+	purgeTrashedBefore(cutoffIso: string) {
 		const expiredRows = this.db
 			.select({ id: schema.emails.id })
 			.from(schema.emails)
@@ -1076,7 +1074,7 @@ export class MailboxDO extends DurableObject<Env> {
 		return { conditions, params };
 	}
 
-	async searchEmails(options: SearchFilterOptions & { page?: number; limit?: number }) {
+	searchEmails(options: SearchFilterOptions & { page?: number; limit?: number }) {
 		const { page = 1, limit: rawLimit = 25 } = options;
 		const limit = Math.min(Math.max(rawLimit, 1), 100);
 		const { conditions, params } = this.#buildSearchConditions(options, "e");
@@ -1097,7 +1095,7 @@ export class MailboxDO extends DurableObject<Env> {
 		params.push(limit, offset);
 
 		const result = this.ctx.storage.sql.exec(query, ...params);
-		return [...result].map((row: any) => ({
+		return ([...result] as unknown as SearchEmailRow[]).map((row) => ({
 			...row,
 			read: !!row.read,
 			starred: !!row.starred,
@@ -1107,7 +1105,7 @@ export class MailboxDO extends DurableObject<Env> {
 	/**
 	 * Count total search results matching the given filters (for pagination).
 	 */
-	async countSearchResults(options: SearchFilterOptions) {
+	countSearchResults(options: SearchFilterOptions) {
 		const { conditions, params } = this.#buildSearchConditions(options);
 
 		const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -1121,7 +1119,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Threading helpers (raw SQL) ────────────────────────────────
 
-	async findThreadBySubject(subject: string, senderAddress?: string): Promise<string | null> {
+	findThreadBySubject(subject: string, senderAddress?: string): string | null {
 		const normalized = subject
 			.replace(/^(?:(?:re|fwd?|fw|aw|wg|r[eé]f|sv)\s*:\s*)+/i, "")
 			.trim()
@@ -1129,8 +1127,9 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (!normalized) return null;
 
-		const result = this.ctx.storage.sql.exec(
-			`SELECT thread_id, subject,
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT thread_id, subject,
 			        GROUP_CONCAT(DISTINCT LOWER(sender)) as senders,
 			        GROUP_CONCAT(DISTINCT LOWER(recipient)) as recipients
 			 FROM emails
@@ -1139,28 +1138,29 @@ export class MailboxDO extends DurableObject<Env> {
 			   AND date >= datetime('now', '-7 days')
 			 GROUP BY thread_id
 			 ORDER BY MAX(date) DESC
-			 LIMIT 50`,
-		);
+				 LIMIT 50`,
+			),
+		] as unknown as ThreadCandidateRow[];
 
 		const normalizedSender = senderAddress?.toLowerCase().trim();
 
-		for (const row of result) {
-			const rowSubject = String((row as any).subject || "")
+		for (const row of rows) {
+			const rowSubject = (row.subject || "")
 				.replace(/^(?:(?:re|fwd?|fw|aw|wg|r[eé]f|sv)\s*:\s*)+/i, "")
 				.trim()
 				.toLowerCase();
 			if (rowSubject !== normalized) continue;
 
 			if (normalizedSender) {
-				const threadSenders = String((row as any).senders || "");
-				const threadRecipients = String((row as any).recipients || "");
+				const threadSenders = row.senders || "";
+				const threadRecipients = row.recipients || "";
 				const allParticipants = `${threadSenders},${threadRecipients}`;
 				if (!allParticipants.includes(normalizedSender)) {
 					continue;
 				}
 			}
 
-			return String((row as any).thread_id);
+			return row.thread_id;
 		}
 		return null;
 	}
@@ -1172,7 +1172,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Limits: 20 emails per hour, 100 per day per mailbox.
 	 * Returns null if under limit, or an error message string if exceeded.
 	 */
-	async checkSendRateLimit(): Promise<string | null> {
+	checkSendRateLimit(): string | null {
 		const hourRow = [...this.ctx.storage.sql.exec(
 			`SELECT COUNT(*) as cnt FROM emails
 			 WHERE folder_id = ?1
@@ -1200,11 +1200,11 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Email creation (Drizzle) ───────────────────────────────────
 
-	async createEmail(
+	createEmail(
 		folder: string,
 		email: EmailData,
 		attachments: AttachmentData[],
-	): Promise<CreateEmailResult> {
+	): CreateEmailResult {
 		// Resolve folder name or ID to the actual folder ID.
 		const folderRow = this.db
 			.select({ id: schema.folders.id })
@@ -1284,7 +1284,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * then creation order, then id. This is exactly the order `runRules`
 	 * applies them in, so the API/UI list matches inbound behaviour.
 	 */
-	async listRules(): Promise<MailRule[]> {
+	listRules(): MailRule[] {
 		const rows = [
 			...this.ctx.storage.sql.exec(
 				`SELECT r.id, r.name, r.enabled, r.priority, r.match, r.actions, r.created_at,
@@ -1304,7 +1304,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Throws RuleValidationError for unusable rules (missing name, unknown
 	 * folder, no conditions, no actions) so callers can answer with a 400.
 	 */
-	async createRule(draft: RuleDraft): Promise<MailRule> {
+	createRule(draft: RuleDraft): MailRule {
 		const id = crypto.randomUUID();
 		const createdAt = new Date().toISOString();
 		const name = this.#normalizeRuleName(draft.name);
@@ -1346,7 +1346,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Patch a rule. Fields left out keep their stored value; returns the
 	 * updated rule, or null when the id is unknown.
 	 */
-	async updateRule(id: string, patch: RulePatch): Promise<MailRule | null> {
+	updateRule(id: string, patch: RulePatch): MailRule | null {
 		const existing = this.#getRule(id);
 		if (!existing) return null;
 
@@ -1386,7 +1386,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 	/** Delete a rule. Returns false when the id is unknown. */
-	async deleteRule(id: string): Promise<boolean> {
+	deleteRule(id: string): boolean {
 		if (!this.#getRule(id)) return false;
 		this.ctx.storage.sql.exec(`DELETE FROM rules WHERE id = ?1`, id);
 		return true;
@@ -1399,8 +1399,8 @@ export class MailboxDO extends DurableObject<Env> {
 	 * list keep their relative order after the listed ones. Returns the
 	 * re-ordered list.
 	 */
-	async reorderRules(orderedIds: string[]): Promise<MailRule[]> {
-		const current = await this.listRules();
+	reorderRules(orderedIds: string[]): MailRule[] {
+		const current = this.listRules();
 		const byId = new Map(current.map((rule) => [rule.id, rule]));
 		const seen = new Set<string>();
 		const ordered: MailRule[] = [];
@@ -1440,10 +1440,10 @@ export class MailboxDO extends DurableObject<Env> {
 	 * `enabled` is ignored on purpose: a preview of a paused rule still shows
 	 * what it would do once enabled.
 	 */
-	async previewRule(
+	previewRule(
 		draft: RulePreviewDraft,
 		limit = RULE_PREVIEW_MAX_MATCHES,
-	): Promise<RulePreviewResult> {
+	): RulePreviewResult {
 		const match = normalizeRuleMatch(draft?.match);
 		if (!hasActiveConditions(match.conditions)) {
 			throw new RuleValidationError("A rule needs at least one match condition");
@@ -1509,7 +1509,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * inbound message. Ids that no longer exist are ignored, so a rule deleted
 	 * while mail is in flight can never break delivery.
 	 */
-	async recordRuleFirings(ruleIds: readonly string[]): Promise<void> {
+	recordRuleFirings(ruleIds: readonly string[]): void {
 		const ids = [
 			...new Set(
 				(ruleIds ?? []).filter(
@@ -1617,7 +1617,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * settings card lists entries in the order they were added. Rows whose
 	 * stored policy is not a known value are ignored rather than trusted.
 	 */
-	async listSenderPolicy(): Promise<SenderPolicyEntry[]> {
+	listSenderPolicy(): SenderPolicyEntry[] {
 		const rows = [
 			...this.ctx.storage.sql.exec(
 				`SELECT address, policy, created_at
@@ -1632,7 +1632,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 	/** One entry by address (trimmed + lowercased), or null when absent. */
-	async getSenderPolicy(address: string): Promise<SenderPolicyEntry | null> {
+	getSenderPolicy(address: string): SenderPolicyEntry | null {
 		const normalized = normalizeSenderAddress(address);
 		if (!normalized) return null;
 		const rows = [
@@ -1653,6 +1653,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * the list order stays stable. Throws SenderPolicyValidationError for an
 	 * empty address or an unknown policy so routes can answer with a 400.
 	 */
+	// eslint-disable-next-line @typescript-eslint/require-await -- callers of this method await it for a rejected promise on invalid input.
 	async setSenderPolicy(
 		address: string,
 		policy: SenderPolicy,
@@ -1666,7 +1667,7 @@ export class MailboxDO extends DurableObject<Env> {
 				`Unknown sender policy: ${String(policy)}`,
 			);
 		}
-		const existing = await this.getSenderPolicy(normalized);
+		const existing = this.getSenderPolicy(normalized);
 		const createdAt = existing?.created_at ?? new Date().toISOString();
 		this.ctx.storage.sql.exec(
 			`INSERT INTO sender_policy (address, policy, created_at)
@@ -1681,10 +1682,10 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 	/** Remove an entry. Returns false when the address has no entry. */
-	async removeSenderPolicy(address: string): Promise<boolean> {
+	removeSenderPolicy(address: string): boolean {
 		const normalized = normalizeSenderAddress(address);
 		if (!normalized) return false;
-		if (!(await this.getSenderPolicy(normalized))) return false;
+		if (!this.getSenderPolicy(normalized)) return false;
 		this.ctx.storage.sql.exec(
 			`DELETE FROM sender_policy WHERE address = ?1`,
 			normalized,
@@ -1709,7 +1710,7 @@ export class MailboxDO extends DurableObject<Env> {
 		id: string,
 		policy: SenderPolicy,
 	): Promise<SenderPolicyEntry | null> {
-		const email = await this.getEmail(id);
+		const email = this.getEmail(id);
 		if (!email) return null;
 		const entry = await this.setSenderPolicy(email.sender ?? "", policy);
 		if (policy === "allow") {
@@ -1789,6 +1790,76 @@ export class MailboxDO extends DurableObject<Env> {
 		if (!resolved) throw new RuleValidationError(`Unknown folder: ${folder}`);
 		return resolved;
 	}
+}
+
+
+/** A raw `emails` row, exactly as `SELECT *` returns it. */
+type EmailRow = typeof schema.emails.$inferSelect;
+
+
+/** A raw `attachments` row, exactly as `SELECT *` returns it. */
+type AttachmentRow = typeof schema.attachments.$inferSelect;
+
+
+/**
+ * Raw row shape for the threaded list queries: the latest message of each
+ * conversation plus the counts aggregated over it. SQLite returns the 0/1
+ * flags as numbers. The draft query selects neither `needs_reply` nor
+ * `has_draft`.
+ */
+interface ThreadedEmailRow {
+	id: string;
+	subject: string | null;
+	sender: string | null;
+	recipient: string | null;
+	envelope_recipient: string | null;
+	date: string | null;
+	read: number | null;
+	starred: number | null;
+	thread_id: string | null;
+	folder_id: string;
+	in_reply_to: string | null;
+	email_references: string | null;
+	category: string | null;
+	category_confidence: number | null;
+	snippet: string | null;
+	thread_count: number | null;
+	thread_unread_count: number | null;
+	participants: string | null;
+	needs_reply?: number | null;
+	has_draft?: number | null;
+}
+
+
+/** Raw row shape for a search result: the listed email columns plus folder name. */
+interface SearchEmailRow {
+	id: string;
+	subject: string | null;
+	sender: string | null;
+	recipient: string | null;
+	envelope_recipient: string | null;
+	cc: string | null;
+	bcc: string | null;
+	date: string | null;
+	read: number | null;
+	starred: number | null;
+	in_reply_to: string | null;
+	email_references: string | null;
+	thread_id: string | null;
+	folder_id: string;
+	category: string | null;
+	category_confidence: number | null;
+	snippet: string | null;
+	folder_name: string | null;
+}
+
+
+/** Raw row shape for a thread candidate (grouped by thread_id). */
+interface ThreadCandidateRow {
+	thread_id: string;
+	subject: string | null;
+	senders: string | null;
+	recipients: string | null;
 }
 
 
