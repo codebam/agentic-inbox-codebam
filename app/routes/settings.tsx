@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
+import WebhookCard from "~/components/WebhookCard";
 import {
 	defaultCategorizationSettings,
 	normalizeCategorizationSettings,
@@ -22,6 +23,7 @@ import {
 	normalizeSignatureSettings,
 	type SignatureSettings,
 } from "shared/signature";
+import { validateWebhookUrl } from "shared/webhook";
 import { getSignatureBlock } from "~/lib/utils";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import { useGlobalModels } from "~/queries/models";
@@ -47,6 +49,7 @@ export default function SettingsRoute() {
 		text: "",
 	});
 	const [models, setModels] = useState<ModelConfig>({});
+	const [webhook, setWebhook] = useState({ url: "", secret: "" });
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
@@ -63,10 +66,15 @@ export default function SettingsRoute() {
 				},
 			);
 			setModels(mailbox.settings?.models ?? {});
+			setWebhook({
+				url: mailbox.settings?.notifyWebhookUrl ?? "",
+				secret: mailbox.settings?.notifyWebhookSecret ?? "",
+			});
 		}
 	}, [mailbox]);
 
 	const modelErrors = modelConfigErrors({ models });
+	const webhookUrlError = webhook.url.trim() ? validateWebhookUrl(webhook.url) : null;
 
 
 	const handleSave = async () => {
@@ -78,6 +86,10 @@ export default function SettingsRoute() {
 			});
 			return;
 		}
+		if (webhookUrlError) {
+			toastManager.add({ title: webhookUrlError, variant: "error" });
+			return;
+		}
 		setIsSaving(true);
 		const settings = {
 			...mailbox.settings,
@@ -86,6 +98,8 @@ export default function SettingsRoute() {
 			categorization: normalizeCategorizationSettings(categorization),
 			signature: normalizeSignatureSettings(signature),
 			models: normalizeModelConfig(models),
+			notifyWebhookUrl: webhook.url.trim() || undefined,
+			notifyWebhookSecret: webhook.secret.trim() || undefined,
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -255,6 +269,14 @@ export default function SettingsRoute() {
 					models={models}
 					onChange={setModels}
 					inherited={globalModels?.models}
+				/>
+
+
+				<WebhookCard
+					mailboxId={mailboxId!}
+					url={webhook.url}
+					secret={webhook.secret}
+					onChange={setWebhook}
 				/>
 
 
