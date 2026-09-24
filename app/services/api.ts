@@ -7,6 +7,7 @@ import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
+import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -135,6 +136,11 @@ const api = {
 		put<Mailbox>(`/api/v1/mailboxes/${mailboxId}`, { settings }),
 	deleteMailbox: (mailboxId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
+
+	// Outbound webhook notifications (notification only — never sends mail)
+	/** Send a sample payload to the mailbox webhook and report the upstream result. */
+	testWebhook: (mailboxId: string, body: { url?: string; secret?: string }) =>
+		post<WebhookDeliveryResult>(`/api/v1/mailboxes/${mailboxId}/webhook/test`, body),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

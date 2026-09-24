@@ -25,6 +25,10 @@ export interface MailboxSettings {
 	defaultEmailView?: EmailViewMode | null;
 	/** Days a message may sit in Trash before the retention sweep deletes it; 0 disables. */
 	trashRetentionDays?: number;
+	/** https endpoint notified for every new non-spam message; empty disables. */
+	notifyWebhookUrl?: string;
+	/** Optional signing secret for the X-Agentic-Inbox-Signature header. */
+	notifyWebhookSecret?: string;
 }
 
 export interface Mailbox {

@@ -56,8 +56,15 @@ import { getGlobalModels, putGlobalModels } from "./lib/global-models";
 import { getGlobalEmailView, putGlobalEmailView } from "./lib/global-email-view";
 import {
 	loadMailboxSignature,
+	readMailboxSettings,
 	resolveMailboxModels,
 } from "./lib/mailbox-settings";
+import {
+	normalizeWebhookSecret,
+	normalizeWebhookUrl,
+	validateWebhookUrl,
+} from "../shared/webhook";
+import { notifyNewEmail } from "./lib/webhook";
 import {
 	classifyIncomingEmail,
 	serializeClassification,
@@ -247,6 +254,10 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	}
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
+	// An unusable webhook URL is rejected outright: notification settings are
+	// only stored once the endpoint is known to be deliverable (absolute https).
+	const webhookUrlError = validateWebhookUrl(settings.notifyWebhookUrl);
+	if (webhookUrlError) return c.json({ error: webhookUrlError }, 400);
 	// Normalize server-side so an edited stale client cannot store malformed
 	// categorization, model or Trash retention settings that would break
 	// inbound classification, AI calls or the retention sweep.
@@ -258,6 +269,8 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		// Missing or unusable values fall back to the 30-day default; 0 keeps
 		// trashed mail until someone empties Trash by hand.
 		trashRetentionDays: normalizeTrashRetentionDays(settings.trashRetentionDays),
+		notifyWebhookUrl: normalizeWebhookUrl(settings.notifyWebhookUrl),
+		notifyWebhookSecret: normalizeWebhookSecret(settings.notifyWebhookSecret),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
@@ -270,6 +283,47 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
 	return c.body(null, 204);
 });
+
+
+// -- Outbound webhook (notification only) ----------------------------
+
+
+/**
+ * Send a sample notification to a mailbox webhook so the settings UI can
+ * verify an endpoint. The caller may pass the URL/secret currently typed in
+ * the form; when omitted, the stored settings are used.
+ *
+ * Notification only — this route never sends mail. A failed delivery is
+ * reported in the body (upstream status + error) rather than thrown, so the
+ * UI can show exactly what the endpoint said.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/webhook/test", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const body = (await c.req.json().catch(() => ({}))) as { url?: unknown; secret?: unknown };
+	const settings = await readMailboxSettings(c.env, mailboxId);
+
+	const url = normalizeWebhookUrl(body.url !== undefined ? body.url : settings.notifyWebhookUrl);
+	if (!url) return c.json({ error: "No webhook URL configured" }, 400);
+	const urlError = validateWebhookUrl(url);
+	if (urlError) return c.json({ error: urlError }, 400);
+
+	const secret = body.secret !== undefined
+		? normalizeWebhookSecret(body.secret)
+		: normalizeWebhookSecret(settings.notifyWebhookSecret);
+
+	const result = await notifyNewEmail(c.env, mailboxId, {
+		id: `webhook-test-${crypto.randomUUID()}`,
+		subject: "Agentic Inbox webhook test",
+		sender: "webhook-test@example.com",
+		recipient: mailboxId,
+		date: new Date().toISOString(),
+		folder: Folders.INBOX,
+		category: null,
+		body: "This is a sample notification sent from the Agentic Inbox settings page.",
+	}, { ...settings, notifyWebhookUrl: url, notifyWebhookSecret: secret });
+	return c.json({ ok: result.ok, status: result.status, error: result.error });
+});
+
 
 // -- All Accounts (aggregated across mailboxes) ---------------------
 
@@ -1124,6 +1178,26 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
 		})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	}
+
+	// Outbound webhook notification for this arrival — notification only,
+	// never a send path. Non-spam only, matching the auto-draft rule above,
+	// and a failing webhook can never affect delivery: notifyNewEmail logs and
+	// swallows every error (see workers/lib/webhook.ts).
+	// Only schedule when a webhook is actually configured: notifyNewEmail is a
+	// no-op without a URL, and an unconditional waitUntil would leave a
+	// pointless pending promise on every delivery.
+	if (!isSpam && !ruleMarkedSpam && normalizeWebhookUrl(mailboxSettings.notifyWebhookUrl)) {
+		ctx.waitUntil(notifyNewEmail(env, mailboxId, {
+			id: messageId,
+			subject: parsedEmail.subject || "",
+			sender: (parsedEmail.from?.address || "").toLowerCase(),
+			recipient: allRecipients.join(", "),
+			date: new Date().toISOString(), // receive time, like the stored row
+			folder: destinationFolder,
+			category: ruleResult.mutation.category ?? classification?.category ?? null,
+			body: parsedEmail.html || parsedEmail.text || "",
+		}, mailboxSettings));
 	}
 }
 

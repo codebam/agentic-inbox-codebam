@@ -14,6 +14,7 @@ import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
 import EmailViewCard from "~/components/EmailViewCard";
+import WebhookCard from "~/components/WebhookCard";
 import {
 	defaultCategorizationSettings,
 	normalizeCategorizationSettings,
@@ -38,6 +39,7 @@ import {
 	MAX_TRASH_RETENTION_DAYS,
 	normalizeTrashRetentionDays,
 } from "shared/trash-retention";
+import { validateWebhookUrl } from "shared/webhook";
 import { getSignatureBlock } from "~/lib/utils";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import { useGlobalModels } from "~/queries/models";
@@ -71,6 +73,7 @@ export default function SettingsRoute() {
 	const [trashRetentionDays, setTrashRetentionDays] = useState(
 		String(DEFAULT_TRASH_RETENTION_DAYS),
 	);
+	const [webhook, setWebhook] = useState({ url: "", secret: "" });
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
@@ -91,10 +94,15 @@ export default function SettingsRoute() {
 			setTrashRetentionDays(
 				String(normalizeTrashRetentionDays(mailbox.settings?.trashRetentionDays)),
 			);
+			setWebhook({
+				url: mailbox.settings?.notifyWebhookUrl ?? "",
+				secret: mailbox.settings?.notifyWebhookSecret ?? "",
+			});
 		}
 	}, [mailbox]);
 
 	const modelErrors = modelConfigErrors({ models });
+	const webhookUrlError = webhook.url.trim() ? validateWebhookUrl(webhook.url) : null;
 
 
 	const handleSave = async () => {
@@ -104,6 +112,10 @@ export default function SettingsRoute() {
 				title: "Fix the highlighted model IDs before saving.",
 				variant: "error",
 			});
+			return;
+		}
+		if (webhookUrlError) {
+			toastManager.add({ title: webhookUrlError, variant: "error" });
 			return;
 		}
 		setIsSaving(true);
@@ -116,6 +128,8 @@ export default function SettingsRoute() {
 			models: normalizeModelConfig(models),
 			defaultEmailView: normalizeEmailViewMode(defaultEmailView) ?? null,
 			trashRetentionDays: normalizeTrashRetentionDays(trashRetentionDays),
+			notifyWebhookUrl: webhook.url.trim() || undefined,
+			notifyWebhookSecret: webhook.secret.trim() || undefined,
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -324,6 +338,14 @@ export default function SettingsRoute() {
 					value={defaultEmailView}
 					onChange={setDefaultEmailView}
 					inherited={resolveDefaultEmailView(undefined, globalEmailView)}
+				/>
+
+
+				<WebhookCard
+					mailboxId={mailboxId!}
+					url={webhook.url}
+					secret={webhook.secret}
+					onChange={setWebhook}
 				/>
 
 

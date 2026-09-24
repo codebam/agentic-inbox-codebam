@@ -28,6 +28,8 @@ export function defaultMailboxSettings(name: string) {
 		defaultEmailView: null,
 		// Automatic Trash cleanup after 30 days; 0 disables it.
 		trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
+		notifyWebhookUrl: "",
+		notifyWebhookSecret: "",
 	};
 }
 
