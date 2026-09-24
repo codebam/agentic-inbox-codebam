@@ -84,6 +84,20 @@ describe("toolSnoozeEmail", () => {
 		expect(at).toBeGreaterThanOrEqual(before + 30 * 60_000);
 		expect(at).toBeLessThanOrEqual(after + 30 * 60_000);
 		expect(row.folder_id).toBe(Folders.SNOOZED);
+
+		// Every accepted unit resolves: h, d and w (m is covered above).
+		for (const [shorthand, ms] of [
+			["4h", 4 * 3_600_000],
+			["3d", 3 * 86_400_000],
+			["1w", 7 * 86_400_000],
+		] as const) {
+			const start = Date.now();
+			const re = (await toolSnoozeEmail(env, mailbox, "snooze-2", shorthand)) as SnoozeRow;
+			const end = Date.now();
+			const reAt = Date.parse(re.snooze_until ?? "");
+			expect(reAt).toBeGreaterThanOrEqual(start + ms);
+			expect(reAt).toBeLessThanOrEqual(end + ms);
+		}
 	});
 
 	it("rejects malformed shorthand, past instants and unknown ids", async () => {
