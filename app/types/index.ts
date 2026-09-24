@@ -20,6 +20,10 @@ export interface MailboxSettings {
 	categorization?: CategorizationSettings;
 	/** Mailbox-level AI model overrides; blank fields inherit. */
 	models?: ModelConfig;
+	/** https endpoint notified for every new non-spam message; empty disables. */
+	notifyWebhookUrl?: string;
+	/** Optional signing secret for the X-Agentic-Inbox-Signature header. */
+	notifyWebhookSecret?: string;
 }
 
 export interface Mailbox {
