@@ -241,7 +241,10 @@ const api = {
 	// queue fires each one at `sendAt`. A queued send carries no attachments.
 	/** Queue `payload` (the same shape `sendEmail` takes) for `sendAt` (ISO 8601, future only). */
 	scheduleSend: (mailboxId: string, payload: Record<string, unknown>, sendAt: string) =>
-		post<ScheduledSend>(`/api/v1/mailboxes/${mailboxId}/scheduled-sends`, { ...payload, sendAt }),
+		post<ScheduledSend>(`/api/v1/mailboxes/${mailboxId}/scheduled-sends`, {
+			...payload,
+			send_at: sendAt,
+		}),
 	/** Queued and past sends for the mailbox, newest first (bounded page). */
 	listScheduledSends: (mailboxId: string, limit?: number) =>
 		get<ScheduledSendListResponse | ScheduledSend[]>(
@@ -250,10 +253,14 @@ const api = {
 		),
 	/** Cancel a queued send before the queue fires it. */
 	cancelScheduledSend: (mailboxId: string, id: string) =>
-		del<ScheduledSend>(`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}`),
+		del<{ send: ScheduledSend }>(
+			`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}`,
+		),
 	/** Re-queue a failed send. */
 	retryScheduledSend: (mailboxId: string, id: string) =>
-		post<ScheduledSend>(`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}/retry`),
+		post<{ send: ScheduledSend }>(
+			`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}/retry`,
+		),
 
 	// Agent/MCP action audit log. Metadata only — never message bodies.
 	/** Recent agent/MCP actions for the mailbox, newest first (bounded page). */
