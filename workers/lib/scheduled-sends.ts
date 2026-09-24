@@ -83,6 +83,24 @@ export interface ScheduledSendPayload {
 	thread_id?: string;
 }
 
+/**
+ * A candidate send to queue: the stored parameters with every optional field
+ * spelled `| undefined`, so a caller passing the parsed request body does not
+ * need conditional spreads (exactOptionalPropertyTypes).
+ */
+export interface ScheduledSendPayloadInput {
+	to: string | string[];
+	from: string | { email: string; name: string };
+	subject: string;
+	html?: string | undefined;
+	text?: string | undefined;
+	cc?: string | string[] | undefined;
+	bcc?: string | string[] | undefined;
+	in_reply_to?: string | undefined;
+	references?: string[] | undefined;
+	thread_id?: string | undefined;
+}
+
 /** The stored columns of one `scheduled_sends` row, as the table holds them. */
 export interface ScheduledSendDbRow {
 	id: string;
@@ -153,7 +171,7 @@ function recipientCount(value: string | string[]): number {
  * queued at all.
  */
 export function serializeScheduledSendPayload(
-	input: ScheduledSendPayload,
+	input: ScheduledSendPayloadInput,
 ): { payload: string } | { error: string } {
 	if (input.subject.length > MAX_SCHEDULED_SUBJECT_CHARS) {
 		return overLimit("The subject", MAX_SCHEDULED_SUBJECT_CHARS);

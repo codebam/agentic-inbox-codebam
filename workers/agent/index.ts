@@ -45,6 +45,8 @@ import {
 	toolSetReminder,
 	toolClearReminder,
 	toolListSnoozed,
+	toolListScheduledSends,
+	toolCancelScheduledSend,
 	toolListAgentActions,
 	toolListRules,
 	toolCreateRule,
@@ -862,6 +864,33 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolListSnoozed(env, mailboxId);
+			},
+		}),
+
+		// Scheduled sends are queued by the operator in the UI; the agent can
+		// read the queue and cancel a pending send, never schedule or send one.
+		list_scheduled_sends: defineTool({
+			description:
+				"List the outbound messages queued for later in this mailbox, newest first, with their send time and status. Read-only: it sends and changes nothing.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListScheduledSends(env, mailboxId);
+			},
+		}),
+
+		cancel_scheduled_send: defineTool({
+			description:
+				"Cancel a pending scheduled send so it never fires. Only a pending send can be cancelled; nothing is sent and nothing is deleted.",
+			parameters: z.object({
+				...mailboxIdField,
+				scheduledSendId: z.string().describe("The scheduled send ID to cancel"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolCancelScheduledSend(env, mailboxId, args.scheduledSendId);
 			},
 		}),
 

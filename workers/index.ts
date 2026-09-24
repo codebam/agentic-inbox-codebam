@@ -17,6 +17,7 @@ import {
 } from "./lib/email-helpers";
 import {
 	SendEmailRequestSchema,
+	ScheduleSendRequestSchema,
 	BulkEmailActionSchema,
 	CreateRuleSchema,
 	DraftBodySchema,
@@ -41,6 +42,13 @@ import {
 	DEFAULT_CONTACT_SEARCH_LIMIT,
 	MAX_CONTACT_SEARCH_LIMIT,
 } from "./lib/contacts";
+import {
+	DEFAULT_SCHEDULED_SEND_LIMIT,
+	MAX_SCHEDULED_SENDS,
+	SCHEDULED_SEND_NOT_FOUND,
+	serializeScheduledSendPayload,
+	type ScheduleSendInput,
+} from "./lib/scheduled-sends";
 import {
 	searchAllMailboxes,
 	type MailboxSearchRow,
@@ -477,6 +485,34 @@ type MailboxContactsStub = {
 };
 
 
+/** One stored scheduled send, as MailboxDO.listScheduledSends returns it. */
+type MailboxScheduledSendRow = Awaited<
+	ReturnType<MailboxDO["listScheduledSends"]>
+>[number];
+
+/** The cancel/retry answer MailboxDO returns; `ok: false` carries the reason. */
+type MailboxScheduledSendActionResult = Awaited<
+	ReturnType<MailboxDO["cancelScheduledSend"]>
+>;
+
+/**
+ * The scheduled-send RPCs the routes call. `scheduleSend` queues one row,
+ * `listScheduledSends`/`countScheduledSends` read the queue and
+ * `cancelScheduledSend`/`retryScheduledSend` change one row's status. No RPC
+ * here sends mail: only the mailbox's own alarm fires a due send.
+ */
+type MailboxScheduledSendsStub = {
+	checkSendRateLimit: () => Promise<string | null>;
+	scheduleSend: (input: ScheduleSendInput) => Promise<MailboxScheduledSendRow>;
+	listScheduledSends: (limit?: number) => Promise<MailboxScheduledSendRow[]>;
+	countScheduledSends: () => Promise<number>;
+	cancelScheduledSend: (
+		id: string,
+	) => Promise<MailboxScheduledSendActionResult>;
+	retryScheduledSend: (id: string) => Promise<MailboxScheduledSendActionResult>;
+};
+
+
 /**
  * Fetch the top `top` rows from one mailbox, chunking past the Durable
  * Object's 100-row page limit. Per-mailbox top-K is sufficient to compute
@@ -838,6 +874,150 @@ app.get("/api/v1/mailboxes/:mailboxId/reminders", async (c: AppContext) => {
 	const emails = await snoozeStub(c).getReminders();
 	return c.json({ emails, totalCount: emails.length });
 });
+
+// -- Scheduled sends (outbound mail queued for later) ----------------
+
+/** Narrow the mailbox stub to the scheduled-send RPCs the routes use. */
+function scheduledSendsStub(c: AppContext): MailboxScheduledSendsStub {
+	return c.var.mailboxStub;
+}
+
+/**
+ * Queue an outbound message for a future instant.
+ *
+ * The body is the send route's body plus `send_at`; the same sender
+ * validation and rate limit run here, and `send_at` must be in the future.
+ * Attachments are rejected: a queued send stores its parameters only, never
+ * attachment bytes. Nothing is sent by this route — the mailbox's alarm (or
+ * the cron sweep) fires the send when it comes due, re-running the send
+ * guards at that point. Answers 201 with the stored row.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const parsed = ScheduleSendRequestSchema.safeParse(
+		await c.req.json().catch(() => null),
+	);
+	if (!parsed.success) {
+		return c.json({ error: "Invalid scheduled send request" }, 400);
+	}
+	const {
+		to,
+		cc,
+		bcc,
+		from,
+		subject,
+		html,
+		text,
+		attachments,
+		in_reply_to,
+		references,
+		thread_id,
+		send_at,
+		draft_id,
+	} = parsed.data;
+
+	// A queued send stores parameters only — attachment bytes are never
+	// persisted, so a request carrying files is rejected rather than trimmed.
+	if (attachments && attachments.length > 0) {
+		return c.json(
+			{
+				error:
+					"Scheduled sends cannot carry attachments. Remove them before scheduling.",
+			},
+			400,
+		);
+	}
+
+	const sendAt = futureTimestamp(send_at);
+	if (!sendAt) {
+		return c.json({ error: "`send_at` must be a future ISO 8601 timestamp" }, 400);
+	}
+
+	// Same sender validation and rate limit as the immediate send route.
+	try {
+		validateSender(to, from, mailboxId);
+	} catch (e) {
+		if (e instanceof SenderValidationError) return c.json({ error: e.message }, 400);
+		throw e;
+	}
+
+	const stub = scheduledSendsStub(c);
+	const rateLimitError = await stub.checkSendRateLimit();
+	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
+
+	const payload = serializeScheduledSendPayload({
+		to,
+		cc,
+		bcc,
+		from,
+		subject,
+		html,
+		text,
+		in_reply_to,
+		references,
+		thread_id,
+	});
+	if ("error" in payload) return c.json({ error: payload.error }, 400);
+
+	const send = await stub.scheduleSend({
+		sendAt,
+		payload: payload.payload,
+		...(draft_id ? { draft_id } : {}),
+	});
+	return c.json(send, 201);
+});
+
+/**
+ * The mailbox's scheduled sends, newest first: queued mail plus the outcome
+ * of terminal rows (sent, failed, cancelled). Read-only — nothing is sent
+ * and nothing is deleted. `limit` defaults to 50 and is capped at 200.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) => {
+	const limit = Math.min(
+		Math.max(intQuery(c, "limit") ?? DEFAULT_SCHEDULED_SEND_LIMIT, 1),
+		MAX_SCHEDULED_SENDS,
+	);
+	const stub = scheduledSendsStub(c);
+	const [sends, totalCount] = await Promise.all([
+		stub.listScheduledSends(limit),
+		stub.countScheduledSends(),
+	]);
+	return c.json({ sends, totalCount });
+});
+
+/** Cancel a pending scheduled send so it never fires. Nothing is deleted. */
+app.delete(
+	"/api/v1/mailboxes/:mailboxId/scheduled-sends/:id",
+	async (c: AppContext) => {
+		const result = await scheduledSendsStub(c).cancelScheduledSend(
+			c.req.param("id")!,
+		);
+		if (!result.ok) {
+			return c.json(
+				{ error: result.error },
+				result.error === SCHEDULED_SEND_NOT_FOUND ? 404 : 400,
+			);
+		}
+		return c.json({ send: result.send });
+	},
+);
+
+/** Re-arm a failed scheduled send: it becomes pending and due immediately. */
+app.post(
+	"/api/v1/mailboxes/:mailboxId/scheduled-sends/:id/retry",
+	async (c: AppContext) => {
+		const result = await scheduledSendsStub(c).retryScheduledSend(
+			c.req.param("id")!,
+		);
+		if (!result.ok) {
+			return c.json(
+				{ error: result.error },
+				result.error === SCHEDULED_SEND_NOT_FOUND ? 404 : 400,
+			);
+		}
+		return c.json({ send: result.send });
+	},
+);
 
 // -- Unsubscribe (RFC 8058) -----------------------------------------
 

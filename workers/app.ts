@@ -10,7 +10,7 @@ import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import { authenticateMcpRequest, type McpAuthFailure } from "./lib/mcp-auth";
-import { sweepDueSnoozes } from "./lib/snooze-sweep";
+import { sweepDueMail } from "./lib/mail-sweep";
 import { sweepTrash } from "./lib/trash-retention";
 import type { Env } from "./types";
 
@@ -249,8 +249,9 @@ export default {
 		}
 	},
 	/**
-	 * Cron entry point for automatic Trash retention and the snooze/reminder
-	 * backstop (see the `triggers` block in wrangler.jsonc). Both sweeps log
+	 * Cron entry point for automatic Trash retention and the due-mail
+	 * backstop (snoozes, reminders and scheduled sends; see the `triggers`
+	 * block in wrangler.jsonc). Both sweeps log
 	 * their own summaries and tolerate a single failing mailbox; the extra
 	 * catch only guards the mailbox listing. They run as separate waitUntils so
 	 * a failure in one never delays or cancels the other.
@@ -265,11 +266,12 @@ export default {
 				console.error("Trash retention sweep failed:", (e as Error).message),
 			),
 		);
-		// Mailboxes wake their own snoozes via DO alarms; this is the backstop
-		// for an alarm that never ran (throttled DO, evicted mid-flight).
+		// Mailboxes fire their own snoozes, reminders and scheduled sends via
+		// DO alarms; this is the backstop for an alarm that never ran
+		// (throttled DO, evicted mid-flight).
 		ctx.waitUntil(
-			sweepDueSnoozes(env).catch((e) =>
-				console.error("Snooze sweep failed:", (e as Error).message),
+			sweepDueMail(env).catch((e) =>
+				console.error("Mail sweep failed:", (e as Error).message),
 			),
 		);
 	},

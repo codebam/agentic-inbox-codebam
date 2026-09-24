@@ -108,6 +108,21 @@ export const SendEmailRequestSchema = z
 		message: "Either 'html' or 'text' must be provided",
 	});
 
+
+/**
+ * Body for POST /api/v1/mailboxes/:mailboxId/scheduled-sends: the send
+ * route's body plus the instant the send becomes due. The route rejects
+ * attachments — a queued send stores parameters only, never attachment
+ * bytes — and requires `send_at` to be a future ISO 8601 timestamp.
+ * `draft_id` is optional provenance: the draft this send was queued from.
+ */
+export const ScheduleSendRequestSchema = SendEmailRequestSchema.and(
+	z.object({
+		send_at: z.string(),
+		draft_id: z.string().optional(),
+	}),
+);
+
 export const SendEmailResponseSchema = z.object({
 	id: z.string(),
 	status: z.string(),

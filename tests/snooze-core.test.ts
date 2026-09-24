@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
 import worker from "../workers/app";
 import { listMailboxes } from "../workers/lib/email-helpers";
-import { sweepDueSnoozes } from "../workers/lib/snooze-sweep";
+import { sweepDueMail } from "../workers/lib/mail-sweep";
 
 
 type Stub = ReturnType<typeof stubFor>;
@@ -581,8 +581,8 @@ describe("snooze sweep", () => {
 			remindAt: null,
 		});
 
-		const summary = await sweepDueSnoozes(env, { now });
-		expect(summary).toEqual({ mailboxes: 1, woken: 1, fired: 1 });
+		const summary = await sweepDueMail(env, { now });
+		expect(summary).toEqual({ mailboxes: 1, woken: 1, reminders: 1, sends: 0 });
 
 		expect((await readSnoozeRow(stub, "sweep-snoozed"))?.folder_id).toBe(
 			Folders.ARCHIVE,

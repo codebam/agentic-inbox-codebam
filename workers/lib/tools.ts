@@ -52,6 +52,11 @@ import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
 import { DEFAULT_CONTACT_SEARCH_LIMIT } from "./contacts";
+import {
+	DEFAULT_SCHEDULED_SEND_LIMIT,
+	type ScheduledSendActionResult,
+	type ScheduledSendRow,
+} from "./scheduled-sends";
 import type { Env } from "../types";
 
 // ── Type casts for DO methods not on the base stub type ────────────
@@ -996,6 +1001,63 @@ export async function toolClearReminder(
 export async function toolListSnoozed(env: Env, mailboxId: string) {
 	const emails = await mailboxSnoozeStub(env, mailboxId).getSnoozed();
 	return { mailboxId, emails, totalCount: emails.length };
+}
+
+// ── scheduled sends (list_scheduled_sends / cancel_scheduled_send) ──
+
+/**
+ * The scheduled-send RPCs these tools call. Declared structurally for the
+ * same reason as the snooze tools: the stub's own RPC result types carry
+ * `& Disposable`, which the MCP result wrapper cannot accept.
+ *
+ * Sending is operator-only. These tools can read the queue and cancel a
+ * pending send — there is deliberately no tool that schedules or sends one.
+ */
+type MailboxScheduledSendsStub = {
+	listScheduledSends: (limit?: number) => Promise<ScheduledSendRow[]>;
+	countScheduledSends: () => Promise<number>;
+	cancelScheduledSend: (id: string) => Promise<ScheduledSendActionResult>;
+};
+
+function mailboxScheduledSendsStub(
+	env: Env,
+	mailboxId: string,
+): MailboxScheduledSendsStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * List a mailbox's scheduled sends, newest first, with the parsed send
+ * parameters and the outcome of terminal rows (sent, failed, cancelled).
+ * Read-only — nothing is sent and nothing is deleted.
+ */
+export async function toolListScheduledSends(
+	env: Env,
+	mailboxId: string,
+	limit = DEFAULT_SCHEDULED_SEND_LIMIT,
+) {
+	const stub = mailboxScheduledSendsStub(env, mailboxId);
+	const [sends, totalCount] = await Promise.all([
+		stub.listScheduledSends(limit),
+		stub.countScheduledSends(),
+	]);
+	return { mailboxId, sends, totalCount };
+}
+
+/**
+ * Cancel one pending scheduled send so it never fires. Only a pending send
+ * can be cancelled; an unknown id or an already-terminal row answers
+ * `{ error }`. Nothing is sent and nothing is deleted — the cancelled row
+ * stays for the operator to see.
+ */
+export async function toolCancelScheduledSend(
+	env: Env,
+	mailboxId: string,
+	id: string,
+) {
+	const result = await mailboxScheduledSendsStub(env, mailboxId).cancelScheduledSend(id);
+	if (!result.ok) return { error: result.error };
+	return { status: "cancelled", send: result.send };
 }
 
 // ── agent action audit (list_agent_actions / undo_action) ──────────

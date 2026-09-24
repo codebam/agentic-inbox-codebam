@@ -29,6 +29,8 @@ import {
 	toolSetReminder,
 	toolClearReminder,
 	toolListSnoozed,
+	toolListScheduledSends,
+	toolCancelScheduledSend,
 	toolListAgentActions,
 	toolListRules,
 	toolCreateRule,
@@ -760,6 +762,37 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				return mcpText(await toolListSnoozed(env, mailboxId));
+			},
+		);
+
+		// ── list_scheduled_sends ───────────────────────────────────
+		// Sending is operator-only: these tools can read the queue and
+		// cancel a pending send, never schedule or send one.
+		this.server.tool(
+			"list_scheduled_sends",
+			"List the outbound messages queued for later in a mailbox, newest first, with their send time and status. Read-only: it sends and changes nothing.",
+			{ mailboxId: z.string().describe("The mailbox email address") },
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListScheduledSends(env, mailboxId));
+			},
+		);
+
+		// ── cancel_scheduled_send ──────────────────────────────────
+		this.server.tool(
+			"cancel_scheduled_send",
+			"Cancel a pending scheduled send so it never fires. Only a pending send can be cancelled; nothing is sent and nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				scheduledSendId: z.string().describe("The scheduled send ID to cancel"),
+			},
+			async ({ mailboxId, scheduledSendId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolCancelScheduledSend(env, mailboxId, scheduledSendId),
+				);
 			},
 		);
 
