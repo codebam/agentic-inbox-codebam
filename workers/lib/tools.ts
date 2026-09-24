@@ -16,6 +16,7 @@
 
 import { z } from "zod";
 import type { EmailFull } from "./schemas";
+import type { MailboxDO } from "../durableObject";
 import {
 	hasActiveActions,
 	hasOutboundActions,
@@ -837,6 +838,163 @@ export async function toolDeleteSpamEmails(
 		return { status: "no_spam_found", deletedCount, mailboxes: mailboxResults };
 	}
 	return { status: "spam_deleted", deletedCount, mailboxes: mailboxResults };
+}
+
+// ── snooze & reminders ─────────────────────────────────────────────
+
+/** One email row as the Durable Object's mutators return it (`getEmail` shape). */
+type MailboxSnoozeRow = NonNullable<Awaited<ReturnType<MailboxDO["getEmail"]>>>;
+
+/** One row of the Snoozed list, in the same shape as a folder listing. */
+type MailboxSnoozedListRow = Awaited<ReturnType<MailboxDO["getSnoozed"]>>[number];
+
+/**
+ * The snooze/reminder RPCs these tools call. Declared structurally so the
+ * mutators read as the plain `getEmail` row shape — the stub's own RPC
+ * result types carry `& Disposable`, which the MCP result wrapper cannot
+ * accept — the same way workers/index.ts declares its RPC surfaces.
+ */
+type MailboxSnoozeStub = {
+	setSnooze: (id: string, until: string) => Promise<MailboxSnoozeRow | null>;
+	clearSnooze: (id: string) => Promise<MailboxSnoozeRow | null>;
+	setReminder: (id: string, at: string) => Promise<MailboxSnoozeRow | null>;
+	clearReminder: (id: string) => Promise<MailboxSnoozeRow | null>;
+	getSnoozed: () => Promise<MailboxSnoozedListRow[]>;
+};
+
+function mailboxSnoozeStub(env: Env, mailboxId: string): MailboxSnoozeStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/** Relative shorthand accepted by the snooze/reminder tools: `30m`, `4h`, `3d`, `1w`. */
+const RELATIVE_TIME_PATTERN = /^(\d+)([mhdw])$/;
+
+/** Milliseconds per shorthand unit: minutes, hours, days, weeks. */
+const RELATIVE_TIME_UNIT_MS: Record<string, number> = {
+	m: 60_000,
+	h: 3_600_000,
+	d: 86_400_000,
+	w: 604_800_000,
+};
+
+/**
+ * Resolve a caller-supplied due time into a future UTC instant.
+ *
+ * Accepts an ISO 8601 timestamp or a relative shorthand of the form
+ * `<number><unit>` where the unit is one of `m`, `h`, `d`, `w` (`30m`,
+ * `4h`, `3d`, `1w`), resolved against the current time. Only this tool
+ * layer understands the shorthand — the Durable Object and the HTTP routes
+ * keep taking ISO 8601 strings. Returns null when the input is neither
+ * form, or when the instant is not in the future.
+ */
+function resolveFutureInstant(value: string): string | null {
+	const trimmed = value.trim();
+	const relative = RELATIVE_TIME_PATTERN.exec(trimmed);
+	const parsed = relative
+		? Date.now() +
+			Number(relative[1]) * (RELATIVE_TIME_UNIT_MS[relative[2] ?? ""] ?? 0)
+		: Date.parse(trimmed);
+	if (Number.isNaN(parsed) || parsed <= Date.now()) return null;
+	return new Date(parsed).toISOString();
+}
+
+/** Error for a due time that is malformed, or not in the future. */
+function invalidDueTimeError(label: string, value: string): { error: string } {
+	return {
+		error: `Invalid ${label} "${value}": pass a future ISO 8601 timestamp (e.g. 2026-09-25T09:00:00Z) or a relative shorthand like 30m, 4h, 3d or 1w.`,
+	};
+}
+
+/**
+ * Snooze an email until a future time: the message moves to the Snoozed
+ * folder now and returns to the folder it came from by itself when the time
+ * arrives. `until` is an ISO 8601 timestamp or a relative shorthand (`30m`,
+ * `4h`, `3d`, `1w`). Nothing is deleted.
+ *
+ * Returns the updated email row, or `{ error }` for an unusable time or an
+ * unknown id.
+ */
+export async function toolSnoozeEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	until: string,
+) {
+	const at = resolveFutureInstant(until);
+	if (!at) return invalidDueTimeError("snooze time", until);
+	const email = await mailboxSnoozeStub(env, mailboxId).setSnooze(emailId, at);
+	if (!email) return { error: "Email not found" };
+	return email;
+}
+
+/**
+ * Wake a snoozed email now: cancel its snooze and put the message back in
+ * the folder it came from (the Inbox when that folder is gone). Nothing is
+ * deleted.
+ *
+ * Returns the updated email row, or `{ error: "Email not found" }` for an
+ * unknown id.
+ */
+export async function toolUnsnoozeEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+) {
+	const email = await mailboxSnoozeStub(env, mailboxId).clearSnooze(emailId);
+	if (!email) return { error: "Email not found" };
+	return email;
+}
+
+/**
+ * Set (or re-set) a follow-up reminder for an email. The message stays where
+ * it is; when the reminder fires it is flagged and pulled back to the Inbox
+ * when the thread still expects a reply. `at` is an ISO 8601 timestamp or a
+ * relative shorthand (`30m`, `4h`, `3d`, `1w`). Nothing is deleted.
+ *
+ * Returns the updated email row, or `{ error }` for an unusable time or an
+ * unknown id.
+ */
+export async function toolSetReminder(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	at: string,
+) {
+	const remindAt = resolveFutureInstant(at);
+	if (!remindAt) return invalidDueTimeError("reminder time", at);
+	const email = await mailboxSnoozeStub(env, mailboxId).setReminder(
+		emailId,
+		remindAt,
+	);
+	if (!email) return { error: "Email not found" };
+	return email;
+}
+
+/**
+ * Cancel an email's follow-up reminder, pending or already fired, and clear
+ * both reminder columns. Nothing is deleted.
+ *
+ * Returns the updated email row, or `{ error: "Email not found" }` for an
+ * unknown id.
+ */
+export async function toolClearReminder(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+) {
+	const email = await mailboxSnoozeStub(env, mailboxId).clearReminder(emailId);
+	if (!email) return { error: "Email not found" };
+	return email;
+}
+
+/**
+ * List the messages currently snoozed in a mailbox, earliest wake time
+ * first. Read-only — it changes nothing. Rows carry the same fields as a
+ * folder listing.
+ */
+export async function toolListSnoozed(env: Env, mailboxId: string) {
+	const emails = await mailboxSnoozeStub(env, mailboxId).getSnoozed();
+	return { mailboxId, emails, totalCount: emails.length };
 }
 
 // ── send_reply ─────────────────────────────────────────────────────
