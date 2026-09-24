@@ -40,7 +40,7 @@ export async function listMailboxes(
 	const mailboxes: { id: string; email: string }[] = [];
 	let cursor: string | undefined;
 	do {
-		const list = await bucket.list({ prefix: "mailboxes/", cursor });
+		const list = await bucket.list({ prefix: "mailboxes/", ...(cursor ? { cursor } : {}) });
 		for (const obj of list.objects) {
 			// Strip only the literal prefix and the trailing .json suffix; a
 			// mailbox local part may itself contain ".json".
@@ -211,7 +211,7 @@ export const formatEmailDate = formatQuotedDate;
 export function buildQuotedReplyBlock(original: {
 	date?: string;
 	sender?: string;
-	body?: string;
+	body?: string | undefined;
 }): string {
 	if (!original.body) return "";
 	

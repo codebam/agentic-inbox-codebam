@@ -114,13 +114,13 @@ interface SearchFilterOptions {
 }
 
 interface GetEmailsOptions {
-	folder?: string;
-	thread_id?: string;
-	category?: string;
-	page?: number;
-	limit?: number;
+	folder?: string | undefined;
+	thread_id?: string | undefined;
+	category?: string | undefined;
+	page?: number | undefined;
+	limit?: number | undefined;
 	sortColumn?: SortColumn;
-	sortDirection?: "ASC" | "DESC";
+	sortDirection?: "ASC" | "DESC" | undefined;
 }
 
 interface EmailData {
@@ -135,8 +135,8 @@ interface EmailData {
 	body: string;
 	/** The message's text/plain alternative, when the sender included one. */
 	body_text?: string | null;
-	read?: boolean;
-	starred?: boolean;
+	read?: boolean | undefined;
+	starred?: boolean | undefined;
 	in_reply_to?: string | null;
 	email_references?: string | null;
 	thread_id?: string | null;
@@ -281,7 +281,13 @@ export class MailboxDO extends DurableObject<Env> {
 		}[];
 	}
 
-	async countEmails(options: { folder?: string; thread_id?: string; category?: string } = {}) {
+	async countEmails(
+		options: {
+			folder?: string | undefined;
+			thread_id?: string | undefined;
+			category?: string | undefined;
+		} = {},
+	) {
 		const { folder, thread_id, category } = options;
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
@@ -625,7 +631,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	async updateEmail(
 		id: string,
-		{ read, starred }: { read?: boolean; starred?: boolean },
+		{ read, starred }: { read?: boolean | undefined; starred?: boolean | undefined },
 	) {
 		const data: { read?: number; starred?: number } = {};
 		if (read !== undefined) {

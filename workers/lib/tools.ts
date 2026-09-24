@@ -160,7 +160,7 @@ export async function toolListMailboxes(env: Env) {
 export async function toolListEmails(
 	env: Env,
 	mailboxId: string,
-	params: { folder: string; limit: number; page: number; category?: string },
+	params: { folder: string; limit: number; page: number; category?: string | undefined },
 ) {
 	const stub = getMailboxStub(env, mailboxId);
 	return stub.getEmails({
@@ -202,21 +202,21 @@ export async function toolGetThread(
 /** Filters accepted by the shared search tools (agent + MCP). */
 export interface SearchEmailParams {
 	/** Raw Gmail-style query, e.g. `from:bob is:unread has:attachment`. */
-	query?: string;
-	folder?: string;
-	category?: string;
-	from?: string;
-	to?: string;
-	subject?: string;
-	isRead?: boolean;
-	isStarred?: boolean;
-	hasAttachment?: boolean;
+	query?: string | undefined;
+	folder?: string | undefined;
+	category?: string | undefined;
+	from?: string | undefined;
+	to?: string | undefined;
+	subject?: string | undefined;
+	isRead?: boolean | undefined;
+	isStarred?: boolean | undefined;
+	hasAttachment?: boolean | undefined;
 	/** Only emails dated before this (ISO date or YYYY-MM-DD). */
-	before?: string;
+	before?: string | undefined;
 	/** Only emails dated after this (ISO date or YYYY-MM-DD). */
-	after?: string;
-	page?: number;
-	limit?: number;
+	after?: string | undefined;
+	page?: number | undefined;
+	limit?: number | undefined;
 }
 
 
@@ -416,9 +416,9 @@ export async function toolDraftEmail(
 		/** Append the mailbox signature (when one is enabled) to the stored draft. */
 		applySignature?: boolean;
 		/** Optional in_reply_to for create_draft style */
-		in_reply_to?: string;
+		in_reply_to?: string | undefined;
 		/** Optional thread_id for create_draft style */
-		thread_id?: string;
+		thread_id?: string | undefined;
 	},
 ): Promise<
 	| {
@@ -537,9 +537,9 @@ export async function toolUpdateDraft(
 	mailboxId: string,
 	params: {
 		draftId: string;
-		to?: string;
-		subject?: string;
-		bodyHtml?: string;
+		to?: string | undefined;
+		subject?: string | undefined;
+		bodyHtml?: string | undefined;
 	},
 ): Promise<
 	| { status: string; newDraftId: string; oldDraftId: string; message: string }

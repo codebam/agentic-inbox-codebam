@@ -29,7 +29,7 @@ export async function storeAttachments(
 		filename: string;
 		type: string;
 		disposition: string;
-		contentId?: string;
+		contentId?: string | undefined;
 	}[],
 ): Promise<StoredAttachment[]> {
 	if (!attachments?.length) return [];

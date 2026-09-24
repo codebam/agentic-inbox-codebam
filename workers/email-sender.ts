@@ -14,19 +14,19 @@ export interface SendEmailParams {
 	to: string | string[];
 	from: string | { email: string; name: string };
 	subject: string;
-	html?: string;
-	text?: string;
-	cc?: string | string[];
-	bcc?: string | string[];
-	replyTo?: string | { email: string; name: string };
+	html?: string | undefined;
+	text?: string | undefined;
+	cc?: string | string[] | undefined;
+	bcc?: string | string[] | undefined;
+	replyTo?: string | { email: string; name: string } | undefined;
 	attachments?: {
 		content: string; // base64 encoded
 		filename: string;
 		type: string;
 		disposition: "attachment" | "inline";
-		contentId?: string;
-	}[];
-	headers?: Record<string, string>;
+		contentId?: string | undefined;
+	}[] | undefined;
+	headers?: Record<string, string> | undefined;
 }
 
 /**
