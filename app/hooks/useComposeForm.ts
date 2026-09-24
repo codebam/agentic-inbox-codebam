@@ -3,7 +3,9 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { useKumoToastManager } from "@cloudflare/kumo";
+import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { formatSnoozeTime, isPastOrInvalid } from "~/lib/snooze";
 import {
 	buildQuotedReplyBlock,
 	escapeHtml,
@@ -23,8 +25,9 @@ import {
 	validateAttachmentSelection,
 	type PendingAttachment,
 } from "~/lib/attachments";
-import { useDeleteEmail, useForwardEmail, useReplyToEmail, useSaveDraft, useSendEmail } from "~/queries/emails";
+import { useSaveDraft } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
+import { invalidateScheduledSends, useScheduleSend } from "~/queries/scheduled-sends";
 import { useUIStore } from "~/hooks/useUIStore";
 import api from "~/services/api";
 import type { Attachment } from "~/types";
@@ -44,6 +47,12 @@ function appendUniqueAddress(
 	seen.add(normalized);
 	addresses.push(trimmed);
 }
+
+/**
+ * How far ahead the composer queues a send. The gap is the Undo window: the
+ * toast's Undo action cancels the queued row before the queue fires it.
+ */
+const SEND_QUEUE_DELAY_MS = 10_000;
 
 interface ComposeFormFields {
 	to: string;
@@ -186,11 +195,9 @@ export function useComposeForm(mailboxId?: string) {
 	const toastManager = useKumoToastManager();
 	const { composeOptions, closePanel, closeCompose, setComposeDraft } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
-	const sendEmailMutation = useSendEmail();
 	const saveDraftMutation = useSaveDraft();
-	const replyMutation = useReplyToEmail();
-	const forwardMutation = useForwardEmail();
-	const deleteEmailMutation = useDeleteEmail();
+	const scheduleSendMutation = useScheduleSend();
+	const queryClient = useQueryClient();
 
 	const [to, setTo] = useState("");
 	const [cc, setCc] = useState("");
@@ -200,7 +207,7 @@ export function useComposeForm(mailboxId?: string) {
 	const [body, setBody] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [isSavingDraft, setIsSavingDraft] = useState(false);
-	const [isSending, setIsSending] = useState(false);
+	const [isScheduling, setIsScheduling] = useState(false);
 	const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
 	const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
 	const [isEncodingAttachments, setIsEncodingAttachments] = useState(false);
@@ -216,6 +223,23 @@ export function useComposeForm(mailboxId?: string) {
 	}, [composeOptions.mode, isDraftEdit]);
 
 	const sigBlock = useMemo(() => getSignatureBlock(currentMailbox?.settings), [currentMailbox]);
+
+	/**
+	 * Why the scheduling affordances are unavailable, or null when they are
+	 * usable. Rendered next to the buttons so the reason stays visible —
+	 * queued sends never carry attachments, and a recipient and subject are
+	 * required.
+	 */
+	const scheduleBlockReason = useMemo(() => {
+		if (attachments.length > 0) {
+			return "Scheduled sends don't support attachments — remove them to schedule this message.";
+		}
+		const missing: string[] = [];
+		if (splitEmailList(to).length === 0) missing.push("a recipient");
+		if (!subject.trim()) missing.push("a subject");
+		if (missing.length === 0) return null;
+		return `Add ${missing.join(" and ")} to schedule this send.`;
+	}, [attachments, to, subject]);
 
 	useEffect(() => {
 		if (lastInitializedOptionsRef.current === composeOptions) return;
@@ -331,7 +355,7 @@ export function useComposeForm(mailboxId?: string) {
 
 
 	const handleSaveDraft = async () => {
-		if (!mailboxId || isSending || isEncodingAttachments) return; setIsSavingDraft(true); setError(null);
+		if (!mailboxId || isScheduling || isEncodingAttachments) return; setIsSavingDraft(true); setError(null);
 		try {
 			const inReplyTo =
 				composeOptions.originalEmail?.id ||
@@ -383,17 +407,30 @@ export function useComposeForm(mailboxId?: string) {
 		finally { setIsSavingDraft(false); }
 	};
 
-	const handleSend = async (e: FormEvent, onClose: () => void) => {
-		e.preventDefault(); if (isSending) return; setError(null);
-		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
-		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
+	/**
+	 * The message the queue will send, in the same shape a direct send used.
+	 * Built when a handler runs, so the form state and the clock are read at
+	 * click time — never during render.
+	 */
+	const buildOutgoingPayload = () => {
 		const toRecipients = splitEmailList(to);
-		if (toRecipients.length === 0) { setError("Add at least one recipient."); return; }
-		const ccRecipients = splitEmailList(cc); const bccRecipients = splitEmailList(bcc);
-		const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
-		const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
+		const ccRecipients = splitEmailList(cc);
+		const bccRecipients = splitEmailList(bcc);
+		const fromName = currentMailbox?.settings?.fromName || currentMailbox?.name;
+		const from =
+			fromName && fromName !== currentMailbox?.email
+				? { email: currentMailbox?.email, name: fromName }
+				: currentMailbox?.email;
 		const attachmentPayloads = toAttachmentPayloads(attachments);
-		const emailData = {
+		const inReplyTo =
+			composeOptions.originalEmail?.id ||
+			composeOptions.draftEmail?.in_reply_to ||
+			undefined;
+		const threadId =
+			composeOptions.originalEmail?.thread_id ||
+			composeOptions.draftEmail?.thread_id ||
+			undefined;
+		return {
 			to: toEmailListValue(toRecipients),
 			cc: toEmailListValue(ccRecipients),
 			bcc: toEmailListValue(bccRecipients),
@@ -401,25 +438,103 @@ export function useComposeForm(mailboxId?: string) {
 			subject,
 			html: body,
 			text: htmlToPlainText(body),
-			attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
+			...(attachmentPayloads.length > 0 ? { attachments: attachmentPayloads } : {}),
+			// The queue owns the draft from here on, so its id travels with
+			// the payload instead of the draft being deleted on send.
+			...(composeOptions.draftEmail ? { draft_id: composeOptions.draftEmail.id } : {}),
+			...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
+			...(threadId ? { thread_id: threadId } : {}),
 		};
-		const draftId = composeOptions.draftEmail?.id; const mode = composeOptions.mode; const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
-		setIsSending(true); toastManager.add({ title: "Sending email..." });
+	};
+
+	/**
+	 * Queue the composed message for `sendAt`. The composer no longer sends
+	 * directly: the server's queue fires the message, and everything said
+	 * about it says "scheduled" — never "sent" — until it actually has been.
+	 */
+	const queueMessage = async (sendAt: string, onClose: () => void, description: string) => {
+		if (isScheduling) return;
+		setError(null);
+		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
+		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
+		if (attachments.length > 0) {
+			// Belt and braces: both affordances are already disabled, with a
+			// visible reason, while the composer holds attachments.
+			setError("Scheduled sends don't support attachments — remove them first.");
+			return;
+		}
+		setIsScheduling(true);
 		try {
-			if ((mode === "reply" || mode === "reply-all") && originalId) await replyMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
-			else if (mode === "forward" && originalId) await forwardMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
-			else await sendEmailMutation.mutateAsync({ mailboxId, email: emailData });
-			// The sent draft is removed for good, not parked in Trash.
-			if (draftId) deleteEmailMutation.mutate({ mailboxId, id: draftId, permanent: true });
-			toastManager.add({ title: "Email sent!" });
+			const scheduled = await scheduleSendMutation.mutateAsync({
+				mailboxId,
+				payload: buildOutgoingPayload(),
+				sendAt,
+			});
+			// The manager's overloads widen the return to `any`; the id is a string.
+			const toastId = toastManager.add({
+				title: "Message scheduled",
+				description,
+				actions: [
+					{
+						children: "Undo",
+						variant: "secondary",
+						size: "sm",
+						// Cancels the queued send — from this explicit click only.
+						onClick: () => {
+							void api.cancelScheduledSend(mailboxId, scheduled.id)
+								.then(() => {
+									invalidateScheduledSends(queryClient, mailboxId);
+									toastManager.close(toastId);
+									toastManager.add({ title: "Scheduled send cancelled" });
+								})
+								.catch((err: unknown) => {
+									toastManager.add({
+										title: "Could not cancel the scheduled send",
+										description: err instanceof Error ? err.message : "Something went wrong",
+										variant: "error",
+									});
+								});
+						},
+					},
+				],
+			}) as string;
 			onClose();
-		} catch (err: unknown) { const message = (err instanceof Error ? err.message : null) || "Failed to send email."; setError(message); toastManager.add({ title: message, variant: "error" }); }
-		finally { setIsSending(false); }
+		} catch (err: unknown) {
+			const message = (err instanceof Error ? err.message : null) || "Failed to schedule the send.";
+			setError(message);
+			toastManager.add({ title: message, variant: "error" });
+		}
+		finally { setIsScheduling(false); }
+	};
+
+	/**
+	 * The form's Send action. It no longer sends: the message is queued for
+	 * ten seconds ahead, and the toast's Undo cancels it before it goes out.
+	 */
+	const handleSend = async (e: FormEvent, onClose: () => void) => {
+		e.preventDefault();
+		if (isScheduling) return;
+		setError(null);
+		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
+		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
+		const sendAt = new Date(Date.now() + SEND_QUEUE_DELAY_MS).toISOString();
+		await queueMessage(sendAt, onClose, "Sending in 10 seconds — Undo cancels it.");
+	};
+
+	/** Queue the composed message for the instant picked in Send later. */
+	const handleSendLater = async (iso: string, onClose: () => void) => {
+		if (isScheduling) return;
+		setError(null);
+		if (isPastOrInvalid(iso)) { setError("Pick a time in the future."); return; }
+		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
+		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
+		await queueMessage(iso, onClose, `Scheduled for ${formatSnoozeTime(iso)} — Undo cancels it.`);
 	};
 
 	return {
 		to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody,
-		error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel,
+		error, setError, isSavingDraft, isScheduling, formTitle, handleSaveDraft, handleSend, handleSendLater,
+		scheduleBlockReason, closeCompose, closePanel,
 		attachments, attachmentErrors, attachmentSummary: describeAttachmentSummary(attachments),
 		isEncodingAttachments, handleAddAttachments, handleRemoveAttachment,
 	};
