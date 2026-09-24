@@ -26,6 +26,7 @@ import { formatListDate } from "shared/dates";
 import { normalizeTrashRetentionDays } from "shared/trash-retention";
 import BulkActionBar from "~/components/BulkActionBar";
 import CategoryBadge from "~/components/CategoryBadge";
+import KeyboardCheatsheet, { KeyboardCheatsheetButton } from "~/components/KeyboardCheatsheet";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import SelectionCheckbox from "~/components/SelectionCheckbox";
 import { getSnippetText } from "~/lib/utils";
@@ -42,6 +43,7 @@ import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
 import { queryKeys } from "~/queries/keys";
 import { useEmailSelection } from "~/hooks/useEmailSelection";
+import { useKeyboardTriage } from "~/hooks/useKeyboardTriage";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { BulkEmailAction, Email } from "~/types";
 
@@ -228,6 +230,16 @@ export default function EmailListRoute() {
 		clear,
 	} = useEmailSelection(pageKeys);
 	const bulkAction = useBulkEmailAction();
+	// Keyboard-first triage: drives the existing selection state and the same
+	// mutations the toolbar calls. Reply/compose shortcuts only open the composer.
+	const keyboardTriage = useKeyboardTriage({
+		emails,
+		mailboxId,
+		currentEmailId: selectedEmailId,
+		selection: { selectedKeys, count: selectedCount, toggle, clear },
+		isTrashFolder,
+		isComposing,
+	});
 
 	const selectedEmails = useMemo(
 		() => emails.filter((email) => selectedKeys.has(email.id)),
@@ -530,6 +542,7 @@ export default function EmailListRoute() {
 										</Button>
 									</Tooltip>
 								)}
+								<KeyboardCheatsheetButton onClick={keyboardTriage.openCheatsheet} />
 								<Tooltip
 									content={isRefreshing ? "Refreshing..." : "Refresh"}
 									side="bottom"
@@ -730,6 +743,10 @@ export default function EmailListRoute() {
 						/>
 					</div>
 				)}
+			<KeyboardCheatsheet
+				open={keyboardTriage.isCheatsheetOpen}
+				onOpenChange={keyboardTriage.setCheatsheetOpen}
+			/>
 		</MailboxSplitView>
 	);
 }
