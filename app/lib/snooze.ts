@@ -11,13 +11,13 @@
  * rejects past timestamps, so no helper here produces one.
  */
 
+import { Folders } from "shared/folders";
+
 /**
- * Folder the workers side parks snoozed messages in. Kept as a local
- * literal on purpose: `shared/folders.ts` is owned by the snooze-core
- * branch (`Folders.SNOOZED`) and replaces this constant after the merge
- * without touching any call site.
+ * Folder the workers side parks snoozed messages in. Re-exported from the
+ * shared folder constants so the UI and the Durable Object cannot drift.
  */
-export const SNOOZE_FOLDER_ID = "snoozed";
+export const SNOOZE_FOLDER_ID: string = Folders.SNOOZED;
 
 export interface SnoozePreset {
 	id: string;
