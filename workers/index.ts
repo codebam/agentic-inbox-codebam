@@ -68,6 +68,7 @@ import {
 	readMailboxSettings,
 	resolveMailboxModels,
 } from "./lib/mailbox-settings";
+import { purgeMailbox } from "./lib/mailbox-purge";
 import {
 	normalizeWebhookSecret,
 	normalizeWebhookUrl,
@@ -307,7 +308,13 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId");
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
+	// Purges the DO's SQLite state, its R2 attachment blobs and the agent's
+	// chat history; the settings marker goes last so a failure part-way
+	// leaves the mailbox listed and the delete can be retried.
+	const summary = await purgeMailbox(c.env, mailboxId);
+	console.log(
+		`Mailbox ${mailboxId} purged: ${summary.emails} email(s), ${summary.attachments} attachment(s), ${summary.blobsDeleted} blob(s)`,
+	);
 	return c.body(null, 204);
 });
 
