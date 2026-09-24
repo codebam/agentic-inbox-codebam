@@ -111,6 +111,11 @@ import {
 	parseUnsubscribeHeader,
 	sendOneClickUnsubscribe,
 } from "./lib/unsubscribe";
+import {
+	IMAGE_PROXY_CACHE_CONTROL,
+	proxyImage,
+} from "./lib/image-proxy";
+import type { GuardedImageFailureReason } from "./lib/ssrf-guard";
 import type { Env } from "./types";
 import {
 	defaultMailboxSettings,
@@ -1055,6 +1060,64 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe", async (c: AppCon
 	const updated = await stub.setUnsubscribed(id, new Date().toISOString());
 	if (!updated) return c.json({ error: "Email not found" }, 404);
 	return c.json({ status: "unsubscribed", email: updated });
+});
+
+// -- Remote-image proxy ----------------------------------------------
+
+/**
+ * Route status for each guard failure reason, so the guard's `error` string
+ * is passed through verbatim while the client gets a meaningful status:
+ * a refusal or unusable URL is the client's fault (400), an oversize image
+ * is 413, a non-image content type is 415, and everything that went wrong at
+ * the sender's end (redirect, non-2xx, network error) is a 502.
+ */
+const IMAGE_PROXY_FAILURE_STATUS: Record<
+	GuardedImageFailureReason,
+	400 | 413 | 415 | 502
+> = {
+	url: 400,
+	redirect: 502,
+	upstream: 502,
+	"content-type": 415,
+	oversize: 413,
+};
+
+/**
+ * Same-origin relay for one remote image of an opted-in message.
+ *
+ * The browser builds this URL (see `proxyRemoteImages` in
+ * shared/remote-images.ts) only after the operator opted in — "Show images"
+ * for the message or a matching entry in the mailbox imageAllowlist — so the
+ * sender's server never sees the reader; the Worker fetches through the
+ * shared SSRF guard instead. The route is never an agent/MCP tool, and
+ * nothing server-side ever fetches an image on its own.
+ *
+ * The mailbox scope is inherited auth/mailbox middleware, not cache
+ * partitioning: a URL's bytes do not depend on which mailbox asked, so the
+ * cache is shared (keyed by the URL hash) across mailboxes.
+ *
+ * A success answers with exactly the bytes, the upstream content type and a
+ * private week-long cache header; the browser may cache it, no shared cache
+ * ever will.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/image-proxy", async (c: AppContext) => {
+	const url = c.req.query("url");
+	if (!url) return c.json({ error: "Missing url parameter" }, 400);
+
+	const result = await proxyImage(c.env, url);
+	if (!result.ok) {
+		return c.json(
+			{ error: result.error },
+			IMAGE_PROXY_FAILURE_STATUS[result.reason],
+		);
+	}
+
+	return new Response(result.bytes, {
+		headers: {
+			"content-type": result.contentType,
+			"cache-control": IMAGE_PROXY_CACHE_CONTROL,
+		},
+	});
 });
 
 // -- Agent action audit (agent + MCP tools) --------------------------
