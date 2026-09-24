@@ -7,6 +7,11 @@
 		"enabled": true,
 		"redact_query_string": false
 	},
+	// Daily Trash retention sweep at 03:00 UTC; the handler lives in
+	// workers/app.ts and the sweep in workers/lib/trash-retention.ts.
+	"triggers": {
+		"crons": ["0 3 * * *"]
+	},
 	"compatibility_flags": [
 		"nodejs_compat"
 	],

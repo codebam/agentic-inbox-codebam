@@ -208,4 +208,16 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX idx_rules_priority ON rules(priority, created_at);
         `),
 	},
+	{
+		// Trash retention. `trashed_at` is stamped when a message enters the
+		// Trash folder and cleared when it leaves (see folderMoveFields in
+		// durableObject/index.ts). Deliberately NOT backfilled from `date`:
+		// that column is the sender's Date header, not the trash time, so
+		// backfilling would make freshly trashed old mail instantly eligible
+		// for the retention sweep. Existing Trash rows keep NULL — "not
+		// eligible until re-trashed" — and are still removable with the
+		// manual "Empty trash" action.
+		name: "12_add_trashed_at",
+		sql: txn(`ALTER TABLE emails ADD COLUMN trashed_at TEXT;`),
+	},
 ];

@@ -20,6 +20,8 @@ export interface MailboxSettings {
 	categorization?: CategorizationSettings;
 	/** Mailbox-level AI model overrides; blank fields inherit. */
 	models?: ModelConfig;
+	/** Days a message may sit in Trash before the retention sweep deletes it; 0 disables. */
+	trashRetentionDays?: number;
 }
 
 export interface Mailbox {

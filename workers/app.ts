@@ -10,6 +10,7 @@ import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import { authenticateMcpRequest, type McpAuthFailure } from "./lib/mcp-auth";
+import { sweepTrash } from "./lib/trash-retention";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
@@ -221,5 +222,21 @@ export default {
 			// Swallowing the error would silently drop the email.
 			throw e;
 		}
+	},
+	/**
+	 * Cron entry point for automatic Trash retention (see the `triggers` block
+	 * in wrangler.jsonc). The sweep logs its own summary and tolerates a single
+	 * failing mailbox; the extra catch only guards the mailbox listing.
+	 */
+	async scheduled(
+		_event: ScheduledController,
+		env: Env,
+		ctx: ExecutionContext,
+	) {
+		ctx.waitUntil(
+			sweepTrash(env).catch((e) =>
+				console.error("Trash retention sweep failed:", (e as Error).message),
+			),
+		);
 	},
 };

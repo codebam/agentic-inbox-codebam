@@ -23,6 +23,7 @@ import { useParams } from "react-router";
 import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { mergeCategorizationCategories } from "shared/categories";
 import { formatListDate } from "shared/dates";
+import { normalizeTrashRetentionDays } from "shared/trash-retention";
 import BulkActionBar from "~/components/BulkActionBar";
 import CategoryBadge from "~/components/CategoryBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
@@ -181,6 +182,10 @@ export default function EmailListRoute() {
 	const toastManager = useKumoToastManager();
 
 	const { data: mailbox } = useMailbox(mailboxId);
+	// Retention days shown next to "Empty trash"; 0 means the mailbox opted out.
+	const trashRetentionDays = normalizeTrashRetentionDays(
+		mailbox?.settings?.trashRetentionDays,
+	);
 	const { data: globalCategorization } = useGlobalCategorization();
 	const categories = useMemo(
 		() =>
@@ -503,6 +508,12 @@ export default function EmailListRoute() {
 								{totalCount > 0 && (
 									<span className="text-sm text-kumo-subtle mr-2 hidden sm:inline">
 										{totalCount} conversation{totalCount !== 1 ? "s" : ""}
+									</span>
+								)}
+								{isTrashFolder && trashRetentionDays > 0 && (
+									<span className="text-xs text-kumo-subtle mr-2 hidden sm:inline">
+										Auto-deletes after {trashRetentionDays} day
+										{trashRetentionDays === 1 ? "" : "s"} in Trash
 									</span>
 								)}
 								{isTrashFolder && (
