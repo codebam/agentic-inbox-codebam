@@ -9,6 +9,7 @@ import {
 	type RuleDraft,
 	type RuleEmail,
 } from "../workers/lib/rules";
+import { CreateRuleSchema, ReorderRulesSchema } from "../workers/lib/schemas";
 
 
 const MAILBOX = "rules@example.com";
@@ -483,5 +484,120 @@ describe("MailboxDO rules CRUD", () => {
 			starred: true,
 		});
 		expect(result.routed).toBe(true);
+	});
+});
+
+
+
+
+describe("rule editor payload contract", () => {
+	// The rules UI (app/routes/rules.tsx) builds this exact shape and the API
+	// validates it with CreateRuleSchema, so any drift between the two shows up
+	// as a 400 in the browser. Pin them together here.
+	const uiPayload = {
+		name: "File invoices from Alice",
+		enabled: true,
+		match: {
+			mode: "all" as const,
+			conditions: {
+				from_contains: "alice@corp.example",
+				to_contains: "me@example.com",
+				subject_contains: "invoice",
+				body_contains: "purchase order",
+				has_attachment: true,
+				category_equals: "finance",
+			},
+		},
+		actions: {
+			move_to_folder: Folders.ARCHIVE,
+			set_category: "finance",
+			mark_read: true,
+			star: true,
+		},
+	};
+
+
+
+
+	it("accepts the fully-populated editor payload and stores it intact", async () => {
+		const parsed = CreateRuleSchema.safeParse(uiPayload);
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+
+
+
+
+		const stub = stubFor("editor@example.com");
+		const created = await stub.createRule(parsed.data);
+		const stored = (await stub.listRules()).find((rule) => rule.id === created.id);
+
+
+
+
+		expect(stored?.match).toEqual(uiPayload.match);
+		expect(stored?.actions).toEqual(uiPayload.actions);
+		expect(stored?.enabled).toBe(true);
+		expect(stored?.priority).toBe(0);
+	});
+
+
+
+
+	it("accepts the editor's tri-state choices for unset fields", () => {
+		// "Any message" / "Any category" / "Leave unchanged" map to omitted
+		// keys; "Has no attachment" is the one condition that sends `false`.
+		const parsed = CreateRuleSchema.safeParse({
+			name: "No attachments",
+			match: { mode: "any", conditions: { has_attachment: false } },
+			actions: { unstar: true, discard: true },
+		});
+
+
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+		expect(parsed.data.match.conditions).toEqual({ has_attachment: false });
+		expect(parsed.data.actions).toEqual({ unstar: true, discard: true });
+	});
+
+
+
+
+	it("rejects the half-finished forms the editor blocks client-side", () => {
+		// Empty form: no conditions, no actions.
+		expect(
+			CreateRuleSchema.safeParse({
+				name: "Empty",
+				match: { mode: "all", conditions: {} },
+				actions: {},
+			}).success,
+		).toBe(false);
+
+
+		// Conditions but nothing to do.
+		expect(
+			CreateRuleSchema.safeParse({
+				name: "Conditions only",
+				match: { mode: "all", conditions: { subject_contains: "hi" } },
+				actions: {},
+			}).success,
+		).toBe(false);
+
+
+		// An action but nothing to match on.
+		expect(
+			CreateRuleSchema.safeParse({
+				name: "Actions only",
+				match: { mode: "all", conditions: {} },
+				actions: { mark_read: true },
+			}).success,
+		).toBe(false);
+	});
+
+
+
+
+	it("accepts the reorder payload the up/down buttons send", () => {
+		expect(ReorderRulesSchema.safeParse({ ids: ["a", "b"] }).success).toBe(true);
+		expect(ReorderRulesSchema.safeParse({ ids: [] }).success).toBe(false);
 	});
 });
