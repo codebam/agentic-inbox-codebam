@@ -11,6 +11,7 @@ import { Folders } from "../../shared/folders";
 import { SPAM_CATEGORY_ID } from "../../shared/categories";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
+import { likePatternsFor } from "../lib/like-terms";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -934,21 +935,29 @@ export class MailboxDO extends DurableObject<Env> {
 			return `?${paramIdx}`;
 		};
 
-		if (query) {
-			const p1 = addParam(`%${query}%`);
-			const p2 = addParam(`%${query}%`);
-			const p3 = addParam(`%${query}%`);
-			const p4 = addParam(`%${query}%`);
-			conditions.push(`(${prefix}subject LIKE ${p1} OR ${prefix}body LIKE ${p2} OR ${prefix}sender LIKE ${p3} OR ${prefix}recipient LIKE ${p4} OR ${prefix}envelope_recipient LIKE ${p4} OR ${prefix}cc LIKE ${p4} OR ${prefix}bcc LIKE ${p4})`);
-		}
+		// LIKE patterns are escaped and chunked (see lib/like-terms.ts) so a term
+		// containing % or _ matches those characters literally, and a term longer
+		// than the SQLite LIKE pattern limit is split into several patterns that
+		// are ANDed together instead of failing the request. All columns for one
+		// chunk share a single bound parameter.
+		const addLikeConditions = (columns: string[], term: string | undefined) => {
+			if (!term) return;
+			for (const pattern of likePatternsFor(term)) {
+				const p = addParam(pattern);
+				const matches = columns.map((column) => `${prefix}${column} LIKE ${p} ESCAPE '\\'`);
+				conditions.push(`(${matches.join(" OR ")})`);
+			}
+		};
+
+		addLikeConditions(["subject", "body", "sender", "recipient", "envelope_recipient", "cc", "bcc"], query);
 		if (folder) {
 			const p = addParam(folder);
 			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);
 		}
 		if (category) { const p = addParam(category); conditions.push(`${prefix}category = ${p}`); }
-		if (from) { const p = addParam(`%${from}%`); conditions.push(`${prefix}sender LIKE ${p}`); }
-		if (to) { const p = addParam(`%${to}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}envelope_recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
-		if (subject) { const p = addParam(`%${subject}%`); conditions.push(`${prefix}subject LIKE ${p}`); }
+		addLikeConditions(["sender"], from);
+		addLikeConditions(["recipient", "envelope_recipient", "cc", "bcc"], to);
+		addLikeConditions(["subject"], subject);
 		if (date_start) { const p = addParam(date_start); conditions.push(`${prefix}date >= ${p}`); }
 		if (date_end) { const p = addParam(date_end); conditions.push(`${prefix}date <= ${p}`); }
 		if (is_read !== undefined) { const p = addParam(is_read ? 1 : 0); conditions.push(`${prefix}read = ${p}`); }

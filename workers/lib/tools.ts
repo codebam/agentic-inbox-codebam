@@ -30,15 +30,15 @@ import { verifyDraft } from "./ai";
 import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
+import { parseSearchQuery } from "../../shared/search-query";
+import { searchAllMailboxes } from "./search-all";
 import type { Env } from "../types";
 
 // ── Type casts for DO methods not on the base stub type ────────────
 type MailboxSearchStub = {
-	searchEmails: (options: {
-		query: string;
-		folder?: string;
-		category?: string;
-	}) => Promise<unknown>;
+	searchEmails: (options: Record<string, unknown>) => Promise<
+		Record<string, unknown>[]
+	>;
 };
 
 type RateLimitStub = {
@@ -185,16 +185,78 @@ export async function toolGetThread(
 
 // ── search_emails ──────────────────────────────────────────────────
 
+/** Filters accepted by the shared search tools (agent + MCP). */
+export interface SearchEmailParams {
+	/** Raw Gmail-style query, e.g. `from:bob is:unread has:attachment`. */
+	query?: string;
+	folder?: string;
+	category?: string;
+	from?: string;
+	to?: string;
+	subject?: string;
+	isRead?: boolean;
+	isStarred?: boolean;
+	hasAttachment?: boolean;
+	/** Only emails dated before this (ISO date or YYYY-MM-DD). */
+	before?: string;
+	/** Only emails dated after this (ISO date or YYYY-MM-DD). */
+	after?: string;
+	page?: number;
+	limit?: number;
+}
+
+
+/**
+ * Merge a raw Gmail-style query with explicit tool filters (explicit values
+ * win) into the Durable Object's snake_case search options.
+ */
+function buildSearchFilters(params: SearchEmailParams) {
+	const parsed = parseSearchQuery(params.query ?? "");
+	return {
+		query: parsed.query,
+		folder: params.folder ?? parsed.folder,
+		category: params.category,
+		from: params.from ?? parsed.from,
+		to: params.to ?? parsed.to,
+		subject: params.subject ?? parsed.subject,
+		date_start: params.after ?? parsed.date_start,
+		date_end: params.before ?? parsed.date_end,
+		is_read: params.isRead ?? parsed.is_read,
+		is_starred: params.isStarred ?? parsed.is_starred,
+		has_attachment: params.hasAttachment ?? parsed.has_attachment,
+	};
+}
+
+
 export async function toolSearchEmails(
 	env: Env,
 	mailboxId: string,
-	params: { query: string; folder?: string; category?: string },
+	params: SearchEmailParams,
 ) {
-	const stub = getMailboxStub(env, mailboxId);
-	return (stub as unknown as MailboxSearchStub).searchEmails({
-		query: params.query,
-		folder: params.folder,
-		category: params.category,
+	const stub = getMailboxStub(env, mailboxId) as unknown as MailboxSearchStub;
+	return stub.searchEmails({
+		...buildSearchFilters(params),
+		page: params.page,
+		limit: params.limit,
+	});
+}
+
+
+// ── search_all_mailboxes ───────────────────────────────────────────
+
+
+/**
+ * Search every mailbox in the deployment and return the merged matches, each
+ * row tagged with the mailboxId it came from. Same filters as search_emails.
+ */
+export async function toolSearchAllMailboxes(
+	env: Env,
+	params: SearchEmailParams,
+) {
+	return searchAllMailboxes(env, {
+		...buildSearchFilters(params),
+		page: params.page,
+		limit: params.limit,
 	});
 }
 

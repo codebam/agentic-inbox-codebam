@@ -11,6 +11,7 @@ import {
 	toolGetEmail,
 	toolGetThread,
 	toolSearchEmails,
+	toolSearchAllMailboxes,
 	toolDraftReply,
 	toolDraftEmail,
 	toolUpdateDraft,
@@ -53,6 +54,70 @@ function mcpResult(result: Record<string, unknown>) {
 	}
 	return mcpText(result);
 }
+
+
+/**
+ * Search filters shared by the search_emails and search_all_mailboxes tools.
+ * Every filter is optional; Gmail-style operators inside `query` are parsed
+ * server-side by shared/search-query.ts, so callers can pass either form.
+ */
+const searchFilterShape = {
+	query: z
+		.string()
+		.optional()
+		.describe(
+			"Search text matched against subject, body, sender and recipient. May also contain Gmail-style operators (from:bob, to:ann, subject:invoice, is:unread, is:starred, has:attachment, before:2025-01-01, after:2024-01-01); they are parsed server-side.",
+		),
+	folder: z
+		.string()
+		.optional()
+		.describe("Optional folder to restrict search to"),
+	category: z
+		.string()
+		.optional()
+		.describe("Optional category ID to restrict search to"),
+	from: z
+		.string()
+		.optional()
+		.describe("Only emails whose sender matches this text"),
+	to: z
+		.string()
+		.optional()
+		.describe("Only emails whose recipient (to/cc/bcc) matches this text"),
+	subject: z
+		.string()
+		.optional()
+		.describe("Only emails whose subject matches this text"),
+	isRead: z
+		.boolean()
+		.optional()
+		.describe("true = only read emails, false = only unread emails"),
+	isStarred: z
+		.boolean()
+		.optional()
+		.describe("true = only starred emails, false = only unstarred emails"),
+	hasAttachment: z
+		.boolean()
+		.optional()
+		.describe("true = only emails with attachments"),
+	before: z
+		.string()
+		.optional()
+		.describe("Only emails dated before this date (YYYY-MM-DD or ISO 8601)"),
+	after: z
+		.string()
+		.optional()
+		.describe("Only emails dated after this date (YYYY-MM-DD or ISO 8601)"),
+	page: z.number().int().min(1).optional().describe("Page number (default 1)"),
+	limit: z
+		.number()
+		.int()
+		.min(1)
+		.max(100)
+		.optional()
+		.describe("Results per page (default 25, max 100)"),
+};
+
 
 /**
  * EmailMCP — exposes email tools over the Model Context Protocol.
@@ -186,23 +251,26 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── search_emails ──────────────────────────────────────────
 		this.server.tool(
 			"search_emails",
-			"Search for emails matching a query across subject and body fields. Optionally filter by folder or Jev category.",
+			"Search for emails in one mailbox. Free text matches subject, body, sender and recipient; Gmail-style operators (from:bob is:unread has:attachment before:2025-01-01) are accepted in the query or as separate filters.",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
-				query: z.string().describe("Search query to match against subject and body"),
-				folder: z
-					.string()
-					.optional()
-					.describe("Optional folder to restrict search to"),
-				category: z
-					.string()
-					.optional()
-					.describe("Optional category ID to restrict search to"),
+				...searchFilterShape,
 			},
-			async ({ mailboxId, query, folder, category }) => {
+			async ({ mailboxId, ...filters }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolSearchEmails(env, mailboxId, { query, folder, category });
+				const result = await toolSearchEmails(env, mailboxId, filters);
+				return mcpText(result);
+			},
+		);
+
+		// ── search_all_mailboxes ───────────────────────────────────
+		this.server.tool(
+			"search_all_mailboxes",
+			"Search every mailbox in the deployment at once and merge the matches by date (newest first). Same filters as search_emails; each result row includes the mailboxId it came from.",
+			{ ...searchFilterShape },
+			async (filters) => {
+				const result = await toolSearchAllMailboxes(env, filters);
 				return mcpText(result);
 			},
 		);

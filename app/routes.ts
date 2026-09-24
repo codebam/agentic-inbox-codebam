@@ -11,6 +11,7 @@ import {
 export default [
 	index("routes/home.tsx"),
 	route("all", "routes/all-accounts.tsx"),
+	route("search", "routes/all-search.tsx"),
 	route("settings", "routes/global-settings.tsx"),
 	route("mailbox/:mailboxId", "routes/mailbox.tsx", [
 		index("routes/mailbox-index.tsx"),
