@@ -21,7 +21,7 @@ import MailboxSplitView from "~/components/MailboxSplitView";
 import { useUIStore } from "~/hooks/useUIStore";
 import { formatActionTime } from "~/lib/agent-actions";
 import { digestQueryKey, useDigest } from "~/queries/digest";
-import type { DigestCounts, DigestEmailRef } from "~/types";
+import type { DigestCounts, DigestEmailRef, DigestItemRef } from "~/types";
 
 /**
  * The server caps the needs-reply list at ten rows; this only formats the
@@ -78,6 +78,50 @@ function DigestRow({
 				<Tooltip content={formatDetailDate(item.date)} asChild>
 					<span className="shrink-0 text-xs text-kumo-subtle">
 						{formatActionTime(item.date)}
+					</span>
+				</Tooltip>
+			</div>
+		</li>
+	);
+}
+
+/**
+ * One open task/deadline row: the item's title, its due date, and a link
+ * back to the message it came from. Items carry only their source email id,
+ * so the row opens that message directly.
+ */
+function DigestItemRow({
+	item,
+	onOpen,
+}: {
+	item: DigestItemRef;
+	onOpen: (emailId: string) => void;
+}) {
+	return (
+		<li>
+			<div
+				role="button"
+				tabIndex={0}
+				onClick={() => onOpen(item.email_id)}
+				onKeyDown={(event) => {
+					if (event.key === "Enter" || event.key === " ") {
+						event.preventDefault();
+						onOpen(item.email_id);
+					}
+				}}
+				className="flex cursor-pointer items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-4 py-2.5 transition-colors hover:bg-kumo-tint"
+			>
+				<div className="min-w-0 flex-1">
+					<div className="truncate text-sm font-medium text-kumo-default">
+						{item.title}
+					</div>
+					<div className="mt-0.5 text-xs text-kumo-subtle">
+						Due {formatDetailDate(item.due_at)}
+					</div>
+				</div>
+				<Tooltip content={formatDetailDate(item.due_at)} asChild>
+					<span className="shrink-0 text-xs text-kumo-subtle">
+						{formatActionTime(item.due_at)}
 					</span>
 				</Tooltip>
 			</div>
@@ -235,6 +279,34 @@ export default function DigestRoute() {
 								</>
 							)}
 						</section>
+
+						{digest.items.open > 0 && (
+							<section className="mb-8">
+								<h2 className="mb-2 text-sm font-semibold text-kumo-default">
+									Tasks due
+								</h2>
+								<p className="mb-3 text-xs text-kumo-subtle">
+									{digest.items.overdue} overdue · {digest.items.due_today} due
+									today · {digest.items.open} open
+								</p>
+								{digest.items.due.length > 0 ? (
+									<ul className="space-y-1.5">
+										{digest.items.due.map((item) => (
+											<DigestItemRow
+												key={item.id}
+												item={item}
+												onOpen={(emailId) => selectEmail(emailId, mailboxId)}
+											/>
+										))}
+									</ul>
+								) : (
+									<p className="text-xs text-kumo-subtle">
+										No dated items yet — undated tasks live on the Tasks
+										page.
+									</p>
+								)}
+							</section>
+						)}
 
 						<section className="mb-8">
 							<h2 className="mb-2 text-sm font-semibold text-kumo-default">

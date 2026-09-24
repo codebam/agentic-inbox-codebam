@@ -106,6 +106,7 @@ import {
 } from "../lib/scheduled-sends";
 import {
 	DIGEST_CATEGORY_LIMIT,
+	DIGEST_ITEM_LIMIT,
 	DIGEST_NEEDS_REPLY_LIMIT,
 	DIGEST_RECENT_LIMIT,
 	DIGEST_REMINDER_LIMIT,
@@ -715,7 +716,7 @@ export class MailboxDO extends DurableObject<Env> {
 					SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
 					SUM(CASE WHEN read = 1 THEN 1 ELSE 0 END) as thread_read_count,
 					GROUP_CONCAT(DISTINCT sender) as participants,
-					SUM(CASE WHEN folder_id = (SELECT id FROM folders WHERE name = 'draft' LIMIT 1) THEN 1 ELSE 0 END) as has_draft
+					SUM(CASE WHEN folder_id = (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1) THEN 1 ELSE 0 END) as has_draft
 				FROM all_emails_with_conversation
 				WHERE conversation_id IN (
 					SELECT DISTINCT conversation_id FROM all_emails_with_conversation
@@ -749,8 +750,8 @@ export class MailboxDO extends DurableObject<Env> {
 				lif.category, lif.category_confidence,
 				SUBSTR(lif.body, 1, 300) as snippet,
 				cs.thread_count, cs.thread_unread_count, cs.participants,
-				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' LIMIT 1)
-					AND lmc.folder_id != (SELECT id FROM folders WHERE name = 'draft' LIMIT 1)
+				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
+					AND lmc.folder_id != (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1)
 					AND cs.thread_read_count > 0
 					THEN 1 ELSE 0 END as needs_reply,
 				CASE WHEN cs.has_draft > 0 THEN 1 ELSE 0 END as has_draft
@@ -3470,6 +3471,43 @@ export class MailboxDO extends DurableObject<Env> {
 			fired_at: string | null;
 		}[];
 
+		// Open tasks/deadlines the items extractor stored for this mailbox:
+		// how many are open, how many are overdue or due today (UTC), and the
+		// soonest few by due date. Read-only like the rest of the digest, and
+		// metadata only — items carry a bounded title and due instant, never
+		// message bodies.
+		const itemDayStart = `${window.to.slice(0, 10)}T00:00:00.000Z`;
+		const itemDayEnd = new Date(
+			Date.parse(itemDayStart) + 24 * 60 * 60 * 1000,
+		).toISOString();
+		const itemCountsRow = [
+			...this.ctx.storage.sql.exec(
+				`SELECT
+					SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_count,
+					SUM(CASE WHEN status = 'open' AND due_at IS NOT NULL AND due_at < ?1 THEN 1 ELSE 0 END) as overdue,
+					SUM(CASE WHEN status = 'open' AND due_at >= ?1 AND due_at < ?2 THEN 1 ELSE 0 END) as due_today
+				 FROM extracted_items`,
+				itemDayStart,
+				itemDayEnd,
+			),
+		][0] as
+			| { open_count: number | null; overdue: number | null; due_today: number | null }
+			| undefined;
+		const dueItemRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, title, due_at, email_id FROM extracted_items
+				 WHERE status = 'open' AND due_at IS NOT NULL
+				 ORDER BY due_at ASC, created_at ASC
+				 LIMIT ?1`,
+				DIGEST_ITEM_LIMIT,
+			),
+		] as unknown as {
+			id: string;
+			title: string | null;
+			due_at: string | null;
+			email_id: string | null;
+		}[];
+
 		const toRef = (row: DigestRefRow): DigestEmailRef => ({
 			id: row.id,
 			subject: row.subject ?? "",
@@ -3502,6 +3540,17 @@ export class MailboxDO extends DurableObject<Env> {
 				sender: row.sender ?? "",
 				fired_at: row.fired_at ?? "",
 			})),
+			items: {
+				open: itemCountsRow?.open_count ?? 0,
+				overdue: itemCountsRow?.overdue ?? 0,
+				due_today: itemCountsRow?.due_today ?? 0,
+				due: dueItemRows.map((row) => ({
+					id: String(row.id),
+					title: row.title ?? "",
+					due_at: row.due_at ?? "",
+					email_id: row.email_id ?? "",
+				})),
+			},
 		};
 	}
 

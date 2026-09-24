@@ -573,6 +573,7 @@ describe("sweepDigests", () => {
 			"by_category",
 			"counts",
 			"generated_at",
+			"items",
 			"mailbox",
 			"needs_reply",
 			"recent",
@@ -585,6 +586,7 @@ describe("sweepDigests", () => {
 			mailbox,
 			window: WINDOW,
 			counts: { received: 2, unread: 1, starred: 1, spam: 1, needs_reply: 1 },
+			items: { open: 0, overdue: 0, due_today: 0, due: [] },
 			by_category: [{ category: "work", count: 1 }],
 			needs_reply: [
 				{
@@ -817,5 +819,61 @@ describe("GET /api/v1/mailboxes/:mailboxId/digest", () => {
 			((await off.json()) as { settings?: Record<string, unknown> }).settings
 				?.digestEnabled,
 		).toBe(false);
+	});
+});
+
+
+describe("buildDigest items section", () => {
+	it("summarizes open items and lists the soonest due first", async () => {
+		const mailbox = "digest-items@example.com";
+		const stub = stubFor(mailbox);
+		await stub.insertItems("item-msg-1", "item-thread-1", [
+			{
+				kind: "deadline",
+				title: "Invoice due",
+				details: null,
+				due_at: isoHoursBefore(30),
+			},
+			{
+				kind: "task",
+				title: "Reply to landlord",
+				details: null,
+				due_at: isoHoursBefore(-4),
+			},
+			{ kind: "task", title: "Undated chore", details: null, due_at: null },
+		]);
+
+		const digest = await stub.buildDigest(WINDOW);
+
+		expect(digest.items.open).toBe(3);
+		expect(digest.items.overdue).toBe(1);
+		expect(digest.items.due_today).toBe(1);
+		expect(digest.items.due.map((item) => item.title)).toEqual([
+			"Invoice due",
+			"Reply to landlord",
+		]);
+		expect(digest.items.due[0]).toMatchObject({
+			email_id: "item-msg-1",
+			due_at: isoHoursBefore(30),
+		});
+	});
+
+	it("counts only open items in the overdue and due-today buckets", async () => {
+		const mailbox = "digest-items-closed@example.com";
+		const stub = stubFor(mailbox);
+		const [item] = await stub.insertItems("item-msg-2", null, [
+			{
+				kind: "task",
+				title: "Old chore",
+				details: null,
+				due_at: isoHoursBefore(48),
+			},
+		]);
+		await stub.updateItemStatus(item.id, "done");
+
+		const digest = await stub.buildDigest(WINDOW);
+		expect(digest.items.open).toBe(0);
+		expect(digest.items.overdue).toBe(0);
+		expect(digest.items.due).toEqual([]);
 	});
 });

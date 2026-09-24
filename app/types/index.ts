@@ -252,6 +252,29 @@ export interface DigestCategoryCount {
 }
 
 
+/** One open task or deadline the digest's items section lists. */
+export interface DigestItemRef {
+	id: string;
+	title: string;
+	/** ISO 8601 UTC instant the item is due. */
+	due_at: string;
+	email_id: string;
+}
+
+
+/** The open work the items extractor has stored for this mailbox. */
+export interface DigestItems {
+	/** Every open item, dated or not. */
+	open: number;
+	/** Open items already past due (due date before today, UTC). */
+	overdue: number;
+	/** Open items due on the digest's UTC day. */
+	due_today: number;
+	/** Soonest due first, at most ten; undated items excluded. */
+	due: DigestItemRef[];
+}
+
+
 /**
  * One mailbox's morning brief, as returned by
  * `GET /api/v1/mailboxes/:mailboxId/digest`. Mirrors the frozen wire shape in
@@ -274,6 +297,8 @@ export interface Digest {
 	recent: DigestEmailRef[];
 	/** At most 10 most recently fired follow-ups. */
 	reminders: DigestReminderRef[];
+	/** Open tasks and deadlines from the items extractor. */
+	items: DigestItems;
 }
 
 

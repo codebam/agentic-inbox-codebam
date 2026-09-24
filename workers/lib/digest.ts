@@ -52,6 +52,9 @@ export const DIGEST_CATEGORY_LIMIT = 20;
 /** Cap on `reminders`: the most recently fired follow-ups. */
 export const DIGEST_REMINDER_LIMIT = 10;
 
+/** Cap on `items.due`: the soonest-due open tasks and deadlines. */
+export const DIGEST_ITEM_LIMIT = 10;
+
 /**
  * Delivery rows kept per mailbox (newest UTC day first). The table is
  * append-only bookkeeping for the cron sweep, never message content.
@@ -102,6 +105,33 @@ export interface DigestCategoryCount {
 
 
 /**
+ * One open task or deadline from the items extractor, as the digest's
+ * `items.due` list carries it. `email_id` names the message the item came
+ * from, so a receiver can link back to it.
+ */
+export interface DigestItemRef {
+	id: string;
+	title: string;
+	/** ISO 8601 UTC instant the item is due. */
+	due_at: string;
+	email_id: string;
+}
+
+
+/** The open work the items extractor has stored for this mailbox. */
+export interface DigestItems {
+	/** Every open item, dated or not. */
+	open: number;
+	/** Open items already past due (due date before today, UTC). */
+	overdue: number;
+	/** Open items due on the digest's UTC day. */
+	due_today: number;
+	/** Soonest due first, at most DIGEST_ITEM_LIMIT; undated items excluded. */
+	due: DigestItemRef[];
+}
+
+
+/**
  * FROZEN WIRE SHAPE. The API route, the webhook payload, the digest UI and
  * the cron sweep all read these field names — change them only with every
  * consumer.
@@ -115,6 +145,7 @@ export interface Digest {
 	needs_reply: DigestEmailRef[];
 	recent: DigestEmailRef[];
 	reminders: DigestReminderRef[];
+	items: DigestItems;
 }
 
 
@@ -214,5 +245,6 @@ export function buildDigestPayload(
 		needs_reply: digest.needs_reply,
 		recent: digest.recent,
 		reminders: digest.reminders,
+		items: digest.items,
 	};
 }
