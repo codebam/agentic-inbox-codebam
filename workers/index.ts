@@ -19,6 +19,8 @@ import { SendEmailRequestSchema, BulkEmailActionSchema } from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
+import { parseSearchQuery } from "../shared/search-query";
+import { searchAllMailboxes } from "./lib/search-all";
 import {
 	mergeCategorizationCategories,
 	normalizeCategorizationSettings,
@@ -572,6 +574,37 @@ app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 	const emails = await stub.searchEmails({ ...searchOpts, page: intQuery(c, "page"), limit: intQuery(c, "limit") });
 	const totalCount = await stub.countSearchResults(searchOpts);
 	return c.json({ emails, totalCount });
+});
+
+
+/**
+ * Aggregated search across every mailbox.
+ *
+ * `q` is a raw Gmail-style query (e.g. `from:bob is:unread has:attachment`),
+ * parsed server-side by the shared search-query parser so clients can pass a
+ * query string straight through. Explicit operator params override the values
+ * parsed out of `q`. Rows are merged by date descending and tagged with the
+ * mailboxId they belong to.
+ */
+app.get("/api/v1/search", async (c) => {
+	const parsed = parseSearchQuery(c.req.query("q") ?? c.req.query("query") ?? "");
+	const folderParam = c.req.query("folder");
+	const result = await searchAllMailboxes(c.env, {
+		query: parsed.query,
+		folder: folderParam && folderParam !== "all" ? folderParam : parsed.folder,
+		category: c.req.query("category"),
+		from: c.req.query("from") ?? parsed.from,
+		to: c.req.query("to") ?? parsed.to,
+		subject: c.req.query("subject") ?? parsed.subject,
+		date_start: c.req.query("date_start") ?? parsed.date_start,
+		date_end: c.req.query("date_end") ?? parsed.date_end,
+		is_read: boolQuery(c, "is_read") ?? parsed.is_read,
+		is_starred: boolQuery(c, "is_starred") ?? parsed.is_starred,
+		has_attachment: boolQuery(c, "has_attachment") ?? parsed.has_attachment,
+		page: intQuery(c, "page"),
+		limit: intQuery(c, "limit"),
+	});
+	return c.json(result);
 });
 
 // -- Attachments ----------------------------------------------------
