@@ -47,18 +47,18 @@ export async function sendEmail(
 		subject: params.subject,
 	};
 
-	if (params.html) message.html = params.html;
-	if (params.text) message.text = params.text;
-	if (params.cc) message.cc = params.cc;
-	if (params.bcc) message.bcc = params.bcc;
-	if (params.replyTo) message.replyTo = params.replyTo;
+	if (params.html) message["html"] = params.html;
+	if (params.text) message["text"] = params.text;
+	if (params.cc) message["cc"] = params.cc;
+	if (params.bcc) message["bcc"] = params.bcc;
+	if (params.replyTo) message["replyTo"] = params.replyTo;
 
 	if (params.headers && Object.keys(params.headers).length > 0) {
-		message.headers = params.headers;
+		message["headers"] = params.headers;
 	}
 
 	if (params.attachments && params.attachments.length > 0) {
-		message.attachments = params.attachments.map((att) => ({
+		message["attachments"] = params.attachments.map((att) => ({
 			content: att.content,
 			filename: att.filename,
 			type: att.type,

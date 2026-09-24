@@ -70,5 +70,5 @@ export async function loadMailboxSignature(
 	settings?: Record<string, unknown>,
 ): Promise<SignatureSettings | undefined> {
 	const mailboxSettings = settings ?? (await readMailboxSettings(env, mailboxId));
-	return normalizeSignatureSettings(mailboxSettings.signature);
+	return normalizeSignatureSettings(mailboxSettings["signature"]);
 }
