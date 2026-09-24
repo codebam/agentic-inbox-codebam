@@ -22,7 +22,7 @@ import {
 } from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
 import { applySignatureToBody } from "../shared/signature";
-import { modelConfigErrors } from "../shared/models";
+import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import {
@@ -208,10 +208,12 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	// Normalize server-side so an edited stale client cannot store malformed
-	// categorization settings that would break inbound classification.
+	// categorization or model settings that would break inbound
+	// classification and AI calls.
 	const normalizedSettings = {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings.categorization),
+		models: normalizeModelConfig(settings.models),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
