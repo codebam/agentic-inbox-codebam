@@ -3,11 +3,12 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Banner, Button, Dialog, Input, Text } from "@cloudflare/kumo";
-import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
+import { FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon } from "@phosphor-icons/react";
 import { lazy, Suspense } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import { useUIStore } from "~/hooks/useUIStore";
+import AttachmentPicker from "./AttachmentPicker";
 
 const ComposeBodyEditor = lazy(() => import("./ComposeBodyEditor"));
 
@@ -38,6 +39,12 @@ export default function ComposeEmail() {
 		formTitle,
 		handleSaveDraft,
 		handleSend,
+		attachments,
+		attachmentErrors,
+		attachmentSummary,
+		isEncodingAttachments,
+		handleAddAttachments,
+		handleRemoveAttachment,
 	} = useComposeForm(mailboxId, folder);
 
 	return (
@@ -48,6 +55,15 @@ export default function ComposeEmail() {
 			<Dialog size="lg" className="p-6 max-h-[85vh] overflow-y-auto">
 				<Dialog.Title className="text-lg font-semibold mb-5">{formTitle}</Dialog.Title>
 				<form onSubmit={(e) => handleSend(e, closeComposeModal)} className="space-y-4">
+					<AttachmentPicker
+						className="space-y-4"
+						attachments={attachments}
+						errors={attachmentErrors}
+						isBusy={isEncodingAttachments}
+						disabled={isSending || isSavingDraft}
+						onAddFiles={handleAddAttachments}
+						onRemove={handleRemoveAttachment}
+					>
 					{error && <Banner variant="error" text={error} />}
 					<div className="flex items-center gap-2">
 						<div className="flex-1">
@@ -114,23 +130,32 @@ export default function ComposeEmail() {
 							<ComposeBodyEditor value={body} onChange={setBody} />
 						</Suspense>
 					</div>
-					<div className="flex justify-between items-center pt-2">
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							onClick={closeComposeModal}
-							disabled={isSending}
-						>
-							Discard
-						</Button>
+					</AttachmentPicker>
+					<div className="flex justify-between items-center gap-3 pt-2">
+						<div className="flex items-center gap-3 min-w-0">
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={closeComposeModal}
+								disabled={isSending}
+							>
+								Discard
+							</Button>
+							{attachmentSummary && (
+								<span className="flex items-center gap-1.5 text-xs text-kumo-subtle truncate">
+									<PaperclipIcon size={14} className="shrink-0" />
+									{attachmentSummary}
+								</span>
+							)}
+						</div>
 						<div className="flex items-center gap-2">
 							<Button
 								type="button"
 								variant="secondary"
 								size="sm"
 								loading={isSavingDraft}
-								disabled={isSending}
+								disabled={isSending || isEncodingAttachments}
 								icon={<FloppyDiskIcon size={14} />}
 								onClick={handleSaveDraft}
 							>
@@ -141,7 +166,7 @@ export default function ComposeEmail() {
 								variant="primary"
 								size="sm"
 								loading={isSending}
-								disabled={isSavingDraft || isSending}
+								disabled={isSavingDraft || isSending || isEncodingAttachments}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
 								{isSending ? "Sending..." : "Send"}

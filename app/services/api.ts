@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { GlobalCategorizationSettings } from "shared/categories";
+import type { AttachmentPayload } from "~/lib/attachments";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -164,6 +165,7 @@ const api = {
 			bcc?: string;
 			subject?: string;
 			body: string;
+			attachments?: AttachmentPayload[];
 			in_reply_to?: string;
 			thread_id?: string;
 			draft_id?: string;

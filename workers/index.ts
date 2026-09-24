@@ -66,6 +66,19 @@ const DraftBody = z.object({
 	bcc: z.string().optional(),
 	subject: z.string().optional(),
 	body: z.string(),
+	// Same shape as SendEmailRequestSchema.attachments: the composer sends the
+	// files it is holding so a saved draft keeps them.
+	attachments: z
+		.array(
+			z.object({
+				content: z.string(), // base64 encoded
+				filename: z.string(),
+				type: z.string(),
+				disposition: z.enum(["attachment", "inline"]),
+				contentId: z.string().optional(),
+			}),
+		)
+		.optional(),
 	in_reply_to: z.string().optional(),
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),
@@ -365,7 +378,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
+	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
 
 	// Draft replies to spam are refused at the same layer as the agent and MCP
@@ -437,12 +450,15 @@ app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	}
 	const messageId = crypto.randomUUID();
 	const now = new Date().toISOString();
+	// Persist the composer's files with the draft so re-opening and sending it
+	// keeps the attachments (the previous draft's copies are deleted above).
+	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 	await stub.createEmail(Folders.DRAFT, {
 		id: messageId, subject: subject || "", sender: mailboxId.toLowerCase(),
 		recipient: (to || "").toLowerCase(), cc: cc?.toLowerCase() || null, bcc: bcc?.toLowerCase() || null,
 		date: now, body, in_reply_to: replyTarget || null, email_references: null,
 		thread_id: threadTarget || replyTarget || messageId,
-	}, []);
+	}, attachmentData);
 	return c.json({ id: messageId, draft_id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
 });
 

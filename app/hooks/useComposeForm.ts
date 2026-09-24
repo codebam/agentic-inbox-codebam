@@ -14,9 +14,20 @@ import {
 	stripHtml,
 	toEmailListValue,
 } from "~/lib/utils";
+import {
+	blobToBase64,
+	createPendingAttachment,
+	describeAttachmentSummary,
+	pendingAttachmentFromStored,
+	toAttachmentPayloads,
+	validateAttachmentSelection,
+	type PendingAttachment,
+} from "~/lib/attachments";
 import { useDeleteEmail, useForwardEmail, useReplyToEmail, useSaveDraft, useSendEmail } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
+import api from "~/services/api";
+import type { Attachment } from "~/types";
 
 function appendUniqueAddress(
 	addresses: string[],
@@ -181,7 +192,13 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 	const [error, setError] = useState<string | null>(null);
 	const [isSavingDraft, setIsSavingDraft] = useState(false);
 	const [isSending, setIsSending] = useState(false);
+	const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+	const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
+	const [isEncodingAttachments, setIsEncodingAttachments] = useState(false);
 	const lastInitializedOptionsRef = useRef<typeof composeOptions | null>(null);
+	// Id of the message whose stored attachments are already in `attachments`.
+	// Guards the reload below so saving a draft does not re-download its files.
+	const loadedAttachmentsForRef = useRef<string | null>(null);
 	const isDraftEdit = !!composeOptions.draftEmail;
 
 	const formTitle = useMemo(() => {
@@ -209,8 +226,103 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		setBody(initialFields.body);
 	}, [composeOptions, currentMailbox?.email, sigBlock]);
 
+
+	/**
+	 * Attachments the composer loads from the server: the draft's own files
+	 * when editing a draft, or the original message's files when forwarding —
+	 * so a re-opened draft, or a forward, keeps the files it was created with.
+	 */
+	const attachmentSource = useMemo(() => {
+		const draft = composeOptions.draftEmail;
+		if (draft) {
+			return { key: draft.id, ownerId: draft.id, stored: draft.attachments ?? [] };
+		}
+		const original = composeOptions.originalEmail;
+		if (composeOptions.mode === "forward" && original) {
+			return { key: original.id, ownerId: original.id, stored: original.attachments ?? [] };
+		}
+		return { key: null, ownerId: null, stored: [] as Attachment[] };
+	}, [composeOptions]);
+
+
+	useEffect(() => {
+		if (loadedAttachmentsForRef.current === attachmentSource.key) return;
+		loadedAttachmentsForRef.current = attachmentSource.key;
+		// A different compose session starts with a clean slate.
+		setAttachments([]);
+		setAttachmentErrors([]);
+		const { ownerId, stored } = attachmentSource;
+		// Inline parts belong to the body (cid: references), not to the file list.
+		const files = stored.filter((attachment) => attachment.disposition !== "inline");
+		if (!mailboxId || !ownerId || files.length === 0) return;
+
+
+		let cancelled = false;
+		setIsEncodingAttachments(true);
+		void (async () => {
+			const loaded: PendingAttachment[] = [];
+			const failures: string[] = [];
+			for (const file of files) {
+				try {
+					const blob = (await api.getAttachment(mailboxId, ownerId, file.id)) as Blob;
+					loaded.push(pendingAttachmentFromStored(file, await blobToBase64(blob)));
+				} catch {
+					failures.push(`Could not load "${file.filename}" — re-attach it before sending.`);
+				}
+			}
+			if (cancelled) return;
+			setAttachments(loaded);
+			setAttachmentErrors(failures);
+			setIsEncodingAttachments(false);
+		})();
+		return () => { cancelled = true; };
+	}, [attachmentSource, mailboxId]);
+
+	const handleAddAttachments = async (files: File[]) => {
+		if (files.length === 0 || isEncodingAttachments) return;
+		const picked = files.map((file) => ({
+			file,
+			candidate: {
+				filename: file.name,
+				type: file.type || "application/octet-stream",
+				size: file.size,
+			},
+		}));
+		const { accepted, errors } = validateAttachmentSelection(
+			picked.map((entry) => entry.candidate),
+			attachments,
+		);
+		setAttachmentErrors(errors);
+		if (accepted.length === 0) return;
+
+
+		setIsEncodingAttachments(true);
+		try {
+			const encoded: PendingAttachment[] = [];
+			for (const entry of picked) {
+				if (!accepted.includes(entry.candidate)) continue;
+				const content = await blobToBase64(entry.file);
+				encoded.push(
+					createPendingAttachment(entry.candidate, content, crypto.randomUUID()),
+				);
+			}
+			setAttachments((previous) => [...previous, ...encoded]);
+		} catch (err: unknown) {
+			const message = (err instanceof Error ? err.message : null) || "Could not read the selected file.";
+			setAttachmentErrors((previous) => [...previous, message]);
+		} finally {
+			setIsEncodingAttachments(false);
+		}
+	};
+
+
+	const handleRemoveAttachment = (id: string) => {
+		setAttachments((previous) => previous.filter((attachment) => attachment.id !== id));
+	};
+
+
 	const handleSaveDraft = async () => {
-		if (!mailboxId || isSending) return; setIsSavingDraft(true); setError(null);
+		if (!mailboxId || isSending || isEncodingAttachments) return; setIsSavingDraft(true); setError(null);
 		try {
 			const inReplyTo =
 				composeOptions.originalEmail?.id ||
@@ -226,10 +338,14 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 				bcc: bcc || undefined,
 				subject,
 				body,
+				attachments: toAttachmentPayloads(attachments),
 				in_reply_to: inReplyTo || undefined,
 				thread_id: threadId || undefined,
 				draft_id: composeOptions.draftEmail?.id || undefined,
 			} });
+			// The pending files are already in memory and were just stored under
+			// the new draft id, so mark it loaded instead of re-downloading them.
+			loadedAttachmentsForRef.current = saved.id;
 			// Remember the id returned by the server. Without this, a second
 			// "Save as Draft" would send the id of the now-deleted draft and
 			// fail validation.
@@ -260,12 +376,14 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 
 	const handleSend = async (e: FormEvent, onClose: () => void) => {
 		e.preventDefault(); if (isSending) return; setError(null);
+		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		const toRecipients = splitEmailList(to);
 		if (toRecipients.length === 0) { setError("Add at least one recipient."); return; }
 		const ccRecipients = splitEmailList(cc); const bccRecipients = splitEmailList(bcc);
 		const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
 		const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
+		const attachmentPayloads = toAttachmentPayloads(attachments);
 		const emailData = {
 			to: toEmailListValue(toRecipients),
 			cc: toEmailListValue(ccRecipients),
@@ -274,6 +392,7 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 			subject,
 			html: body,
 			text: htmlToPlainText(body),
+			attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
 		};
 		const draftId = composeOptions.draftEmail?.id; const mode = composeOptions.mode; const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
 		setIsSending(true); toastManager.add({ title: "Sending email..." });
@@ -288,5 +407,10 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		finally { setIsSending(false); }
 	};
 
-	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel };
+	return {
+		to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody,
+		error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel,
+		attachments, attachmentErrors, attachmentSummary: describeAttachmentSummary(attachments),
+		isEncodingAttachments, handleAddAttachments, handleRemoveAttachment,
+	};
 }
