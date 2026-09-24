@@ -24,7 +24,7 @@ export class ApiError extends Error {
 	body: Record<string, unknown>;
 
 	constructor(status: number, body: Record<string, unknown>) {
-		super((body.error as string) || `Request failed: ${status}`);
+		super((body["error"] as string) || `Request failed: ${status}`);
 		this.name = "ApiError";
 		this.status = status;
 		this.body = body;

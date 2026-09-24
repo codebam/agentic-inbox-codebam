@@ -34,7 +34,7 @@ export function useEmails(
 	params: Record<string, string>,
 	options?: { enabled?: boolean; refetchInterval?: number },
 ) {
-	const queryParams = params.folder
+	const queryParams = params["folder"]
 		? { ...params, threaded: "true" }
 		: params;
 

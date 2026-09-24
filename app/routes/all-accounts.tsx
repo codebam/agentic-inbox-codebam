@@ -130,7 +130,7 @@ export default function AllAccountsRoute() {
 			page: String(page),
 			limit: String(PAGE_SIZE),
 		};
-		if (folder !== "all") next.folder = folder;
+		if (folder !== "all") next["folder"] = folder;
 		return next;
 	}, [folder, page]);
 

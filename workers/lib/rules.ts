@@ -326,18 +326,18 @@ export function normalizeRuleConditions(raw: unknown): RuleConditions {
 		raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 	const conditions: RuleConditions = {};
 
-	const from = normalizeConditionValue(value.from_contains);
+	const from = normalizeConditionValue(value["from_contains"]);
 	if (from) conditions.from_contains = from;
-	const to = normalizeConditionValue(value.to_contains);
+	const to = normalizeConditionValue(value["to_contains"]);
 	if (to) conditions.to_contains = to;
-	const subject = normalizeConditionValue(value.subject_contains);
+	const subject = normalizeConditionValue(value["subject_contains"]);
 	if (subject) conditions.subject_contains = subject;
-	const body = normalizeConditionValue(value.body_contains);
+	const body = normalizeConditionValue(value["body_contains"]);
 	if (body) conditions.body_contains = body;
-	const category = normalizeConditionValue(value.category_equals);
+	const category = normalizeConditionValue(value["category_equals"]);
 	if (category) conditions.category_equals = category;
-	if (typeof value.has_attachment === "boolean") {
-		conditions.has_attachment = value.has_attachment;
+	if (typeof value["has_attachment"] === "boolean") {
+		conditions.has_attachment = value["has_attachment"];
 	}
 
 	return conditions;
@@ -348,10 +348,10 @@ export function normalizeRuleConditions(raw: unknown): RuleConditions {
 export function normalizeRuleMatch(raw: unknown): RuleMatchSpec {
 	const value =
 		raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-	const mode = RULE_MATCH_MODES.includes(value.mode as RuleMatchMode)
-		? (value.mode as RuleMatchMode)
+	const mode = RULE_MATCH_MODES.includes(value["mode"] as RuleMatchMode)
+		? (value["mode"] as RuleMatchMode)
 		: "all";
-	return { mode, conditions: normalizeRuleConditions(value.conditions) };
+	return { mode, conditions: normalizeRuleConditions(value["conditions"]) };
 }
 
 
@@ -376,22 +376,22 @@ export function normalizeRuleActions(raw: unknown): RuleActions {
 		raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 	const actions: RuleActions = {};
 
-	const folder = normalizeConditionValue(value.move_to_folder);
+	const folder = normalizeConditionValue(value["move_to_folder"]);
 	if (folder) actions.move_to_folder = folder;
-	const category = normalizeConditionValue(value.set_category);
+	const category = normalizeConditionValue(value["set_category"]);
 	if (category) actions.set_category = category;
-	if (typeof value.mark_read === "boolean") actions.mark_read = value.mark_read;
-	if (typeof value.mark_unread === "boolean") {
-		actions.mark_unread = value.mark_unread;
+	if (typeof value["mark_read"] === "boolean") actions.mark_read = value["mark_read"];
+	if (typeof value["mark_unread"] === "boolean") {
+		actions.mark_unread = value["mark_unread"];
 	}
-	if (typeof value.star === "boolean") actions.star = value.star;
-	if (typeof value.unstar === "boolean") actions.unstar = value.unstar;
-	if (typeof value.discard === "boolean") actions.discard = value.discard;
-	const forwardTo = normalizeConditionValue(value.forward_to);
+	if (typeof value["star"] === "boolean") actions.star = value["star"];
+	if (typeof value["unstar"] === "boolean") actions.unstar = value["unstar"];
+	if (typeof value["discard"] === "boolean") actions.discard = value["discard"];
+	const forwardTo = normalizeConditionValue(value["forward_to"]);
 	if (forwardTo) {
 		actions.forward_to = forwardTo.slice(0, MAX_RULE_ADDRESS_LENGTH);
 	}
-	const autoReply = normalizeAutoReplyText(value.auto_reply_text);
+	const autoReply = normalizeAutoReplyText(value["auto_reply_text"]);
 	if (autoReply) actions.auto_reply_text = autoReply;
 
 

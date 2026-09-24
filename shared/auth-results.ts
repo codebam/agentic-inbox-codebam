@@ -307,16 +307,16 @@ function headerEntries(raw: unknown): RawHeaderEntry[] {
 			if (!item || typeof item !== "object") continue;
 			const record = item as Record<string, unknown>;
 			const key =
-				typeof record.key === "string"
-					? record.key
-					: typeof record.name === "string"
-						? record.name
+				typeof record["key"] === "string"
+					? record["key"]
+					: typeof record["name"] === "string"
+						? record["name"]
 						: "";
 			const headerValue =
-				typeof record.value === "string"
-					? record.value
-					: typeof record.value === "number"
-						? String(record.value)
+				typeof record["value"] === "string"
+					? record["value"]
+					: typeof record["value"] === "number"
+						? String(record["value"])
 						: "";
 			if (!key || !headerValue) continue;
 			entries.push({ key, value: headerValue });

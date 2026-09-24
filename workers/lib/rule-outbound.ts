@@ -114,9 +114,9 @@ function parseHeaderPairs(
 			for (const entry of parsed) {
 				if (!entry || typeof entry !== "object") continue;
 				const record = entry as Record<string, unknown>;
-				const key = String(record.key ?? record.name ?? "").toLowerCase();
+				const key = String(record["key"] ?? record["name"] ?? "").toLowerCase();
 				if (!key) continue;
-				pairs.push({ key, value: String(record.value ?? "") });
+				pairs.push({ key, value: String(record["value"] ?? "") });
 			}
 			return pairs;
 		}

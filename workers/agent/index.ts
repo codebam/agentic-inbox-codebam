@@ -176,8 +176,8 @@ async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
 		const obj = await env.BUCKET.get(key);
 		if (obj) {
 			const settings = await obj.json<Record<string, unknown>>();
-			if (typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()) {
-				return settings.agentSystemPrompt;
+			if (typeof settings["agentSystemPrompt"] === "string" && settings["agentSystemPrompt"].trim()) {
+				return settings["agentSystemPrompt"];
 			}
 		}
 	} catch {

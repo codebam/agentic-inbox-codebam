@@ -129,14 +129,14 @@ export function summarizeClassification(
 
 	if (parsed.kind === "object") {
 		const value = parsed.value;
-		const model = nonEmptyString(value.model);
-		const category = nonEmptyString(value.category) ?? columnCategory;
+		const model = nonEmptyString(value["model"]);
+		const category = nonEmptyString(value["category"]) ?? columnCategory;
 		const categoryName =
-			nonEmptyString(value.category_name) ??
+			nonEmptyString(value["category_name"]) ??
 			(category ? (columnLabel ?? labelForCategory(category)) : null);
-		const jsonConfidence = finiteProbability(value.category_confidence);
-		const spamProbability = finiteProbability(value.spam_probability);
-		const isSpam = typeof value.is_spam === "boolean" ? value.is_spam : null;
+		const jsonConfidence = finiteProbability(value["category_confidence"]);
+		const spamProbability = finiteProbability(value["spam_probability"]);
+		const isSpam = typeof value["is_spam"] === "boolean" ? value["is_spam"] : null;
 
 
 		if (isSpam !== null) {

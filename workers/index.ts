@@ -252,8 +252,8 @@ app.post("/api/v1/mailboxes", async (c) => {
 	const finalSettings = {
 		...defaultMailboxSettings(name),
 		...settings,
-		categorization: normalizeCategorizationSettings(settings?.categorization),
-		imageAllowlist: normalizeImageAllowlist(settings?.imageAllowlist),
+		categorization: normalizeCategorizationSettings(settings?.["categorization"]),
+		imageAllowlist: normalizeImageAllowlist(settings?.["imageAllowlist"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -278,22 +278,22 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	// An unusable webhook URL is rejected outright: notification settings are
 	// only stored once the endpoint is known to be deliverable (absolute https).
-	const webhookUrlError = validateWebhookUrl(settings.notifyWebhookUrl);
+	const webhookUrlError = validateWebhookUrl(settings["notifyWebhookUrl"]);
 	if (webhookUrlError) return c.json({ error: webhookUrlError }, 400);
 	// Normalize server-side so an edited stale client cannot store malformed
 	// categorization, model or Trash retention settings that would break
 	// inbound classification, AI calls or the retention sweep.
 	const normalizedSettings = {
 		...settings,
-		categorization: normalizeCategorizationSettings(settings.categorization),
-		models: normalizeModelConfig(settings.models),
-		defaultEmailView: normalizeEmailViewMode(settings.defaultEmailView) ?? null,
+		categorization: normalizeCategorizationSettings(settings["categorization"]),
+		models: normalizeModelConfig(settings["models"]),
+		defaultEmailView: normalizeEmailViewMode(settings["defaultEmailView"]) ?? null,
 		// Missing or unusable values fall back to the 30-day default; 0 keeps
 		// trashed mail until someone empties Trash by hand.
-		trashRetentionDays: normalizeTrashRetentionDays(settings.trashRetentionDays),
-		notifyWebhookUrl: normalizeWebhookUrl(settings.notifyWebhookUrl),
-		notifyWebhookSecret: normalizeWebhookSecret(settings.notifyWebhookSecret),
-		imageAllowlist: normalizeImageAllowlist(settings.imageAllowlist),
+		trashRetentionDays: normalizeTrashRetentionDays(settings["trashRetentionDays"]),
+		notifyWebhookUrl: normalizeWebhookUrl(settings["notifyWebhookUrl"]),
+		notifyWebhookSecret: normalizeWebhookSecret(settings["notifyWebhookSecret"]),
+		imageAllowlist: normalizeImageAllowlist(settings["imageAllowlist"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
@@ -325,14 +325,14 @@ app.post("/api/v1/mailboxes/:mailboxId/webhook/test", async (c) => {
 	const body = (await c.req.json().catch(() => ({}))) as { url?: unknown; secret?: unknown };
 	const settings = await readMailboxSettings(c.env, mailboxId);
 
-	const url = normalizeWebhookUrl(body.url !== undefined ? body.url : settings.notifyWebhookUrl);
+	const url = normalizeWebhookUrl(body.url !== undefined ? body.url : settings["notifyWebhookUrl"]);
 	if (!url) return c.json({ error: "No webhook URL configured" }, 400);
 	const urlError = validateWebhookUrl(url);
 	if (urlError) return c.json({ error: urlError }, 400);
 
 	const secret = body.secret !== undefined
 		? normalizeWebhookSecret(body.secret)
-		: normalizeWebhookSecret(settings.notifyWebhookSecret);
+		: normalizeWebhookSecret(settings["notifyWebhookSecret"]);
 
 	const result = await notifyNewEmail(c.env, mailboxId, {
 		id: `webhook-test-${crypto.randomUUID()}`,
@@ -1127,7 +1127,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`);
 		return;
 	}
-	const categorization = normalizeCategorizationSettings(mailboxSettings.categorization);
+	const categorization = normalizeCategorizationSettings(mailboxSettings["categorization"]);
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
@@ -1385,7 +1385,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// Only schedule when a webhook is actually configured: notifyNewEmail is a
 	// no-op without a URL, and an unconditional waitUntil would leave a
 	// pointless pending promise on every delivery.
-	if (!isSpam && !ruleMarkedSpam && normalizeWebhookUrl(mailboxSettings.notifyWebhookUrl)) {
+	if (!isSpam && !ruleMarkedSpam && normalizeWebhookUrl(mailboxSettings["notifyWebhookUrl"])) {
 		ctx.waitUntil(notifyNewEmail(env, mailboxId, {
 			id: messageId,
 			subject: parsedEmail.subject || "",

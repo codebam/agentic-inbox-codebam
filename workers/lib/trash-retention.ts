@@ -55,7 +55,7 @@ export async function sweepTrash(
 	for (const mailbox of mailboxes) {
 		try {
 			const settings = await readMailboxSettings(env, mailbox.id);
-			const retentionDays = normalizeTrashRetentionDays(settings.trashRetentionDays);
+			const retentionDays = normalizeTrashRetentionDays(settings["trashRetentionDays"]);
 			if (retentionDays === 0) continue;
 
 			summary.mailboxes++;

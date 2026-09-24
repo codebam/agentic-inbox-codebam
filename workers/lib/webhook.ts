@@ -180,7 +180,7 @@ export async function notifyNewEmail(
 	try {
 		const mailboxSettings = settings ?? (await readMailboxSettings(env, mailboxId));
 
-		const url = normalizeWebhookUrl(mailboxSettings.notifyWebhookUrl);
+		const url = normalizeWebhookUrl(mailboxSettings["notifyWebhookUrl"]);
 		if (!url) return { ok: false, status: null, error: null, skipped: true };
 
 		// Settings are validated on write, but a hand-edited R2 object (or a
@@ -191,7 +191,7 @@ export async function notifyNewEmail(
 			return { ok: false, status: null, error: urlError, skipped: true };
 		}
 
-		const secret = normalizeWebhookSecret(mailboxSettings.notifyWebhookSecret);
+		const secret = normalizeWebhookSecret(mailboxSettings["notifyWebhookSecret"]);
 		const body = JSON.stringify(buildWebhookPayload(mailboxId, email));
 		const signature = secret ? await signWebhookBody(secret, body) : null;
 

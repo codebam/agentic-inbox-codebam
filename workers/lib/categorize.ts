@@ -119,7 +119,7 @@ export async function classifyIncomingEmail(
 	const questions: Record<string, unknown> = {};
 
 	if (settings.spam.enabled) {
-		questions.is_spam = {
+		questions["is_spam"] = {
 			type: "noul",
 			instructions: SPAM_INSTRUCTIONS,
 			criteria: SPAM_CRITERIA,
@@ -133,7 +133,7 @@ export async function classifyIncomingEmail(
 				? `${category.name}: ${category.description}`
 				: category.name;
 		}
-		questions.category = {
+		questions["category"] = {
 			type: "choice",
 			instructions: CATEGORY_INSTRUCTIONS,
 			criteria,
@@ -193,7 +193,7 @@ function interpretJevResponse(
 	settings: CategorizationSettings,
 ): EmailClassification {
 	const answers = response?.answers ?? {};
-	const spamAnswer = answers.is_spam;
+	const spamAnswer = answers["is_spam"];
 	const spamProbability =
 		spamAnswer?.type === "noul" && typeof spamAnswer.noul === "number"
 			? clampProbability(spamAnswer.noul)
@@ -211,7 +211,7 @@ function interpretJevResponse(
 		category = SPAM_CATEGORY_ID;
 		categoryConfidence = spamProbability;
 	} else if (settings.categories.length > 0) {
-		const choiceAnswer = answers.category;
+		const choiceAnswer = answers["category"];
 		const validIds = new Set(settings.categories.map((item) => item.id));
 		let selected: string | undefined;
 

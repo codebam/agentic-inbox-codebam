@@ -32,12 +32,12 @@ function classifySpamAudit(
 	if (typeof classification === "string") {
 		try {
 			const parsed = JSON.parse(classification) as Record<string, unknown> | null;
-			return parsed?.is_spam === true;
+			return parsed?.["is_spam"] === true;
 		} catch {
 			return false;
 		}
 	}
-	return classification.is_spam === true;
+	return classification["is_spam"] === true;
 }
 
 /**
