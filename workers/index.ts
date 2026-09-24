@@ -20,6 +20,7 @@ import {
 	ScheduleSendRequestSchema,
 	BulkEmailActionSchema,
 	CreateRuleSchema,
+	CreateTemplateSchema,
 	DraftBodySchema,
 	PreviewRuleSchema,
 	ReorderRulesSchema,
@@ -27,6 +28,7 @@ import {
 	SenderPolicyFeedbackSchema,
 	SetSenderPolicySchema,
 	UpdateRuleSchema,
+	UpdateTemplateSchema,
 } from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
 import { applySignatureToBody } from "../shared/signature";
@@ -104,6 +106,7 @@ import {
 	withoutSpamQuestion,
 	type SenderPolicy,
 } from "./lib/sender-policy";
+import { isTemplateValidationError } from "./lib/templates";
 import { handleInboundRuleOutbound } from "./lib/rule-outbound";
 import {
 	extractUnsubscribeHeaders,
@@ -1127,6 +1130,70 @@ app.get("/api/v1/mailboxes/:mailboxId/contacts", async (c: AppContext) => {
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------
+
+// -- Templates (per-mailbox reusable snippets) ----------------------
+
+/**
+ * Same shape of 400 message for the template routes.
+ */
+function templateErrorMessage(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Invalid template";
+	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+	return `Invalid template — ${path}${issue.message}`;
+}
+
+/**
+ * The mailbox's templates, ordered by name (case-insensitive) then creation
+ * order. Read-only and operator-authored: templates never send mail, and the
+ * agent/MCP surfaces get the same list through list_templates.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/templates", async (c: AppContext) => {
+	return c.json({ templates: await c.var.mailboxStub.listTemplates() });
+});
+
+
+/**
+ * Store one template. Bounds (name 1..120, subject <= 500, body
+ * 1..100000) and the 200-per-mailbox cap are enforced by the Durable Object;
+ * an unusable payload is a 400 here, never a silently clipped row.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/templates", async (c: AppContext) => {
+	const parsed = CreateTemplateSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: templateErrorMessage(parsed.error) }, 400);
+	try {
+		return c.json(await c.var.mailboxStub.createTemplate(parsed.data), 201);
+	} catch (e) {
+		if (isTemplateValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+/**
+ * Partial update of one template (name, subject and/or body). The stored row
+ * comes back so the composer list can refresh without a second read; an
+ * unknown id is a 404.
+ */
+app.put("/api/v1/mailboxes/:mailboxId/templates/:templateId", async (c: AppContext) => {
+	const parsed = UpdateTemplateSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: templateErrorMessage(parsed.error) }, 400);
+	try {
+		const template = await c.var.mailboxStub.updateTemplate(c.req.param("templateId")!, parsed.data);
+		return template ? c.json(template) : c.json({ error: "Template not found" }, 404);
+	} catch (e) {
+		if (isTemplateValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+/** Remove one template; 404 when there is nothing to remove. */
+app.delete("/api/v1/mailboxes/:mailboxId/templates/:templateId", async (c: AppContext) => {
+	const deleted = await c.var.mailboxStub.deleteTemplate(c.req.param("templateId")!);
+	return deleted ? c.body(null, 204) : c.json({ error: "Template not found" }, 404);
+});
+
 
 app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 	const parsed = BulkEmailActionSchema.safeParse(await c.req.json().catch(() => null));
