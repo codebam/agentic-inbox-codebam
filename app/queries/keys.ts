@@ -41,6 +41,14 @@ export const queryKeys = {
 		/** Every snippet for a mailbox, in the order the API returns them. */
 		list: (mailboxId: string) => ["templates", mailboxId] as const,
 	},
+	items: {
+		/** One filtered page of a mailbox's extracted tasks and deadlines. */
+		list: (mailboxId: string, filters: Record<string, string>) =>
+			["items", mailboxId, filters] as const,
+		/** The items one message contributed. */
+		email: (mailboxId: string, emailId: string) =>
+			["items", mailboxId, "email", emailId] as const,
+	},
 	folders: {
 		list: (mailboxId: string) => ["folders", mailboxId] as const,
 	},

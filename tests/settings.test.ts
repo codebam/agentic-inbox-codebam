@@ -75,6 +75,23 @@ describe("resolveModelConfig", () => {
 		);
 		expect(Object.keys(effective).sort()).toEqual([...MODEL_CONFIG_KEYS].sort());
 		expect(effective.promptInjection).toBe("vendor/scanner");
+		expect(effective.extractor).toBe(DEFAULT_MODELS.extractor);
+	});
+
+	it("resolves the items extractor model like every other key", () => {
+		expect(resolveModelConfig().extractor).toBe(DEFAULT_MODELS.extractor);
+		expect(
+			resolveModelConfig(
+				{ models: { extractor: "vendor/mailbox-extractor" } },
+				{ models: { extractor: "vendor/global-extractor" } },
+			).extractor,
+		).toBe("vendor/mailbox-extractor");
+		expect(
+			resolveModelConfig(
+				{ models: { extractor: "   " } },
+				{ models: { extractor: "vendor/global-extractor" } },
+			).extractor,
+		).toBe("vendor/global-extractor");
 	});
 });
 

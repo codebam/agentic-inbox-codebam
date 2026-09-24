@@ -111,6 +111,7 @@ import {
 	type SenderPolicy,
 } from "./lib/sender-policy";
 import { isTemplateValidationError } from "./lib/templates";
+import { insertExtractedItems, isItemDueFilter, isItemStatus, ITEM_LIST_LIMIT_DEFAULT, ITEM_LIST_LIMIT_MAX } from "./lib/items";
 import { handleInboundRuleOutbound } from "./lib/rule-outbound";
 import {
 	extractUnsubscribeHeaders,
@@ -1323,6 +1324,96 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 });
 
 
+// -- Tasks & deadlines (extracted items) -----------------------------
+
+/**
+ * Body for PUT /api/v1/mailboxes/:mailboxId/items/:itemId: the item's new
+ * lifecycle state. The three values are the stored vocabulary
+ * (shared/items.ts), so an unusable payload is a 400 here rather than a
+ * silently ignored write.
+ */
+const UpdateItemStatusBody = z.object({
+	status: z.enum(["open", "done", "dismissed"]),
+});
+
+
+/** Same shape of 400 message for the items routes. */
+function itemStatusErrorMessage(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Invalid item status";
+	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+	return `Invalid item status — ${path}${issue.message}`;
+}
+
+
+/**
+ * The mailbox's extracted tasks and deadlines, newest first, as one page of
+ * at most 50 rows plus the total matching the filters. `status` narrows to
+ * one lifecycle state and `due` to one due bucket (overdue | today |
+ * upcoming | none); an unknown value for either is a 400 rather than a
+ * silently unfiltered list. Read-only — the only items writes are the status
+ * route below and the operator's own actions in the app.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/items", async (c: AppContext) => {
+	const status = c.req.query("status");
+	const due = c.req.query("due");
+	if (status !== undefined && !isItemStatus(status)) {
+		return c.json({ error: "status must be one of open, done, dismissed" }, 400);
+	}
+	if (due !== undefined && !isItemDueFilter(due)) {
+		return c.json(
+			{ error: "due must be one of overdue, today, upcoming, none" },
+			400,
+		);
+	}
+	const page = Math.max(Math.trunc(intQuery(c, "page") ?? 1), 1);
+	const limit = Math.min(
+		Math.max(Math.trunc(intQuery(c, "limit") ?? ITEM_LIST_LIMIT_DEFAULT), 1),
+		ITEM_LIST_LIMIT_MAX,
+	);
+	const { items, totalCount } = await c.var.mailboxStub.listItems({
+		status,
+		due,
+		limit,
+		page,
+	});
+	return c.json({ items, totalCount, page, limit });
+});
+
+
+/**
+ * The items one message contributed, newest first — the message panel's
+ * card. A message with nothing extracted answers an empty list rather than a
+ * 404: the panel only needs the list, and the message itself may already be
+ * gone from the mailbox.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/items", async (c: AppContext) => {
+	return c.json({
+		items: await c.var.mailboxStub.listItemsForEmail(c.req.param("emailId")!),
+	});
+});
+
+
+/**
+ * Close, reopen or dismiss one item. Answers the stored row; an unknown item
+ * is a 404 and a status outside open | done | dismissed is a 400. This is the
+ * only items write path the API exposes — nothing here sends mail.
+ */
+app.put("/api/v1/mailboxes/:mailboxId/items/:itemId", async (c: AppContext) => {
+	const parsed = UpdateItemStatusBody.safeParse(
+		await c.req.json().catch(() => null),
+	);
+	if (!parsed.success) {
+		return c.json({ error: itemStatusErrorMessage(parsed.error) }, 400);
+	}
+	const item = await c.var.mailboxStub.updateItemStatus(
+		c.req.param("itemId")!,
+		parsed.data.status,
+	);
+	return item ? c.json({ item }) : c.json({ error: "Item not found" }, 404);
+});
+
+
 // -- Trash ----------------------------------------------------------
 
 /**
@@ -2064,6 +2155,21 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			date: new Date().toISOString(), // receive time, like the stored row
 			folder: destinationFolder,
 			category: ruleResult.mutation.category ?? classification?.category ?? null,
+			body: parsedEmail.html || parsedEmail.text || "",
+		}, mailboxSettings));
+	}
+
+	// Tasks and deadlines the message states, extracted off the receive path
+	// (one AI call). Non-spam only, matching the auto-draft and webhook rules
+	// above, and the mailbox switch turns it off entirely.
+	// insertExtractedItems logs and swallows every failure — including a
+	// missing AI binding — so extraction can never affect delivery.
+	if (normalizeItemsSettings(mailboxSettings["items"]).enabled && !isSpam && !ruleMarkedSpam) {
+		ctx.waitUntil(insertExtractedItems(env, mailboxId, {
+			emailId: messageId,
+			threadId,
+			subject: parsedEmail.subject || "",
+			sender: (parsedEmail.from?.address || "").toLowerCase(),
 			body: parsedEmail.html || parsedEmail.text || "",
 		}, mailboxSettings));
 	}

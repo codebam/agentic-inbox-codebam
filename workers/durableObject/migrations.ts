@@ -469,4 +469,36 @@ export const mailboxMigrations: Migration[] = [
             );
         `),
 	},
+	{
+		// Tasks and deadlines extracted from inbound mail
+		// (workers/lib/items.ts): one row per concrete task or deadline a
+		// message states, with the source message it came from. The columns
+		// are the frozen shape the routes, tools and UI read — `kind` is
+		// task | deadline, `status` is open | done | dismissed, and `due_at`
+		// is an ISO 8601 UTC instant or NULL. The two indexes serve the list
+		// queries (status + due_at) and the per-message panel (email_id).
+		// Rows are written off the receive path and MailboxDO prunes closed
+		// rows on insert (never open ones).
+		name: "26_add_extracted_items",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS extracted_items (
+                id TEXT PRIMARY KEY,
+                email_id TEXT NOT NULL,
+                thread_id TEXT,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                details TEXT,
+                due_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_extracted_items_status_due
+                ON extracted_items(status, due_at);
+
+            CREATE INDEX IF NOT EXISTS idx_extracted_items_email
+                ON extracted_items(email_id);
+        `),
+	},
 ];

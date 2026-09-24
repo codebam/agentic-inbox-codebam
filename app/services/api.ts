@@ -6,6 +6,7 @@ import type { GlobalCategorizationSettings } from "shared/categories";
 import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
+import type { ItemStatus } from "shared/items";
 import type {
 	MailRule,
 	RuleApplyResult,
@@ -17,7 +18,7 @@ import type {
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
 import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
-import type { AgentAction, BulkEmailAction, Contact, Email, Folder, Mailbox, ScheduledSend } from "~/types";
+import type { AgentAction, BulkEmailAction, Contact, Email, ExtractedItem, Folder, Mailbox, ScheduledSend } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -123,6 +124,13 @@ interface ContactListResponse {
 interface ScheduledSendListResponse {
 	sends: ScheduledSend[];
 	totalCount: number;
+}
+
+interface ItemListResponse {
+	items: ExtractedItem[];
+	totalCount: number;
+	page: number;
+	limit: number;
 }
 
 // ---------- API client ----------
@@ -296,6 +304,22 @@ const api = {
 	/** Remove one snippet. */
 	deleteTemplate: (mailboxId: string, templateId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}/templates/${templateId}`),
+	// Tasks and deadlines extracted from inbound mail. Read-only apart from
+	// the status change: nothing here creates an item or sends mail.
+	/** One filtered page of items, newest first (`status`, `due`, `page`, `limit`). */
+	listItems: (mailboxId: string, params: Record<string, string> = {}) =>
+		get<ItemListResponse>(`/api/v1/mailboxes/${mailboxId}/items`, { params }),
+	/** The items one message contributed — the message panel's card. */
+	listEmailItems: (mailboxId: string, emailId: string) =>
+		get<{ items: ExtractedItem[] }>(
+			`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/items`,
+		),
+	/** Close, reopen or dismiss one item; answers the stored row. */
+	updateItem: (mailboxId: string, itemId: string, status: ItemStatus) =>
+		put<{ item: ExtractedItem }>(
+			`/api/v1/mailboxes/${mailboxId}/items/${itemId}`,
+			{ status },
+		),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
