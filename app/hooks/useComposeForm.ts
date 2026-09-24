@@ -28,9 +28,11 @@ import {
 import { useSaveDraft } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
 import { invalidateScheduledSends, useScheduleSend } from "~/queries/scheduled-sends";
+import { useCreateTemplate } from "~/queries/templates";
 import { useUIStore } from "~/hooks/useUIStore";
 import api from "~/services/api";
 import type { Attachment } from "~/types";
+import type { Template } from "workers/lib/templates";
 
 function appendUniqueAddress(
 	addresses: string[],
@@ -191,12 +193,30 @@ function buildInitialComposeFields(
 	};
 }
 
+/** The blank paragraph every prefilled composer body starts with. */
+const COMPOSE_LEAD_PARAGRAPH = "<p><br></p>";
+
+/**
+ * Insert a template's body into the composer's body: the snippet first,
+ * then a blank paragraph, then whatever the composer already held. That is
+ * the same join the signature and quoted-reply prefill uses; the composer's
+ * own leading blank paragraph (its typing area) folds into the seam, so a
+ * snippet lands above the signature — never below it.
+ */
+function insertTemplateIntoBody(current: string, templateBody: string): string {
+	const snippet = templateBody.trim();
+	if (!snippet) return current;
+	const rest = current.trim().replace(/^<p><br><\/p>/, "");
+	return rest ? `${snippet}${COMPOSE_LEAD_PARAGRAPH}${rest}` : snippet;
+}
+
 export function useComposeForm(mailboxId?: string) {
 	const toastManager = useKumoToastManager();
 	const { composeOptions, closePanel, closeCompose, setComposeDraft } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
 	const saveDraftMutation = useSaveDraft();
 	const scheduleSendMutation = useScheduleSend();
+	const createTemplateMutation = useCreateTemplate();
 	const queryClient = useQueryClient();
 
 	const [to, setTo] = useState("");
@@ -352,6 +372,47 @@ export function useComposeForm(mailboxId?: string) {
 	const handleRemoveAttachment = (id: string) => {
 		setAttachments((previous) => previous.filter((attachment) => attachment.id !== id));
 	};
+
+	/**
+	 * Insert a picked template into the draft. The body goes in at the top of
+	 * the message (above the signature or the quoted reply); the template's
+	 * subject is applied only when the composer's subject field is still
+	 * empty, so an existing subject is never overwritten.
+	 */
+	const handleInsertTemplate = (template: Template) => {
+		setBody((current) => insertTemplateIntoBody(current, template.body));
+		const templateSubject = template.subject?.trim();
+		if (templateSubject && !subject.trim()) setSubject(templateSubject);
+	};
+
+	/**
+	 * Store the composer's current body as a new template. The name comes
+	 * from a prompt; a cancelled prompt (or an empty name) saves nothing. The
+	 * subject travels with the body so the snippet can set it on a later
+	 * insert, and a failed write reports why instead of failing silently.
+	 */
+	const handleSaveTemplate = async () => {
+		if (!mailboxId) {
+			setError("No mailbox selected.");
+			return;
+		}
+		const name = window.prompt("Name this template", subject.trim())?.trim();
+		if (!name) return;
+		try {
+			await createTemplateMutation.mutateAsync({
+				mailboxId,
+				template: { name, subject: subject.trim() || undefined, body },
+			});
+			toastManager.add({ title: "Template saved" });
+		} catch (err: unknown) {
+			const message = (err instanceof Error ? err.message : null) || "Failed to save the template.";
+			setError(message);
+			toastManager.add({ title: message, variant: "error" });
+		}
+	};
+
+	/** True when the editor holds body text worth reusing as a template. */
+	const canSaveTemplate = htmlToPlainText(body).trim().length > 0;
 
 
 	const handleSaveDraft = async () => {
@@ -554,5 +615,7 @@ export function useComposeForm(mailboxId?: string) {
 		scheduleBlockReason, closeCompose, closePanel,
 		attachments, attachmentErrors, attachmentSummary: describeAttachmentSummary(attachments),
 		isEncodingAttachments, handleAddAttachments, handleRemoveAttachment,
+		handleInsertTemplate, handleSaveTemplate, canSaveTemplate,
+		isSavingTemplate: createTemplateMutation.isPending,
 	};
 }

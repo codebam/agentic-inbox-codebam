@@ -37,6 +37,10 @@ export const queryKeys = {
 		search: (mailboxId: string, query: string) =>
 			["contacts", mailboxId, query] as const,
 	},
+	templates: {
+		/** Every snippet for a mailbox, in the order the API returns them. */
+		list: (mailboxId: string) => ["templates", mailboxId] as const,
+	},
 	folders: {
 		list: (mailboxId: string) => ["folders", mailboxId] as const,
 	},

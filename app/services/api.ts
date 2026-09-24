@@ -15,6 +15,7 @@ import type {
 } from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
+import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
 import type { AgentAction, BulkEmailAction, Contact, Email, Folder, Mailbox, ScheduledSend } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -280,6 +281,20 @@ const api = {
 		get<ContactListResponse>(`/api/v1/mailboxes/${mailboxId}/contacts`, {
 			params: { q: query, limit: String(limit) },
 		}),
+	// Templates — the operator's reusable snippets. The composer inserts a
+	// template's body into a draft; nothing here sends mail.
+	/** Every snippet for the mailbox, ordered by name (case-insensitive). */
+	listTemplates: (mailboxId: string) =>
+		get<{ templates: Template[] }>(`/api/v1/mailboxes/${mailboxId}/templates`),
+	/** Store a snippet; `subject` is optional. */
+	createTemplate: (mailboxId: string, template: TemplateInput) =>
+		post<Template>(`/api/v1/mailboxes/${mailboxId}/templates`, template),
+	/** Partial update: name, subject and/or body (an explicit null clears the subject). */
+	updateTemplate: (mailboxId: string, templateId: string, patch: TemplatePatch) =>
+		put<Template>(`/api/v1/mailboxes/${mailboxId}/templates/${templateId}`, patch),
+	/** Remove one snippet. */
+	deleteTemplate: (mailboxId: string, templateId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/templates/${templateId}`),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
