@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AttachmentPayload } from "~/lib/attachments";
 import api from "~/services/api";
 import type { BulkEmailAction, BulkEmailTarget, Email } from "~/types";
 import { queryKeys } from "./keys";
@@ -395,6 +396,8 @@ export function useSaveDraft() {
 				bcc?: string;
 				subject?: string;
 				body: string;
+				/** Pending composer files, base64 — persisted with the draft. */
+				attachments?: AttachmentPayload[];
 				in_reply_to?: string;
 				thread_id?: string;
 				draft_id?: string;

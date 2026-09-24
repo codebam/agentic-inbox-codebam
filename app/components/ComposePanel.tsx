@@ -3,9 +3,10 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Banner, Button, Input } from "@cloudflare/kumo";
-import { FloppyDiskIcon, PaperPlaneTiltIcon, XIcon } from "@phosphor-icons/react";
+import { FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon, XIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
+import AttachmentPicker from "./AttachmentPicker";
 import ComposeBodyEditor from "./ComposeBodyEditor";
 
 export default function ComposePanel({
@@ -42,6 +43,12 @@ export default function ComposePanel({
 		handleSend,
 		closeCompose,
 		closePanel,
+		attachments,
+		attachmentErrors,
+		attachmentSummary,
+		isEncodingAttachments,
+		handleAddAttachments,
+		handleRemoveAttachment,
 	} = useComposeForm(mailboxId, folder);
 
 	return (
@@ -67,7 +74,15 @@ export default function ComposePanel({
 				onSubmit={(e) => handleSend(e, closePanel)}
 				className="flex flex-col flex-1 min-h-0 overflow-y-auto"
 			>
-				<div className="p-4 md:p-6 space-y-4">
+				<AttachmentPicker
+					className="p-4 md:p-6 space-y-4"
+					attachments={attachments}
+					errors={attachmentErrors}
+					isBusy={isEncodingAttachments}
+					disabled={isSending || isSavingDraft}
+					onAddFiles={handleAddAttachments}
+					onRemove={handleRemoveAttachment}
+				>
 					{error && <Banner variant="error" text={error} />}
 
 					<div className="space-y-3">
@@ -153,21 +168,29 @@ export default function ComposePanel({
 							onChange={setBody}
 						/>
 					</div>
-				</div>
+				</AttachmentPicker>
 
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
-					<div className="flex items-center justify-between">
-						<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
-							Discard
-						</Button>
+					<div className="flex items-center justify-between gap-3">
+						<div className="flex items-center gap-3 min-w-0">
+							<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
+								Discard
+							</Button>
+							{attachmentSummary && (
+								<span className="flex items-center gap-1.5 text-xs text-kumo-subtle truncate">
+									<PaperclipIcon size={14} className="shrink-0" />
+									{attachmentSummary}
+								</span>
+							)}
+						</div>
 						<div className="flex items-center gap-2">
 							<Button
 								type="button"
 								variant="secondary"
 								size="sm"
 								loading={isSavingDraft}
-								disabled={isSending}
+								disabled={isSending || isEncodingAttachments}
 								icon={<FloppyDiskIcon size={14} />}
 								onClick={handleSaveDraft}
 							>
@@ -178,7 +201,7 @@ export default function ComposePanel({
 								variant="primary"
 								size="sm"
 								loading={isSending}
-								disabled={isSavingDraft || isSending}
+								disabled={isSavingDraft || isSending || isEncodingAttachments}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
 								{isSending ? "Sending..." : "Send"}

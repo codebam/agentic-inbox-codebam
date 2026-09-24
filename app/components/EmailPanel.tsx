@@ -16,7 +16,12 @@ import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
-import { splitEmailList, toEmailListValue } from "~/lib/utils";
+import {
+	blobToBase64,
+	pendingAttachmentFromStored,
+	toAttachmentPayloads,
+} from "~/lib/attachments";
+import { getNonInlineAttachments, splitEmailList, toEmailListValue } from "~/lib/utils";
 import api from "~/services/api";
 import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
@@ -150,6 +155,16 @@ export default function EmailPanel({
 			const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
 			const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
 			const originalEmail = target.in_reply_to ? allMessages.find((msg) => msg.id === target.in_reply_to) : undefined;
+			// The draft's files live in R2; read them back so sending from here
+			// keeps the attachments the composer saved with it.
+			const storedAttachments = getNonInlineAttachments(target.attachments);
+			const attachments = storedAttachments.length > 0
+				? toAttachmentPayloads(await Promise.all(storedAttachments.map(async (attachment) =>
+					pendingAttachmentFromStored(
+						attachment,
+						await blobToBase64((await api.getAttachment(mailboxId, target.id, attachment.id)) as Blob),
+					))))
+				: [];
 			const emailData = {
 				to: toEmailListValue(toRecipients),
 				cc: toEmailListValue(splitEmailList(target.cc)),
@@ -158,6 +173,7 @@ export default function EmailPanel({
 				subject: target.subject || "(no subject)",
 				html: target.body || "",
 				text: target.body ? target.body.replace(/<[^>]*>/g, "").trim() : "",
+				attachments: attachments.length > 0 ? attachments : undefined,
 			};
 			if (originalEmail) await replyMut.mutateAsync({ mailboxId, emailId: originalEmail.id, email: emailData }); else await sendEmailMut.mutateAsync({ mailboxId, email: emailData });
 			await deleteEmailMut.mutateAsync({ mailboxId, id: target.id });
