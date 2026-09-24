@@ -1086,3 +1086,47 @@ describe("engine: outbound collection", () => {
 		expect(result.outbound).toEqual([]);
 	});
 });
+
+
+describe("rule move_to_folder reaches the stored row", () => {
+	it("files an arriving message in the folder the rule chose", async () => {
+		const mailbox = "rule-move@example.com";
+		await registerMailbox(mailbox, PIPELINE_SETTINGS);
+		const stub = stubFor(mailbox);
+		await stub.createFolder("archive-ish", "Archive-ish");
+		await stub.createRule(
+			ruleDraft({
+				name: "File invoices",
+				match: { mode: "all", conditions: { subject_contains: "invoice" } },
+				actions: { move_to_folder: "archive-ish" },
+			}),
+		);
+
+		await deliver(mailbox, { subject: "Invoice 42" });
+
+		const filed = (await stub.getEmails({ folder: "archive-ish" })) as { subject: string }[];
+		expect(filed.map((email) => email.subject)).toEqual(["Invoice 42"]);
+		const inbox = (await stub.getEmails({ folder: Folders.INBOX })) as { subject: string }[];
+		expect(inbox.map((email) => email.subject)).not.toContain("Invoice 42");
+	});
+
+	it("falls back to the Inbox when the rule's folder no longer exists", async () => {
+		const mailbox = "rule-move-gone@example.com";
+		await registerMailbox(mailbox, PIPELINE_SETTINGS);
+		const stub = stubFor(mailbox);
+		await stub.createFolder("temp-folder", "Temp");
+		await stub.createRule(
+			ruleDraft({
+				name: "File invoices",
+				match: { mode: "all", conditions: { subject_contains: "invoice" } },
+				actions: { move_to_folder: "temp-folder" },
+			}),
+		);
+		await stub.deleteFolder("temp-folder");
+
+		await deliver(mailbox, { subject: "Invoice 43" });
+
+		const inbox = (await stub.getEmails({ folder: Folders.INBOX })) as { subject: string }[];
+		expect(inbox.map((email) => email.subject)).toEqual(["Invoice 43"]);
+	});
+});

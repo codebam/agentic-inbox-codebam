@@ -880,6 +880,9 @@ app.put("/api/v1/mailboxes/:mailboxId/sender-policy", async (c: AppContext) => {
 		);
 	} catch (e) {
 		if (isSenderPolicyValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
 
 
 /**
@@ -1261,11 +1264,28 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	}, senderDecision.forceNotSpam ? withoutSpamQuestion(effectiveCategorization) : effectiveCategorization, models.classifier);
 
 	const isSpam = classification?.isSpam === true;
+	// A rule that files mail somewhere outranks the AI's Inbox/Spam guess, but
+	// a blocked sender outranks both. The folder can have been deleted since
+	// the rule was saved, so it is checked before use and falls back to the
+	// Inbox — the documented behaviour for a rule pointing at a dead folder.
+	let ruleFolder: string | null = ruleResult.mutation.folder ?? null;
+	if (ruleFolder) {
+		try {
+			const folders = (await stub.getFolders()) as { id: string }[];
+			if (!folders.some((folder) => folder.id === ruleFolder)) ruleFolder = null;
+		} catch (e) {
+			console.error(
+				"Rule folder lookup failed; filing in the Inbox instead:",
+				(e as Error).message,
+			);
+			ruleFolder = null;
+		}
+	}
 	// A blocked sender is always filed in Spam, regardless of the mailbox's
 	// moveToSpam setting — blocking is an explicit per-sender instruction.
 	const destinationFolder = senderDecision.folder
 		? senderDecision.folder
-		: isSpam && effectiveCategorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
+		: ruleFolder ?? (isSpam && effectiveCategorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX);
 
 	const createResult = await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
