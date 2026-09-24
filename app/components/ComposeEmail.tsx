@@ -13,7 +13,7 @@ import AttachmentPicker from "./AttachmentPicker";
 const ComposeBodyEditor = lazy(() => import("./ComposeBodyEditor"));
 
 export default function ComposeEmail() {
-	const { mailboxId, folder } = useParams<{
+	const { mailboxId } = useParams<{
 		mailboxId: string;
 		folder: string;
 	}>();
@@ -45,7 +45,7 @@ export default function ComposeEmail() {
 		isEncodingAttachments,
 		handleAddAttachments,
 		handleRemoveAttachment,
-	} = useComposeForm(mailboxId, folder);
+	} = useComposeForm(mailboxId);
 
 	return (
 		<Dialog.Root
@@ -54,14 +54,14 @@ export default function ComposeEmail() {
 		>
 			<Dialog size="lg" className="p-6 max-h-[85vh] overflow-y-auto">
 				<Dialog.Title className="text-lg font-semibold mb-5">{formTitle}</Dialog.Title>
-				<form onSubmit={(e) => handleSend(e, closeComposeModal)} className="space-y-4">
+				<form onSubmit={(e) => { void handleSend(e, closeComposeModal); }} className="space-y-4">
 					<AttachmentPicker
 						className="space-y-4"
 						attachments={attachments}
 						errors={attachmentErrors}
 						isBusy={isEncodingAttachments}
 						disabled={isSending || isSavingDraft}
-						onAddFiles={handleAddAttachments}
+						onAddFiles={(files) => { void handleAddAttachments(files); }}
 						onRemove={handleRemoveAttachment}
 					>
 					{error && <Banner variant="error" text={error} />}
@@ -157,7 +157,7 @@ export default function ComposeEmail() {
 								loading={isSavingDraft}
 								disabled={isSending || isEncodingAttachments}
 								icon={<FloppyDiskIcon size={14} />}
-								onClick={handleSaveDraft}
+								onClick={() => { void handleSaveDraft(); }}
 							>
 								{isSavingDraft ? "Saving..." : "Save as Draft"}
 							</Button>

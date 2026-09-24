@@ -4,7 +4,7 @@
 
 import { Button, Input, Tooltip } from "@cloudflare/kumo";
 import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { type KeyboardEvent, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { useUIStore } from "~/hooks/useUIStore";
 
@@ -17,19 +17,24 @@ export default function Header() {
 	const [searchParams] = useSearchParams();
 	const { toggleSidebar, toggleAgentPanel, isAgentPanelOpen } = useUIStore();
 
-	// Sync search input with URL query param so it stays populated
+	// Sync search input with URL query param so it stays populated. The
+	// adjustment happens during render (the same place React recommends for
+	// resetting state from props) so the input never paints behind the URL.
 	const urlQuery = searchParams.get("q") || "";
-	useEffect(() => {
+	const searchRouteKey = `${location.pathname}|${urlQuery}`;
+	const [syncedSearchRoute, setSyncedSearchRoute] = useState(searchRouteKey);
+	if (syncedSearchRoute !== searchRouteKey) {
+		setSyncedSearchRoute(searchRouteKey);
 		if (location.pathname.includes("/search") && urlQuery) {
 			setSearchQuery(urlQuery);
 		}
-	}, [urlQuery, location.pathname]);
+	}
 
 	const performSearch = () => {
 		const q = searchQuery.trim();
 		if (!q) return;
 		// Without a mailbox in scope (All Accounts), search every mailbox.
-		navigate(
+		void navigate(
 			mailboxId
 				? `/mailbox/${mailboxId}/search?q=${encodeURIComponent(q)}`
 				: `/search?q=${encodeURIComponent(q)}`,
@@ -40,7 +45,7 @@ export default function Header() {
 	const clearSearch = () => {
 		setSearchQuery("");
 		if (location.pathname.includes("/search")) {
-			navigate(mailboxId ? `/mailbox/${mailboxId}/emails/inbox` : "/all");
+			void navigate(mailboxId ? `/mailbox/${mailboxId}/emails/inbox` : "/all");
 		}
 	};
 
@@ -138,13 +143,13 @@ export default function Header() {
 						variant={isSettingsActive ? "secondary" : "ghost"}
 						shape="square"
 						icon={<GearSixIcon size={20} />}
-						onClick={() =>
-							navigate(
+						onClick={() => {
+							void navigate(
 								isSettingsActive
 									? `/mailbox/${mailboxId}/emails/inbox`
 									: `/mailbox/${mailboxId}/settings`,
-							)
-						}
+							);
+						}}
 						aria-label="Settings"
 					/>
 				</Tooltip>

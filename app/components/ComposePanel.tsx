@@ -20,7 +20,6 @@ export default function ComposePanel({
 		folder: string;
 	}>();
 	const mailboxId = mailboxIdProp ?? params.mailboxId;
-	const folder = params.folder;
 
 	const {
 		to,
@@ -49,7 +48,7 @@ export default function ComposePanel({
 		isEncodingAttachments,
 		handleAddAttachments,
 		handleRemoveAttachment,
-	} = useComposeForm(mailboxId, folder);
+	} = useComposeForm(mailboxId);
 
 	return (
 		<div data-composer-root className="flex flex-col h-full bg-kumo-base">
@@ -71,7 +70,7 @@ export default function ComposePanel({
 			</div>
 
 			<form
-				onSubmit={(e) => handleSend(e, closePanel)}
+				onSubmit={(e) => { void handleSend(e, closePanel); }}
 				className="flex flex-col flex-1 min-h-0 overflow-y-auto"
 			>
 				<AttachmentPicker
@@ -80,7 +79,7 @@ export default function ComposePanel({
 					errors={attachmentErrors}
 					isBusy={isEncodingAttachments}
 					disabled={isSending || isSavingDraft}
-					onAddFiles={handleAddAttachments}
+					onAddFiles={(files) => { void handleAddAttachments(files); }}
 					onRemove={handleRemoveAttachment}
 				>
 					{error && <Banner variant="error" text={error} />}
@@ -192,7 +191,7 @@ export default function ComposePanel({
 								loading={isSavingDraft}
 								disabled={isSending || isEncodingAttachments}
 								icon={<FloppyDiskIcon size={14} />}
-								onClick={handleSaveDraft}
+								onClick={() => { void handleSaveDraft(); }}
 							>
 								{isSavingDraft ? "Saving..." : "Save as Draft"}
 							</Button>

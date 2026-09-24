@@ -3,7 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { useKumoToastManager } from "@cloudflare/kumo";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { Folders } from "shared/folders";
 import {
@@ -103,7 +103,12 @@ export default function EmailPanel({
 	// Reset expanded state only when the selected email changes, not on every refetch.
 	// Using allMessages as a dependency would reset user expand/collapse state on background refetches.
 	const currentEmailId = email?.id;
-	useEffect(() => { const first = allMessages[0]; if (allMessages.length > 1 && first) setExpandedMessages(new Set([first.id])); }, [currentEmailId]); // eslint-disable-line react-hooks/exhaustive-deps
+	const [expansionEmailId, setExpansionEmailId] = useState(currentEmailId);
+	if (expansionEmailId !== currentEmailId) {
+		setExpansionEmailId(currentEmailId);
+		const first = allMessages[0];
+		if (allMessages.length > 1 && first) setExpandedMessages(new Set([first.id]));
+	}
 
 	const toggleExpand = (msgId: string) => { setExpandedMessages((prev) => { const next = new Set(prev); if (next.has(msgId)) next.delete(msgId); else next.add(msgId); return next; }); };
 
@@ -179,7 +184,7 @@ export default function EmailPanel({
 		else { startCompose({ mode: "new", draftEmail: target }); }
 	};
 
-	const handleDeleteDraft = async (draftMsg?: Email) => {
+	const handleDeleteDraft = (draftMsg?: Email) => {
 		const target = draftMsg || email;
 		if (!mailboxId) return;
 		if (!window.confirm("Discard this draft?")) return;
@@ -194,7 +199,14 @@ export default function EmailPanel({
 		if (!mailboxId || !currentMailbox) return;
 		setIsSending(true);
 		try {
-			if (!target.recipient || !target.subject) { try { const fresh = await api.getEmail(mailboxId, target.id) as Email; if (fresh) target = fresh; } catch {} }
+			if (!target.recipient || !target.subject) {
+				try {
+					const fresh = await api.getEmail(mailboxId, target.id);
+					if (fresh) target = fresh;
+				} catch {
+					// Keep the draft we already have when the refetch fails.
+				}
+			}
 			if (!target.recipient) { toastManager.add({ title: "Cannot send: no recipient set on this draft.", variant: "error" }); return; }
 			const toRecipients = splitEmailList(target.recipient);
 			if (toRecipients.length === 0) { toastManager.add({ title: "Cannot send: no valid recipient set on this draft.", variant: "error" }); return; }
@@ -208,7 +220,7 @@ export default function EmailPanel({
 				? toAttachmentPayloads(await Promise.all(storedAttachments.map(async (attachment) =>
 					pendingAttachmentFromStored(
 						attachment,
-						await blobToBase64((await api.getAttachment(mailboxId, target.id, attachment.id)) as Blob),
+						await blobToBase64(await api.getAttachment(mailboxId, target.id, attachment.id)),
 					))))
 				: [];
 			const emailData = {
@@ -244,7 +256,7 @@ export default function EmailPanel({
 				isSending={isSending}
 				moveToFolders={moveToFolders}
 				onBack={closePanel}
-				onSendDraft={() => handleSendDraft()}
+				onSendDraft={() => { void handleSendDraft(); }}
 				onEditDraft={() => handleEditDraft()}
 				onReply={() =>
 					startCompose({ mode: "reply", originalEmail: lastReceivedMessage ?? null })
@@ -307,7 +319,7 @@ export default function EmailPanel({
 								isSending={isDraft ? isSending : false}
 								isExpanded={expandedMessages.has(msg.id)}
 								onToggleExpand={() => toggleExpand(msg.id)}
-								onSendDraft={isDraft ? () => handleSendDraft(msg) : undefined}
+								onSendDraft={isDraft ? () => { void handleSendDraft(msg); } : undefined}
 								onEditDraft={isDraft ? () => handleEditDraft(msg) : undefined}
 								onDeleteDraft={isDraft ? () => handleDeleteDraft(msg) : undefined}
 								onViewSource={() => setSourceViewEmail(msg)}
