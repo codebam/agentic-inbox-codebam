@@ -18,7 +18,10 @@ import {
 import {
 	SendEmailRequestSchema,
 	BulkEmailActionSchema,
+	CreateRuleSchema,
 	DraftBodySchema,
+	ReorderRulesSchema,
+	UpdateRuleSchema,
 } from "./lib/schemas";
 import { isSpamMarkedEmail } from "../shared/spam";
 import { applySignatureToBody } from "../shared/signature";
@@ -30,6 +33,7 @@ import { searchAllMailboxes } from "./lib/search-all";
 import {
 	mergeCategorizationCategories,
 	normalizeCategorizationSettings,
+	SPAM_CATEGORY_ID,
 } from "../shared/categories";
 import {
 	CATCH_ALL_LOCAL_PARTS,
@@ -55,6 +59,12 @@ import {
 	classifyIncomingEmail,
 	serializeClassification,
 } from "./lib/categorize";
+import {
+	emptyRuleRunResult,
+	isRuleValidationError,
+	resolveRuleFolderId,
+	runRules,
+} from "./lib/rules";
 import type { Env } from "./types";
 import {
 	defaultMailboxSettings,
@@ -92,6 +102,15 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 	const v = c.req.query(key);
 	if (v === undefined || v === "") return undefined;
 	return v === "true" || v === "1";
+}
+
+
+/** First zod issue as a human-readable 400 message (path + reason). */
+function ruleErrorMessage(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Invalid rule";
+	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+	return `Invalid rule — ${path}${issue.message}`;
 }
 
 // -- App & middleware -----------------------------------------------
@@ -664,6 +683,79 @@ app.delete("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => 
 	return ok ? c.body(null, 204) : c.json({ error: "Folder not found or cannot be deleted" }, 400);
 });
 
+
+// -- Rules (deterministic per-mailbox filters) ----------------------
+
+
+/**
+ * Validate a rule's move_to_folder target so the API answers 400 for an unknown
+ * folder. The Durable Object still enforces this, but its throw is rebuilt by
+ * RPC and would otherwise surface as a 500.
+ */
+async function unknownRuleFolder(
+	mailboxStub: MailboxContext["Variables"]["mailboxStub"],
+	actions: { move_to_folder?: string } | undefined,
+): Promise<string | null> {
+	const folder = actions?.move_to_folder;
+	if (!folder) return null;
+	const folders = (await mailboxStub.getFolders()) as {
+		id: string;
+		name: string;
+	}[];
+	if (resolveRuleFolderId(folder, folders)) return null;
+	return `Unknown folder: ${folder}`;
+}
+
+
+
+
+app.get("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
+	return c.json(await c.var.mailboxStub.listRules());
+});
+
+
+app.post("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
+	const parsed = CreateRuleSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+	const folderError = await unknownRuleFolder(c.var.mailboxStub, parsed.data.actions);
+	if (folderError) return c.json({ error: folderError }, 400);
+	try {
+		return c.json(await c.var.mailboxStub.createRule(parsed.data), 201);
+	} catch (e) {
+		if (isRuleValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+app.put("/api/v1/mailboxes/:mailboxId/rules/:ruleId", async (c: AppContext) => {
+	const parsed = UpdateRuleSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+	const folderError = await unknownRuleFolder(c.var.mailboxStub, parsed.data.actions);
+	if (folderError) return c.json({ error: folderError }, 400);
+	try {
+		const rule = await c.var.mailboxStub.updateRule(c.req.param("ruleId")!, parsed.data);
+		return rule ? c.json(rule) : c.json({ error: "Rule not found" }, 404);
+	} catch (e) {
+		if (isRuleValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+app.delete("/api/v1/mailboxes/:mailboxId/rules/:ruleId", async (c: AppContext) => {
+	const deleted = await c.var.mailboxStub.deleteRule(c.req.param("ruleId")!);
+	return deleted ? c.body(null, 204) : c.json({ error: "Rule not found" }, 404);
+});
+
+
+app.post("/api/v1/mailboxes/:mailboxId/rules/reorder", async (c: AppContext) => {
+	const parsed = ReorderRulesSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+	return c.json(await c.var.mailboxStub.reorderRules(parsed.data.ids));
+});
+
+
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
@@ -861,6 +953,48 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
+
+	// ── Deterministic rules run BEFORE the AI classifier ────────────
+	// Precedence, in order:
+	//   1. A rule with `discard` drops the message outright: it is never
+	//      stored and no attachment bytes reach R2 (this block runs before
+	//      the attachment upload below).
+	//   2. Any other matched rule shapes the stored row (folder, category,
+	//      read, starred) and is authoritative — the Jev classifier is
+	//      skipped for messages a rule already routed, so AI never overrides
+	//      user-authored automation.
+	//   3. Only messages no rule matched reach the classifier.
+	// Rule loading/evaluation failures never block delivery: they are logged
+	// and the message is delivered unruled.
+	let ruleResult = emptyRuleRunResult();
+	try {
+		ruleResult = runRules(await stub.listRules(), {
+			sender: (parsedEmail.from?.address || "").toLowerCase(),
+			recipient: allRecipients.join(", "),
+			envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
+			cc: ccRecipients.join(", ") || null,
+			bcc: bccRecipients.join(", ") || null,
+			subject: parsedEmail.subject || "",
+			body: parsedEmail.html || parsedEmail.text || "",
+			has_attachment: (parsedEmail.attachments?.length ?? 0) > 0,
+			// Inbound mail carries no category until classification runs, so
+			// category_equals cannot match on arrival.
+			category: null,
+		});
+	} catch (e) {
+		console.error("Rule evaluation failed; delivering without rules:", (e as Error).message);
+	}
+
+
+	if (ruleResult.discarded) {
+		console.log(`Inbound email discarded by rule(s) for ${mailboxId}: ${ruleResult.appliedRules.join(", ")}`);
+		return;
+	}
+	if (ruleResult.appliedRules.length > 0) {
+		console.log(`Inbound rules applied for ${mailboxId}: ${ruleResult.appliedRules.join(", ")}`);
+	}
+
+
 	const messageId = crypto.randomUUID();
 	const attachmentData: StoredAttachment[] = [];
 	if (parsedEmail.attachments) {
@@ -905,9 +1039,13 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// settings and the built-in defaults.
 	const models = await resolveMailboxModels(env, mailboxId, mailboxSettings);
 
-	// Best-effort Jev classification. A null result (disabled/failed) still
-	// delivers the email to the Inbox.
-	const classification = await classifyIncomingEmail(env.AI, {
+
+	// Best-effort Jev classification, skipped for messages a rule already
+	// routed (see the precedence note above). A null result (disabled,
+	// failed, or rule-routed) still delivers the email.
+	const classification = ruleResult.routed
+		? null
+		: await classifyIncomingEmail(env.AI, {
 		sender: (parsedEmail.from?.address || "").toLowerCase(),
 		senderName: parsedEmail.from?.name || null,
 		recipients: [...allRecipients, ...ccRecipients].join(", "),
@@ -928,13 +1066,23 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		body: parsedEmail.html || parsedEmail.text || "",
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
-		category: classification?.category ?? null,
+		// A rule's category is authoritative; the classifier only fills it in
+		// for messages no rule matched.
+		category: ruleResult.mutation.category ?? classification?.category ?? null,
 		category_confidence: classification?.categoryConfidence ?? null,
 		classification: serializeClassification(classification),
+		// Rule flags; undefined (no rule matched) leaves the createEmail default.
+		read: ruleResult.mutation.read,
+		starred: ruleResult.mutation.starred,
 	}, attachmentData);
 
-	// Do not auto-draft replies to mail classified as spam.
-	if (!isSpam) {
+	// Do not auto-draft replies to spam: neither AI-classified spam nor mail a
+	// rule filed in Spam or stamped with the spam category. A discard rule has
+	// already returned above.
+	const ruleMarkedSpam =
+		destinationFolder === Folders.SPAM ||
+		ruleResult.mutation.category === SPAM_CATEGORY_ID;
+	if (!isSpam && !ruleMarkedSpam) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 			method: "POST", headers: { "Content-Type": "application/json" },
