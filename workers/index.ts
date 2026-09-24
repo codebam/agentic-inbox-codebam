@@ -1080,7 +1080,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const destinationFolder =
 		isSpam && effectiveCategorization.spam.moveToSpam ? Folders.SPAM : Folders.INBOX;
 
-	await stub.createEmail(destinationFolder, {
+	const createResult = await stub.createEmail(destinationFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
 		envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
@@ -1099,6 +1099,18 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		read: ruleResult.mutation.read,
 		starred: ruleResult.mutation.starred,
 	}, attachmentData);
+
+	// Duplicate delivery: this Message-ID is already stored in the mailbox, so
+	// skip every downstream side effect — no auto-draft trigger, no
+	// notification work — and leave the existing row where it is. The
+	// attachment blobs uploaded above stay unreferenced; they are the only
+	// artefact of the redelivery.
+	if (createResult.duplicate) {
+		console.log(
+			`Skipping duplicate inbound email for ${mailboxId}: message_id ${originalMessageId} already stored as ${createResult.id}`,
+		);
+		return;
+	}
 
 	// Do not auto-draft replies to spam: neither AI-classified spam nor mail a
 	// rule filed in Spam or stamped with the spam category. A discard rule has

@@ -26,6 +26,7 @@ import {
 } from "../lib/rules";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
+import { findDuplicateEmailId, type CreateEmailResult } from "./dedupe";
 import { likePatternsFor } from "../lib/like-terms";
 
 /**
@@ -1181,7 +1182,7 @@ export class MailboxDO extends DurableObject<Env> {
 		folder: string,
 		email: EmailData,
 		attachments: AttachmentData[],
-	) {
+	): Promise<CreateEmailResult> {
 		// Resolve folder name or ID to the actual folder ID.
 		const folderRow = this.db
 			.select({ id: schema.folders.id })
@@ -1198,6 +1199,17 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 
 		const folderId = folderRow.id;
+
+		// Duplicate deliveries — same RFC 5322 Message-ID already stored in this
+		// mailbox — are not inserted again. The existing row's id comes back with
+		// `duplicate: true` so the ingest path can skip downstream side effects.
+		// The lookup ignores folder on purpose: a message the user moved to
+		// another folder is still a duplicate and must not be resurrected here.
+		const duplicateId = findDuplicateEmailId(this.db, email.message_id);
+		if (duplicateId) {
+			return { id: duplicateId, duplicate: true };
+		}
+
 		const isSent = folderId === Folders.SENT;
 
 		// Sent emails are always read — the sender obviously knows what they wrote.
@@ -1235,6 +1247,8 @@ export class MailboxDO extends DurableObject<Env> {
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
+
+		return { id: email.id, duplicate: false };
 	}
 
 

@@ -227,4 +227,14 @@ export const mailboxMigrations: Migration[] = [
 		name: "13_add_body_text",
 		sql: txn(`ALTER TABLE emails ADD COLUMN body_text TEXT;`),
 	},
+	{
+		// Backs the duplicate-delivery lookup in MailboxDO.createEmail.
+		// NON-unique on purpose: databases created before this migration may
+		// already hold rows with the same message_id (the exact situation the
+		// dedupe check now prevents), and a UNIQUE index would fail to build
+		// on them. Do not "fix" this into a unique index without first
+		// deduplicating existing rows.
+		name: "16_add_message_id_index",
+		sql: txn(`CREATE INDEX idx_emails_message_id ON emails(message_id);`),
+	},
 ];
