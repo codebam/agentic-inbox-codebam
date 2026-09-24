@@ -451,8 +451,17 @@ export function useComposeForm(mailboxId?: string) {
 	 * Queue the composed message for `sendAt`. The composer no longer sends
 	 * directly: the server's queue fires the message, and everything said
 	 * about it says "scheduled" — never "sent" — until it actually has been.
+	 *
+	 * `toastTimeoutMs` keeps the Undo toast alive for the whole undo window
+	 * when the queue is about to fire (the Send action); toasts otherwise
+	 * dismiss at the provider's default.
 	 */
-	const queueMessage = async (sendAt: string, onClose: () => void, description: string) => {
+	const queueMessage = async (
+		sendAt: string,
+		onClose: () => void,
+		description: string,
+		toastTimeoutMs?: number,
+	) => {
 		if (isScheduling) return;
 		setError(null);
 		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
@@ -474,6 +483,7 @@ export function useComposeForm(mailboxId?: string) {
 			const toastId = toastManager.add({
 				title: "Message scheduled",
 				description,
+				...(toastTimeoutMs !== undefined ? { timeout: toastTimeoutMs } : {}),
 				actions: [
 					{
 						children: "Undo",
@@ -518,7 +528,14 @@ export function useComposeForm(mailboxId?: string) {
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
 		const sendAt = new Date(Date.now() + SEND_QUEUE_DELAY_MS).toISOString();
-		await queueMessage(sendAt, onClose, "Sending in 10 seconds — Undo cancels it.");
+		// The toast lives exactly as long as the undo window: once the queue
+		// fires the send there is nothing left to cancel.
+		await queueMessage(
+			sendAt,
+			onClose,
+			"Sending in 10 seconds — Undo cancels it.",
+			SEND_QUEUE_DELAY_MS,
+		);
 	};
 
 	/** Queue the composed message for the instant picked in Send later. */
