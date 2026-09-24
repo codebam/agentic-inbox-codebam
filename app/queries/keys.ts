@@ -15,6 +15,12 @@ export const queryKeys = {
 			["emails", mailboxId, emailId] as const,
 		thread: (mailboxId: string, threadId: string) =>
 			["emails", mailboxId, "thread", threadId] as const,
+		/** Snoozed messages (dedicated list endpoint, no pagination). */
+		snoozed: (mailboxId: string) =>
+			["emails", mailboxId, "snoozed"] as const,
+		/** Messages with a scheduled or fired follow-up reminder. */
+		reminders: (mailboxId: string) =>
+			["emails", mailboxId, "reminders"] as const,
 	},
 	folders: {
 		list: (mailboxId: string) => ["folders", mailboxId] as const,
