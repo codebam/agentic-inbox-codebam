@@ -109,11 +109,15 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 
 
 	// The window listener is attached once; refs carry the latest render values
-	// into it so it never reads stale rows, selection or mutations.
+	// into it so it never reads stale rows, selection or mutations. They are
+	// refreshed after every commit — reading or writing a ref during render is
+	// what React forbids, and the listener only ever runs after a commit.
 	const latest = useRef(options);
-	latest.current = options;
 	const actions = useRef({ selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, bulkAction, toastManager });
-	actions.current = { selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, bulkAction, toastManager };
+	useEffect(() => {
+		latest.current = options;
+		actions.current = { selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, bulkAction, toastManager };
+	});
 
 
 	const runAction = useCallback((action: TriageActionId): boolean => {

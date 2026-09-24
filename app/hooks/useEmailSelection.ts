@@ -20,6 +20,22 @@ export interface EmailSelection {
 	clear: () => void;
 }
 
+/** Drop the keys that are no longer on the page. */
+function pruneSelection(
+	selected: ReadonlySet<string>,
+	keySet: ReadonlySet<string>,
+): ReadonlySet<string> {
+	if (selected.size === 0) return selected;
+	let changed = false;
+	const next = new Set<string>();
+	for (const key of selected) {
+		if (keySet.has(key)) next.add(key);
+		else changed = true;
+	}
+	return changed ? next : selected;
+}
+
+
 /**
  * Multi-select state for an email list page.
  *
@@ -77,19 +93,16 @@ export function useEmailSelection(pageKeys: string[]): EmailSelection {
 		);
 	}, [pageKeys]);
 
-	// Prune rows that are no longer on the page (deleted, moved, or refetched away).
-	useEffect(() => {
-		setSelectedKeys((prev) => {
-			if (prev.size === 0) return prev;
-			let changed = false;
-			const next = new Set<string>();
-			for (const key of prev) {
-				if (keySet.has(key)) next.add(key);
-				else changed = true;
-			}
-			return changed ? next : prev;
-		});
-	}, [keySet]);
+	// Prune rows that are no longer on the page (deleted, moved, or refetched
+	// away) during render: the selection lands in the same state, without the
+	// cascading re-render an effect-driven setState would add. The guard is the
+	// page contents, so an unstable array identity cannot re-trigger it.
+	const pageKeySignature = pageKeys.join("\u0000");
+	const [prunedPageSignature, setPrunedPageSignature] = useState(pageKeySignature);
+	if (prunedPageSignature !== pageKeySignature) {
+		setPrunedPageSignature(pageKeySignature);
+		setSelectedKeys((prev) => pruneSelection(prev, keySet));
+	}
 
 	// Escape clears the selection without touching anything else.
 	useEffect(() => {
