@@ -10,6 +10,7 @@ import {
 	isRemoteImageUrl,
 	isSenderAllowlisted,
 	normalizeImageAllowlist,
+	proxyRemoteImages,
 	senderAddress,
 } from "../shared/remote-images";
 
@@ -133,20 +134,107 @@ describe("hasRemoteImages", () => {
 });
 
 describe("buildEmailIframeCsp", () => {
-	it("blocks remote hosts when images are blocked, keeping inline images", () => {
-		const csp = buildEmailIframeCsp(false, "https://app.example.com");
-		expect(csp).toBe(
+	it("allows only inline images and the app origin, in both modes", () => {
+		const origin = "https://app.example.com";
+		const blocked = buildEmailIframeCsp(false, origin);
+		expect(blocked).toBe(
 			"default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https://app.example.com; script-src 'unsafe-inline';",
 		);
-		expect(csp).not.toContain("https:;");
+		// The proxy makes the policy mode-independent: an opted-in body's
+		// remote images load from the app origin, so the CSP never needs
+		// `https:` — and must not allow it.
+		expect(buildEmailIframeCsp(true, origin)).toBe(blocked);
+		expect(buildEmailIframeCsp(true, origin)).not.toContain("https:;");
 	});
 
-	it("allows https images only when the user opted in", () => {
+	it("omits the origin when it is unknown, still without https:", () => {
 		expect(buildEmailIframeCsp(true)).toBe(
-			"default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https:; script-src 'unsafe-inline';",
+			"default-src 'none'; style-src 'unsafe-inline'; img-src data: cid:; script-src 'unsafe-inline';",
 		);
+		expect(buildEmailIframeCsp(false)).toBe(buildEmailIframeCsp(true));
 	});
 });
+
+describe("proxyRemoteImages", () => {
+	const MAILBOX = "proxy@example.com";
+
+	/** The proxy route one remote URL is rewritten to. */
+	function route(url: string): string {
+		return `/api/v1/mailboxes/${MAILBOX}/image-proxy?url=${encodeURIComponent(url)}`;
+	}
+
+	it("rewrites an https src to the same-origin proxy route", () => {
+		const result = proxyRemoteImages(`<p>hi</p><img src="${TRACKER}" alt="logo">`, MAILBOX);
+		expect(result.proxiedCount).toBe(1);
+		expect(result.html).toBe(`<p>hi</p><img src="${route(TRACKER)}" alt="logo">`);
+	});
+
+	it("resolves protocol-relative sources against https:", () => {
+		const result = proxyRemoteImages(`<IMG SRC="${PROTOCOL_RELATIVE}">`, MAILBOX);
+		expect(result.proxiedCount).toBe(1);
+		expect(result.html).toBe(
+			`<IMG SRC="${route("https://cdn.example.com/banner.png")}">`,
+		);
+	});
+
+	it("matches the scheme case-insensitively", () => {
+		const raw = "HTTPS://Tracker.Example.COM/open.gif";
+		const result = proxyRemoteImages(`<img src="${raw}">`, MAILBOX);
+		expect(result.proxiedCount).toBe(1);
+		expect(result.html).toBe(`<img src="${route(raw)}">`);
+	});
+
+	it("leaves http:, cid: and data: references untouched", () => {
+		const body = `<img src="http://tracker.example.com/open.gif"><img src="${CID}"><img src="${DATA_IMAGE}">`;
+		const result = proxyRemoteImages(body, MAILBOX);
+		expect(result.proxiedCount).toBe(0);
+		expect(result.html).toBe(body);
+	});
+
+	it("rewrites remote srcset candidates, keeping descriptors and local ones", () => {
+		const result = proxyRemoteImages(
+			`<img srcset="${TRACKER} 1x, cid:big 2x, ${PROTOCOL_RELATIVE} 640w, data:image/gif;base64,AA,BB 3x, http://plain.example.com/a.gif 4x">`,
+			MAILBOX,
+		);
+		expect(result.proxiedCount).toBe(2);
+		expect(result.html).toBe(
+			`<img srcset="${route(TRACKER)} 1x, cid:big 2x, ${route("https://cdn.example.com/banner.png")} 640w, data:image/gif;base64,AA,BB 3x, http://plain.example.com/a.gif 4x">`,
+		);
+	});
+
+	it("quotes a rewritten unquoted src value", () => {
+		const result = proxyRemoteImages(`<img src=${TRACKER} alt=hi>`, MAILBOX);
+		expect(result.proxiedCount).toBe(1);
+		expect(result.html).toBe(`<img src="${route(TRACKER)}" alt=hi>`);
+	});
+
+	it("never rewrites attribute values that merely mention src", () => {
+		const body = `<img alt="src=https://evil.example.com/x" src="${CID}">`;
+		const result = proxyRemoteImages(body, MAILBOX);
+		expect(result.proxiedCount).toBe(0);
+		expect(result.html).toBe(body);
+	});
+
+	it("counts every proxied reference across the body", () => {
+		const result = proxyRemoteImages(
+			`<img src="${TRACKER}"><img src="${PROTOCOL_RELATIVE}" srcset="${TRACKER} 2x">`,
+			MAILBOX,
+		);
+		expect(result.proxiedCount).toBe(3);
+	});
+
+	it("returns image-free and empty bodies unchanged", () => {
+		const body = `<p>no images here</p><a href="${TRACKER}">link</a>`;
+		expect(proxyRemoteImages(body, MAILBOX)).toEqual({ html: body, proxiedCount: 0 });
+		expect(proxyRemoteImages("", MAILBOX)).toEqual({ html: "", proxiedCount: 0 });
+	});
+
+	it("returns the body unchanged without a mailbox id", () => {
+		const body = `<img src="${TRACKER}">`;
+		expect(proxyRemoteImages(body, "")).toEqual({ html: body, proxiedCount: 0 });
+	});
+});
+
 
 describe("senderAddress", () => {
 	it("extracts the bare address from display-name senders", () => {
