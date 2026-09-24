@@ -328,7 +328,7 @@ function serializeCodeBlock(el: HTMLElement): string {
 function getCodeLanguage(codeEl: Element | null): string {
 	if (!codeEl) return "";
 	const match = /(?:^|\s)language-([\w-]+)/.exec(codeEl.className ?? "");
-	return match ? match[1] : "";
+	return match?.[1] ?? "";
 }
 
 function serializeInlineCode(text: string): string {

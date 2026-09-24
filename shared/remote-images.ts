@@ -42,7 +42,8 @@ const SRCSET_CANDIDATE_RE = /(^|[\s,])((?:https?:)?\/\/[^\s,]+)/gi;
 const EMAIL_RE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
 const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/;
 
-function isWhitespace(ch: string): boolean {
+/** Whitespace the tag parser skips; an out-of-range read (`undefined`) is not whitespace. */
+function isWhitespace(ch: string | undefined): boolean {
 	return ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f";
 }
 
@@ -128,7 +129,7 @@ function rewriteImgTag(tag: string): { tag: string; blockedCount: number } {
 		let quote = "";
 		let value = "";
 		if (i < len && (tag[i] === '"' || tag[i] === "'")) {
-			quote = tag[i];
+			quote = tag[i] ?? "";
 			const valueStart = ++i;
 			while (i < len && tag[i] !== quote) i++;
 			value = tag.slice(valueStart, i);
@@ -220,7 +221,7 @@ export function buildEmailIframeCsp(
 export function senderAddress(sender: string | null | undefined): string {
 	if (typeof sender !== "string") return "";
 	const bracketed = sender.match(/<([^<>]+)>/);
-	const raw = (bracketed ? bracketed[1] : sender).trim().toLowerCase();
+	const raw = (bracketed?.[1] ?? sender).trim().toLowerCase();
 	return raw.startsWith("mailto:") ? raw.slice("mailto:".length) : raw;
 }
 
