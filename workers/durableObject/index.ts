@@ -1802,8 +1802,8 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Arm the Durable Object alarm for the earliest pending snooze or
-	 * reminder.
+	 * Arm the Durable Object alarm for the earliest pending snooze, reminder
+	 * or scheduled send.
 	 *
 	 * Only ever moves the alarm EARLIER: an alarm already set for a sooner
 	 * instant is left alone (it re-arms for whatever is still pending when it
