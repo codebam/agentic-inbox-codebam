@@ -137,10 +137,10 @@ interface EmailData {
 	body_text?: string | null;
 	read?: boolean | undefined;
 	starred?: boolean | undefined;
-	in_reply_to?: string | null;
+	in_reply_to?: string | null | undefined;
 	email_references?: string | null;
 	thread_id?: string | null;
-	message_id?: string | null;
+	message_id?: string | null | undefined;
 	raw_headers?: string | null;
 	category?: string | null;
 	category_confidence?: number | null;
