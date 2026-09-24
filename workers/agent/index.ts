@@ -40,6 +40,11 @@ import {
 	toolDiscardDraft,
 	toolDeleteEmail,
 	toolDeleteSpamEmails,
+	toolSnoozeEmail,
+	toolUnsnoozeEmail,
+	toolSetReminder,
+	toolClearReminder,
+	toolListSnoozed,
 	toolListRules,
 	toolCreateRule,
 	toolUpdateRule,
@@ -729,6 +734,83 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDiscardDraft(env, mailboxId, args.draftId);
+			},
+		}),
+
+		snooze_email: defineTool({
+			description:
+				"Snooze an email until a future time. The message moves to the Snoozed folder and returns to the folder it came from by itself when the time arrives — nothing is deleted. Accepts an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe(
+						"When to wake the message: an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+					),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolSnoozeEmail(env, mailboxId, args.emailId, args.until);
+			},
+		}),
+
+		unsnooze_email: defineTool({
+			description:
+				"Wake a snoozed email now: it returns to the folder it came from immediately. Nothing is deleted.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The snoozed email ID"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUnsnoozeEmail(env, mailboxId, args.emailId);
+			},
+		}),
+
+		set_reminder: defineTool({
+			description:
+				"Set a follow-up reminder for an email. The message stays where it is; when the reminder fires it is flagged and pulled back to the Inbox if the thread still expects a reply. Nothing is deleted. Accepts an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email to remind about"),
+				at: z
+					.string()
+					.describe(
+						"When to fire the reminder: an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+					),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolSetReminder(env, mailboxId, args.emailId, args.at);
+			},
+		}),
+
+		clear_reminder: defineTool({
+			description:
+				"Cancel an email's follow-up reminder, pending or already fired. Nothing is deleted.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email whose reminder to cancel"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolClearReminder(env, mailboxId, args.emailId);
+			},
+		}),
+
+		list_snoozed: defineTool({
+			description:
+				"List the messages currently snoozed in this mailbox, earliest wake time first. Read-only: it changes nothing.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListSnoozed(env, mailboxId);
 			},
 		}),
 

@@ -24,6 +24,11 @@ import {
 	toolSetSenderPolicy,
 	toolDiscardDraft,
 	toolDeleteSpamEmails,
+	toolSnoozeEmail,
+	toolUnsnoozeEmail,
+	toolSetReminder,
+	toolClearReminder,
+	toolListSnoozed,
 	toolListRules,
 	toolCreateRule,
 	toolUpdateRule,
@@ -621,6 +626,92 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				if (denied) return denied;
 				const result = await toolSetSenderPolicy(env, mailboxId, emailId, action);
 				return mcpResult(result);
+			},
+		);
+
+		// ── snooze_email ───────────────────────────────────────────
+		this.server.tool(
+			"snooze_email",
+			"Snooze an email until a future time. The message moves to the Snoozed folder and returns to the folder it came from by itself when the time arrives — nothing is deleted. Accepts an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe(
+						"When to wake the message: an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+					),
+			},
+			async ({ mailboxId, emailId, until }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolSnoozeEmail(env, mailboxId, emailId, until);
+				return mcpResult(result);
+			},
+		);
+
+		// ── unsnooze_email ─────────────────────────────────────────
+		this.server.tool(
+			"unsnooze_email",
+			"Wake a snoozed email now: it returns to the folder it came from immediately. Nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The snoozed email ID"),
+			},
+			async ({ mailboxId, emailId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolUnsnoozeEmail(env, mailboxId, emailId);
+				return mcpResult(result);
+			},
+		);
+
+		// ── set_reminder ───────────────────────────────────────────
+		this.server.tool(
+			"set_reminder",
+			"Set a follow-up reminder for an email. The message stays where it is; when the reminder fires it is flagged and pulled back to the Inbox if the thread still expects a reply. Nothing is deleted. Accepts an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email to remind about"),
+				at: z
+					.string()
+					.describe(
+						"When to fire the reminder: an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
+					),
+			},
+			async ({ mailboxId, emailId, at }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolSetReminder(env, mailboxId, emailId, at);
+				return mcpResult(result);
+			},
+		);
+
+		// ── clear_reminder ─────────────────────────────────────────
+		this.server.tool(
+			"clear_reminder",
+			"Cancel an email's follow-up reminder, pending or already fired. Nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email whose reminder to cancel"),
+			},
+			async ({ mailboxId, emailId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolClearReminder(env, mailboxId, emailId);
+				return mcpResult(result);
+			},
+		);
+
+		// ── list_snoozed ───────────────────────────────────────────
+		this.server.tool(
+			"list_snoozed",
+			"List the messages currently snoozed in a mailbox, earliest wake time first. Read-only: it changes nothing.",
+			{ mailboxId: z.string().describe("The mailbox email address") },
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListSnoozed(env, mailboxId));
 			},
 		);
 
