@@ -81,8 +81,9 @@ export default function HomeRoute() {
 
 	// Set default domain when config loads
 	useEffect(() => {
-		if (domains.length > 0 && !selectedDomain) {
-			setSelectedDomain(domains[0]);
+		const firstDomain = domains[0];
+		if (domains.length > 0 && !selectedDomain && firstDomain) {
+			setSelectedDomain(firstDomain);
 		}
 	}, [domains, selectedDomain]);
 

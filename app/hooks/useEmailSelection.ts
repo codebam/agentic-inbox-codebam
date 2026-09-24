@@ -50,7 +50,8 @@ export function useEmailSelection(pageKeys: string[]): EmailSelection {
 					if (start !== -1 && end !== -1) {
 						const next = new Set(prev);
 						for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
-							next.add(pageKeys[i]);
+							const pageKey = pageKeys[i];
+							if (pageKey !== undefined) next.add(pageKey);
 						}
 						anchorRef.current = key;
 						return next;

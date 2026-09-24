@@ -996,6 +996,7 @@ export default function RulesRoute() {
 		if (target < 0 || target >= ruleList.length) return;
 		const ids = ruleList.map((rule) => rule.id);
 		const [moved] = ids.splice(index, 1);
+		if (moved === undefined) return; // nothing was moved: skip the reorder
 		ids.splice(target, 0, moved);
 		reorderRules.mutate(
 			{ mailboxId, ids },

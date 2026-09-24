@@ -1585,7 +1585,8 @@ export class MailboxDO extends DurableObject<Env> {
 				id,
 			),
 		] as unknown as RuleRow[];
-		return rows.length > 0 ? parseRuleRow(rows[0]) : null;
+		const row = rows[0];
+		return row ? parseRuleRow(row) : null;
 	}
 
 
@@ -1635,7 +1636,8 @@ export class MailboxDO extends DurableObject<Env> {
 				normalized,
 			),
 		] as unknown as SenderPolicyRow[];
-		return rows.length > 0 ? parseSenderPolicyRow(rows[0]) : null;
+		const row = rows[0];
+		return row ? parseSenderPolicyRow(row) : null;
 	}
 
 

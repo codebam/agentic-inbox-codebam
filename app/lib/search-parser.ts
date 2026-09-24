@@ -49,8 +49,9 @@ export function parseSearchQuery(input: string): ParsedSearch {
 	const matches: { fullMatch: string; op: string; value: string }[] = [];
 
 	while ((match = OPERATOR_RE.exec(input)) !== null) {
-		const op = match[1].toLowerCase();
-		const value = match[2] ?? match[3]; // quoted or unquoted
+		const op = match[1]?.toLowerCase();
+		const value = match[2] ?? match[3] ?? ""; // quoted or unquoted
+		if (!op) continue; // an unnamed operator stays in the free-text query
 		matches.push({ fullMatch: match[0], op, value });
 	}
 
