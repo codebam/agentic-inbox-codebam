@@ -14,6 +14,8 @@ import {
 import type { EmailViewMode } from "shared/email-view";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import MessageBody from "~/components/MessageBody";
+import RemoteImagesNotice from "~/components/email-panel/RemoteImagesNotice";
+import { useRemoteImagesAllowed } from "~/hooks/useRemoteImages";
 import {
 	formatDetailDate,
 	formatShortDate,
@@ -72,6 +74,7 @@ export default function ThreadMessage({
 	onPreviewImage,
 }: ThreadMessageProps) {
 	const isSelf = email.sender === mailboxEmail;
+	const allowRemoteImages = useRemoteImagesAllowed(email, mailboxId);
 	const containerClassName = `${!isLast ? "border-b border-kumo-line" : ""} ${isDraft ? "border-l-2 border-l-kumo-warning bg-kumo-warning/[0.02]" : ""}`;
 	const senderLabel = isDraft ? "Draft reply" : isSelf ? "You" : email.sender;
 
@@ -162,8 +165,11 @@ export default function ThreadMessage({
 					</div>
 				</div>
 
+				<RemoteImagesNotice email={email} mailboxId={mailboxId} />
+
+
 				<div className="md:ml-[42px]">
-					<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} autoSize />
+					<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} autoSize allowRemoteImages={allowRemoteImages} />
 				</div>
 
 				{isDraft && (onSendDraft || onEditDraft || onDeleteDraft) && (

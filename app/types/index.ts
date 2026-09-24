@@ -29,6 +29,12 @@ export interface MailboxSettings {
 	notifyWebhookUrl?: string;
 	/** Optional signing secret for the X-Agentic-Inbox-Signature header. */
 	notifyWebhookSecret?: string;
+	/**
+	 * Senders whose remote images always load: exact addresses
+	 * (`alerts@example.com`) or domain entries (`@example.com`). Normalised
+	 * to lowercase by the mailbox settings route; see shared/remote-images.ts.
+	 */
+	imageAllowlist?: string[];
 }
 
 export interface Mailbox {

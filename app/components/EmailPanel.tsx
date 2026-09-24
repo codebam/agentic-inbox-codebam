@@ -16,6 +16,7 @@ import ExplainPanel from "~/components/ExplainPanel";
 import EmailPanelDialogs from "~/components/email-panel/EmailPanelDialogs";
 import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
+import RemoteImagesNotice from "~/components/email-panel/RemoteImagesNotice";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
 import EmailViewToggle from "~/components/EmailViewToggle";
@@ -283,6 +284,10 @@ export default function EmailPanel({
 
 
 			<ExplainPanel email={email} categories={categoryNames} />
+			{/* Remote images (tracking pixels) are blocked by default; this
+			    notice is the opt-in. In a thread each message renders its own
+			    notice, so the panel-level one would be a duplicate. */}
+			{!hasThread && <RemoteImagesNotice email={email} mailboxId={mailboxId} />}
 
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (

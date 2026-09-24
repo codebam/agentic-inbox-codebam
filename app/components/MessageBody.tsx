@@ -17,6 +17,8 @@ interface MessageBodyProps {
 	viewMode: EmailViewMode;
 	/** When true, the HTML iframe auto-sizes to its content height. */
 	autoSize?: boolean;
+	/** When true, remote images (tracking pixels) load in the HTML view. */
+	allowRemoteImages?: boolean;
 }
 
 
@@ -33,6 +35,7 @@ export default function MessageBody({
 	mailboxId,
 	viewMode,
 	autoSize,
+	allowRemoteImages,
 }: MessageBodyProps) {
 	if (viewMode === "text") {
 		const stored =
@@ -56,6 +59,7 @@ export default function MessageBody({
 				email.attachments,
 			)}
 			autoSize={autoSize}
+			allowRemoteImages={allowRemoteImages}
 		/>
 	);
 }

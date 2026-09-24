@@ -28,6 +28,7 @@ import { applySignatureToBody } from "../shared/signature";
 import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-view";
 import { normalizeTrashRetentionDays } from "../shared/trash-retention";
+import { normalizeImageAllowlist } from "../shared/remote-images";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -232,6 +233,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 		...defaultMailboxSettings(name),
 		...settings,
 		categorization: normalizeCategorizationSettings(settings?.categorization),
+		imageAllowlist: normalizeImageAllowlist(settings?.imageAllowlist),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -271,6 +273,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		trashRetentionDays: normalizeTrashRetentionDays(settings.trashRetentionDays),
 		notifyWebhookUrl: normalizeWebhookUrl(settings.notifyWebhookUrl),
 		notifyWebhookSecret: normalizeWebhookSecret(settings.notifyWebhookSecret),
+		imageAllowlist: normalizeImageAllowlist(settings.imageAllowlist),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });

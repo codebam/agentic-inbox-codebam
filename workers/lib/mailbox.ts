@@ -30,6 +30,7 @@ export function defaultMailboxSettings(name: string) {
 		trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
 		notifyWebhookUrl: "",
 		notifyWebhookSecret: "",
+		imageAllowlist: [],
 	};
 }
 

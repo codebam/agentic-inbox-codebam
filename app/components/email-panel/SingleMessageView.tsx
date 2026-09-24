@@ -5,6 +5,7 @@
 import type { EmailViewMode } from "shared/email-view";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import MessageBody from "~/components/MessageBody";
+import { useRemoteImagesAllowed } from "~/hooks/useRemoteImages";
 import { formatDetailDate } from "~/lib/utils";
 import type { Email } from "~/types";
 
@@ -22,6 +23,7 @@ export default function SingleMessageView({
 	viewMode,
 	onPreviewImage,
 }: SingleMessageViewProps) {
+	const allowRemoteImages = useRemoteImagesAllowed(email, mailboxId);
 	return (
 		<div className="flex flex-col h-full">
 			<div className="px-4 py-4 border-b border-kumo-line md:px-6">
@@ -47,7 +49,7 @@ export default function SingleMessageView({
 			</div>
 
 			<div className="flex-1 min-h-0">
-				<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} />
+				<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} allowRemoteImages={allowRemoteImages} />
 			</div>
 
 			<EmailAttachmentList
