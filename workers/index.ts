@@ -93,6 +93,12 @@ import {
 	type SenderPolicy,
 } from "./lib/sender-policy";
 import { handleInboundRuleOutbound } from "./lib/rule-outbound";
+import {
+	extractUnsubscribeHeaders,
+	isOneClickUnsubscribe,
+	parseUnsubscribeHeader,
+	sendOneClickUnsubscribe,
+} from "./lib/unsubscribe";
 import type { Env } from "./types";
 import {
 	defaultMailboxSettings,
@@ -422,6 +428,16 @@ type MailboxSnoozeStub = {
 	clearReminder: (id: string) => Promise<MailboxThreadEmailRow | null>;
 	getSnoozed: () => Promise<MailboxEmailRow[]>;
 	getReminders: () => Promise<MailboxEmailRow[]>;
+};
+
+/**
+ * The unsubscribe RPCs the route calls. The route reads the stored headers
+ * with `getEmail` and records the outcome with `setUnsubscribed`; the
+ * outbound POST itself happens in the route, never in the DO.
+ */
+type MailboxUnsubscribeStub = {
+	getEmail: (id: string) => Promise<MailboxThreadEmailRow | null>;
+	setUnsubscribed: (id: string, at: string) => Promise<MailboxThreadEmailRow | null>;
 };
 
 
@@ -785,6 +801,44 @@ app.get("/api/v1/mailboxes/:mailboxId/snoozed", async (c: AppContext) => {
 app.get("/api/v1/mailboxes/:mailboxId/reminders", async (c: AppContext) => {
 	const emails = await snoozeStub(c).getReminders();
 	return c.json({ emails, totalCount: emails.length });
+});
+
+// -- Unsubscribe (RFC 8058) -----------------------------------------
+
+/** Narrow the mailbox stub to the unsubscribe RPCs the route uses. */
+function unsubscribeStub(c: AppContext): MailboxUnsubscribeStub {
+	return c.var.mailboxStub;
+}
+
+/**
+ * One-click unsubscribe for one stored message (RFC 8058).
+ *
+ * Operator-initiated only: this route is the sole caller of the SSRF guard
+ * and performs the outbound POST itself — never the DO, never delivery,
+ * never an agent/MCP tool — so a sender-controlled URL cannot be fetched
+ * without an explicit click. `unsubscribed_at` is stamped only after the
+ * sender's endpoint answered 2xx; every failure answers 502 and leaves the
+ * row untouched. The mailto fallback is a UI concern and is never sent here.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe", async (c: AppContext) => {
+	const id = c.req.param("id")!;
+	const stub = unsubscribeStub(c);
+	const email = await stub.getEmail(id);
+	if (!email) return c.json({ error: "Email not found" }, 404);
+
+	const { httpsUrl } = parseUnsubscribeHeader(email.list_unsubscribe);
+	if (!httpsUrl || !isOneClickUnsubscribe(email.list_unsubscribe_post)) {
+		return c.json({ error: "This message has no one-click unsubscribe target" }, 400);
+	}
+
+	const result = await sendOneClickUnsubscribe(httpsUrl);
+	if (!result.ok) {
+		return c.json({ error: `Unsubscribe request failed: ${result.error}` }, 502);
+	}
+
+	const updated = await stub.setUnsubscribed(id, new Date().toISOString());
+	if (!updated) return c.json({ error: "Email not found" }, 404);
+	return c.json({ status: "unsubscribed", email: updated });
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------
@@ -1346,6 +1400,11 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
+	// List-Unsubscribe headers (RFC 8058). postal-mime lowercases header keys
+	// and the extractor lowercases both sides anyway; the values are stored
+	// verbatim so the unsubscribe route can re-parse them later.
+	const unsubscribeHeaders = extractUnsubscribeHeaders(parsedEmail.headers);
+
 	// Merge app-wide categories with this mailbox's own categories unless the
 	// mailbox opted out. Global category edits then apply to all mailboxes
 	// without rewriting each mailbox settings JSON.
@@ -1435,6 +1494,8 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		body_text: parsedEmail.text ?? null,
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
+		list_unsubscribe: unsubscribeHeaders.listUnsubscribe,
+		list_unsubscribe_post: unsubscribeHeaders.listUnsubscribePost,
 		// Blocked senders always carry the spam category; otherwise a rule's
 		// category is authoritative and the classifier only fills it in for
 		// messages no rule matched.

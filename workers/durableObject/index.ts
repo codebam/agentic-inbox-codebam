@@ -149,6 +149,10 @@ interface EmailData {
 	/** Rule that routed or acted on this message, when a rule fired. */
 	matched_rule_id?: string | null;
 	matched_rule_name?: string | null;
+	/** Raw List-Unsubscribe header from the sender; NULL when it set none. */
+	list_unsubscribe?: string | null;
+	/** Raw List-Unsubscribe-Post header (RFC 8058 marker); NULL when absent. */
+	list_unsubscribe_post?: string | null;
 }
 
 interface AttachmentData {
@@ -1462,6 +1466,34 @@ export class MailboxDO extends DurableObject<Env> {
 		);
 	}
 
+	// ── Unsubscribe (RFC 8058) ─────────────────────────────────────
+
+	/**
+	 * Stamp `unsubscribed_at` on a message whose one-click unsubscribe
+	 * endpoint answered 2xx. The request itself is made by the API route in
+	 * workers/index.ts — the only caller of the SSRF guard, reached only by
+	 * an explicit operator action — so this mutator just records the
+	 * outcome, and the route never calls it when the request failed.
+	 * Returns the updated row, or null when the id is unknown.
+	 */
+	setUnsubscribed(id: string, at: string) {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!email) return null;
+
+		this.db
+			.update(schema.emails)
+			.set({ unsubscribed_at: at })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		return this.getEmail(id);
+	}
+
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────
 
@@ -1709,6 +1741,10 @@ export class MailboxDO extends DurableObject<Env> {
 				classification: email.classification ?? null,
 				matched_rule_id: email.matched_rule_id ?? null,
 				matched_rule_name: email.matched_rule_name ?? null,
+				// Stored verbatim from the inbound headers; the unsubscribe
+				// route re-parses them on demand (never at ingest).
+				list_unsubscribe: email.list_unsubscribe ?? null,
+				list_unsubscribe_post: email.list_unsubscribe_post ?? null,
 			})
 			.run();
 

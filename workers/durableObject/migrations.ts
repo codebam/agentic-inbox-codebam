@@ -303,4 +303,19 @@ export const mailboxMigrations: Migration[] = [
             INSERT INTO folders (id, name, is_deletable) VALUES ('snoozed', 'Snoozed', 0);
         `),
 	},
+	{
+		// One-click unsubscribe (RFC 8058). `list_unsubscribe` and
+		// `list_unsubscribe_post` keep the sender's headers verbatim so the
+		// targets can be re-parsed later; `unsubscribed_at` is stamped only
+		// after the sender's endpoint answered 2xx to an explicit operator
+		// request (see the /unsubscribe route in workers/index.ts). Nothing
+		// here fires automatically, and the agent/MCP surfaces deliberately
+		// have no unsubscribe tool.
+		name: "19_add_unsubscribe_headers",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN list_unsubscribe TEXT;
+            ALTER TABLE emails ADD COLUMN list_unsubscribe_post TEXT;
+            ALTER TABLE emails ADD COLUMN unsubscribed_at TEXT;
+        `),
+	},
 ];
