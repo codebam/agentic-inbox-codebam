@@ -2093,6 +2093,21 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * The prefix conditions one contact query matches: a case-insensitive
+	 * prefix on the address or on the display name. Empty (no condition at
+	 * all) for a blank query, which then reads the whole table.
+	 */
+	#contactConditions(query: string): SQL[] {
+		const term = (query ?? "").trim().toLowerCase();
+		return term
+			? [
+					contactPrefixCondition(schema.contacts.email, term),
+					contactPrefixCondition(schema.contacts.name, term),
+				]
+			: [];
+	}
+
+	/**
 	 * The mailbox's contacts, ranked by how much it sent to them
 	 * (`sent_count DESC`), then how much they sent (`received_count DESC`),
 	 * then recency (`last_seen_at DESC`). A non-empty query prefix-matches
@@ -2105,13 +2120,7 @@ export class MailboxDO extends DurableObject<Env> {
 			Math.max(Math.trunc(limit), 1),
 			MAX_CONTACT_SEARCH_LIMIT,
 		);
-		const term = (query ?? "").trim().toLowerCase();
-		const conditions = term
-			? [
-					contactPrefixCondition(schema.contacts.email, term),
-					contactPrefixCondition(schema.contacts.name, term),
-				]
-			: [];
+		const conditions = this.#contactConditions(query);
 
 		return this.db
 			.select()
@@ -2128,13 +2137,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	/** How many contacts match the same query searchContacts reads. */
 	countContacts(query = "") {
-		const term = (query ?? "").trim().toLowerCase();
-		const conditions = term
-			? [
-					contactPrefixCondition(schema.contacts.email, term),
-					contactPrefixCondition(schema.contacts.name, term),
-				]
-			: [];
+		const conditions = this.#contactConditions(query);
 
 		const row = this.db
 			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
