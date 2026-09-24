@@ -36,24 +36,29 @@ export default function SearchResultsRoute() {
 	const { selectedEmailId, isComposing, selectEmail, closePanel } = useUIStore();
 	const updateEmail = useUpdateEmail();
 	const urlQuery = searchParams.get("q") || "";
-	const [page, setPage] = useState(1);
 	const searchKey = useMemo(
 		() => `${mailboxId ?? ""}::${urlQuery}`,
 		[mailboxId, urlQuery],
 	);
-	const prevSearchKeyRef = useRef(searchKey);
-	const searchChanged = prevSearchKeyRef.current !== searchKey;
-	const currentPage = searchChanged ? 1 : page;
+	// Page state is keyed by the search it belongs to, so a new query renders
+	// as page 1 without resetting state from an effect.
+	const [pageState, setPageState] = useState<{ searchKey: string; page: number }>({
+		searchKey,
+		page: 1,
+	});
+	const currentPage = pageState.searchKey === searchKey ? pageState.page : 1;
+	const setPage = (next: number) => setPageState({ searchKey, page: next });
 
+	// Close the reading pane when the search target changes, not on mount.
+	const lastSearchKeyRef = useRef(searchKey);
 	useEffect(() => {
-		if (!searchChanged) {
+		if (lastSearchKeyRef.current === searchKey) {
 			return;
 		}
 
-		prevSearchKeyRef.current = searchKey;
-		setPage(1);
+		lastSearchKeyRef.current = searchKey;
 		closePanel();
-	}, [closePanel, searchChanged, searchKey]);
+	}, [closePanel, searchKey]);
 
 	const { data: searchData, isLoading, isError, refetch } = useSearchEmails(
 		mailboxId,
@@ -74,7 +79,7 @@ export default function SearchResultsRoute() {
 		>
 			<>
 				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
-					<Tooltip content="Back to inbox" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => navigate(`/mailbox/${mailboxId}/emails/inbox`)} aria-label="Back to inbox" /></Tooltip>
+					<Tooltip content="Back to inbox" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => void navigate(`/mailbox/${mailboxId}/emails/inbox`)} aria-label="Back to inbox" /></Tooltip>
 					<div className="min-w-0 flex-1"><h1 className="text-lg font-semibold text-kumo-default truncate">Search Results</h1>{!isLoading && <span className="text-sm text-kumo-subtle">{totalCount} result{totalCount !== 1 ? "s" : ""}{urlQuery ? ` for "${urlQuery}"` : ""}</span>}</div>
 				</div>
 				<div className="flex-1 overflow-y-auto">

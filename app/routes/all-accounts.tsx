@@ -137,7 +137,8 @@ export default function AllAccountsRoute() {
 	const { data, isLoading, isFetching, refetch } = useAllEmails(params, {
 		refetchInterval: 30_000,
 	});
-	const emails = data?.emails ?? [];
+	// Stable reference: a fresh array here would invalidate every memo below.
+	const emails = useMemo(() => data?.emails ?? [], [data]);
 	const totalCount = data?.totalCount ?? 0;
 	const isPanelOpen = selectedEmailId !== null || isComposing;
 	const accountCountLabel = `${mailboxes.length} account${mailboxes.length === 1 ? "" : "s"}`;
@@ -294,7 +295,7 @@ export default function AllAccountsRoute() {
 							shape="square"
 							size="sm"
 							icon={<ArrowLeftIcon size={18} />}
-							onClick={() => navigate("/")}
+							onClick={() => void navigate("/")}
 							aria-label="Back to mailboxes"
 						/>
 					</Tooltip>
@@ -353,7 +354,7 @@ export default function AllAccountsRoute() {
 									shape="square"
 									size="sm"
 									icon={<MagnifyingGlassIcon size={18} />}
-									onClick={() => navigate("/search")}
+									onClick={() => void navigate("/search")}
 									aria-label="Search all accounts"
 								/>
 							</Tooltip>

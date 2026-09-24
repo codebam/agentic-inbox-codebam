@@ -19,7 +19,7 @@ export function useRules(mailboxId: string | undefined) {
 		queryKey: mailboxId
 			? queryKeys.rules.list(mailboxId)
 			: ["rules", "_disabled"],
-		queryFn: () => api.listRules(mailboxId!) as Promise<MailRule[]>,
+		queryFn: () => api.listRules(mailboxId!),
 		enabled: !!mailboxId,
 	});
 }
@@ -36,7 +36,7 @@ export function useCreateRule() {
 			rule: RuleDraft;
 		}) => api.createRule(mailboxId, rule),
 		onSuccess: (_rule, { mailboxId }) => {
-			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
 		},
 	});
 }
@@ -63,7 +63,7 @@ export function useUpdateRule() {
 				(current) =>
 					current?.map((item) => (item.id === rule.id ? rule : item)),
 			);
-			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
 		},
 	});
 }
@@ -80,7 +80,7 @@ export function useDeleteRule() {
 			ruleId: string;
 		}) => api.deleteRule(mailboxId, ruleId),
 		onSuccess: (_result, { mailboxId }) => {
-			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
 		},
 	});
 }
@@ -97,7 +97,7 @@ export function useReorderRules() {
 			if (rules) {
 				qc.setQueryData(queryKeys.rules.list(mailboxId), rules);
 			}
-			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
 		},
 	});
 }

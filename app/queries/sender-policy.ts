@@ -16,7 +16,7 @@ export function useSenderPolicy(mailboxId: string | undefined) {
 			? queryKeys.senderPolicy.list(mailboxId)
 			: ["sender-policy", "_disabled"],
 		queryFn: () =>
-			api.listSenderPolicy(mailboxId!) as Promise<SenderPolicyEntry[]>,
+			api.listSenderPolicy(mailboxId!),
 		enabled: !!mailboxId,
 	});
 }
@@ -36,7 +36,7 @@ export function useSetSenderPolicy() {
 			policy: SenderPolicy;
 		}) => api.setSenderPolicy(mailboxId, address, policy),
 		onSuccess: (_entry, { mailboxId }) => {
-			qc.invalidateQueries({ queryKey: queryKeys.senderPolicy.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: queryKeys.senderPolicy.list(mailboxId) });
 		},
 	});
 }
@@ -54,7 +54,7 @@ export function useRemoveSenderPolicy() {
 			address: string;
 		}) => api.removeSenderPolicy(mailboxId, address),
 		onSuccess: (_result, { mailboxId }) => {
-			qc.invalidateQueries({ queryKey: queryKeys.senderPolicy.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: queryKeys.senderPolicy.list(mailboxId) });
 		},
 	});
 }
@@ -78,10 +78,10 @@ export function useSenderPolicyFeedback() {
 			action: SenderPolicy;
 		}) => api.senderPolicyFeedback(mailboxId, emailId, action),
 		onSuccess: (_entry, { mailboxId }) => {
-			qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
-			qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
-			qc.invalidateQueries({ queryKey: ["all-emails"] });
-			qc.invalidateQueries({ queryKey: queryKeys.senderPolicy.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			void qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
+			void qc.invalidateQueries({ queryKey: ["all-emails"] });
+			void qc.invalidateQueries({ queryKey: queryKeys.senderPolicy.list(mailboxId) });
 		},
 	});
 }

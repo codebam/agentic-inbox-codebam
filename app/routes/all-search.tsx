@@ -64,9 +64,13 @@ export default function AllSearchRoute() {
 
 
 	// Keep the input in sync with the URL (back/forward, links, redirects).
-	useEffect(() => {
+	// Adjusting state during render (rather than in an effect) keeps the field
+	// from painting a stale value for a frame.
+	const [draftUrlQuery, setDraftUrlQuery] = useState(urlQuery);
+	if (draftUrlQuery !== urlQuery) {
+		setDraftUrlQuery(urlQuery);
 		setDraftQuery(urlQuery);
-	}, [urlQuery]);
+	}
 
 
 	// A new query is a new result set: reset paging and close the reading pane.
@@ -112,7 +116,7 @@ export default function AllSearchRoute() {
 		>
 			<>
 				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
-					<Tooltip content="Back to all accounts" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => navigate("/all")} aria-label="Back to all accounts" /></Tooltip>
+					<Tooltip content="Back to all accounts" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => void navigate("/all")} aria-label="Back to all accounts" /></Tooltip>
 					<div className="min-w-0 flex-1"><h1 className="text-lg font-semibold text-kumo-default truncate">Search All Accounts</h1>{!isLoading && !isError && <span className="text-sm text-kumo-subtle">{totalCount} result{totalCount !== 1 ? "s" : ""}{urlQuery ? ` for "${urlQuery}"` : ""}</span>}</div>
 				</div>
 				<div className="px-4 py-2 border-b border-kumo-line shrink-0 md:px-5">

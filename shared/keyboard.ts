@@ -217,7 +217,7 @@ export type KeyResolution =
 
 function asTarget(target: unknown): TargetLike | null {
 	if (!target || typeof target !== "object") return null;
-	return target as TargetLike;
+	return target;
 }
 
 

@@ -52,9 +52,10 @@ export default function HomeRoute() {
 	});
 
 
-	const domains = configData?.domains ?? [];
-	const emailAddresses = configData?.emailAddresses ?? [];
-	const catchAllMailboxes = configData?.catchAllMailboxes ?? [];
+	// Memoised so the dependency lists below see a stable array per config load.
+	const domains = useMemo(() => configData?.domains ?? [], [configData]);
+	const emailAddresses = useMemo(() => configData?.emailAddresses ?? [], [configData]);
+	const catchAllMailboxes = useMemo(() => configData?.catchAllMailboxes ?? [], [configData]);
 	const configuredMailboxAddresses = useMemo(
 		() => [...new Set([...emailAddresses, ...catchAllMailboxes])],
 		[emailAddresses, catchAllMailboxes],
@@ -67,7 +68,7 @@ export default function HomeRoute() {
 
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newPrefix, setNewPrefix] = useState("");
-	const [selectedDomain, setSelectedDomain] = useState("");
+	const [domainChoice, setDomainChoice] = useState("");
 	const [newName, setNewName] = useState("");
 	const [isCreating, setIsCreating] = useState(false);
 	const [createError, setCreateError] = useState<string | null>(null);
@@ -79,13 +80,9 @@ export default function HomeRoute() {
 	const [isDeleting, setIsDeleting] = useState(false);
 
 
-	// Set default domain when config loads
-	useEffect(() => {
-		const firstDomain = domains[0];
-		if (domains.length > 0 && !selectedDomain && firstDomain) {
-			setSelectedDomain(firstDomain);
-		}
-	}, [domains, selectedDomain]);
+	// The first configured domain stands in until the user picks one, so the
+	// default is derived during render rather than seeded from an effect.
+	const selectedDomain = domainChoice || domains[0] || "";
 
 
 	// Auto-create configured mailboxes, including the per-domain catch-all
@@ -110,13 +107,13 @@ export default function HomeRoute() {
 		}
 		autoCreateDone.current = true;
 		let cancelled = false;
-		Promise.all(
+		void Promise.all(
 			toCreate.map((addr) => {
 				const localPart = addr.split("@")[0] || addr;
 				const name = isCatchAllAddress(addr) ? "Catch-all" : localPart;
 				return api.createMailbox(addr, name).catch(() => {});
 			}),
-		).then(() => { if (!cancelled) refetchMailboxes(); });
+		).then(() => { if (!cancelled) void refetchMailboxes(); });
 		return () => { cancelled = true; };
 	}, [configData, configuredMailboxAddresses, mailboxes, mailboxesFetched, refetchMailboxes]);
 
@@ -322,7 +319,7 @@ export default function HomeRoute() {
 					<Dialog.Title className="text-base font-semibold mb-5">
 						Create New Mailbox
 					</Dialog.Title>
-					<form onSubmit={handleCreate} className="space-y-4">
+					<form onSubmit={(e) => void handleCreate(e)} className="space-y-4">
 						{createError && (
 							<Text variant="error" size="sm">
 								{createError}
@@ -350,7 +347,7 @@ export default function HomeRoute() {
 								aria-label="Domain"
 								value={selectedDomain}
 								onValueChange={(value) => {
-									if (value) setSelectedDomain(value);
+									if (value) setDomainChoice(value);
 								}}
 							>
 											{domains.map((d) => (
@@ -428,7 +425,7 @@ export default function HomeRoute() {
 							variant="destructive"
 							size="sm"
 							loading={isDeleting}
-							onClick={handleDelete}
+							onClick={() => void handleDelete()}
 						>
 							Delete
 						</Button>

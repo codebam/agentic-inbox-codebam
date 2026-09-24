@@ -4,7 +4,7 @@
 
 import { Button, Loader, useKumoToastManager } from "@cloudflare/kumo";
 import { ArrowLeftIcon, SparkleIcon } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router";
 import {
 	normalizeGlobalCategorizationSettings,
@@ -39,22 +39,21 @@ export default function GlobalSettingsRoute() {
 	const updateGlobalModels = useUpdateGlobalModels();
 	const updateGlobalEmailView = useUpdateGlobalEmailView();
 
-	const [categories, setCategories] = useState<EmailCategory[]>([]);
-	const [models, setModels] = useState<ModelConfig>({});
-	const [defaultEmailView, setDefaultEmailView] = useState<EmailViewMode | undefined>(undefined);
+	// Editable copies of the loaded settings: a draft takes over once the user
+	// edits, so a refetch cannot clobber in-progress changes.
+	const [categoryDraft, setCategoryDraft] = useState<EmailCategory[] | null>(null);
+	const [modelDraft, setModelDraft] = useState<ModelConfig | null>(null);
+	const [emailViewDraft, setEmailViewDraft] = useState<{
+		value: EmailViewMode | undefined;
+	} | null>(null);
 	const [isSaving, setIsSaving] = useState(false);
 
-	useEffect(() => {
-		if (data) setCategories(data.categories);
-	}, [data]);
 
-	useEffect(() => {
-		if (modelData) setModels(modelData.models ?? {});
-	}, [modelData]);
-
-	useEffect(() => {
-		setDefaultEmailView(emailViewData?.defaultEmailView);
-	}, [emailViewData]);
+	const categories = categoryDraft ?? data?.categories ?? [];
+	const models = modelDraft ?? modelData?.models ?? {};
+	const defaultEmailView = emailViewDraft
+		? emailViewDraft.value
+		: emailViewData?.defaultEmailView;
 
 	const modelErrors = modelConfigErrors({ models });
 
@@ -73,7 +72,7 @@ export default function GlobalSettingsRoute() {
 			// what the server will store (IDs, trimming, duplicates).
 			const settings = normalizeGlobalCategorizationSettings({ categories });
 			await updateGlobalCategorization.mutateAsync(settings);
-			setCategories(settings.categories);
+			setCategoryDraft(settings.categories);
 			await updateGlobalModels.mutateAsync({
 				models: normalizeModelConfig(models),
 			});
@@ -130,7 +129,7 @@ export default function GlobalSettingsRoute() {
 						description="Jev considers these categories for every mailbox that has global categories enabled."
 						emptyText='No global categories yet. Add one (for example "Work" or "Newsletters") to share it across every mailbox.'
 						categories={categories}
-						onChange={setCategories}
+						onChange={(next) => setCategoryDraft(next)}
 					/>
 				</div>
 
@@ -139,7 +138,7 @@ export default function GlobalSettingsRoute() {
 						title="AI Models"
 						description="App-wide model choice for every mailbox that has no override of its own. Leave a field empty to use the built-in default (shown as the placeholder)."
 						models={models}
-						onChange={setModels}
+						onChange={(next) => setModelDraft(next)}
 					/>
 				</div>
 
@@ -148,13 +147,13 @@ export default function GlobalSettingsRoute() {
 						title="Message view"
 						description="How messages open for every mailbox that has no override of its own. Leave it blank to use the built-in HTML default."
 						value={defaultEmailView}
-						onChange={setDefaultEmailView}
+						onChange={(value) => setEmailViewDraft({ value })}
 						inherited={DEFAULT_EMAIL_VIEW}
 					/>
 				</div>
 
 				<div className="flex justify-end mt-6">
-					<Button variant="primary" onClick={handleSave} loading={isSaving}>
+					<Button variant="primary" onClick={() => void handleSave()} loading={isSaving}>
 						Save Global Settings
 					</Button>
 				</div>

@@ -299,7 +299,7 @@ async function consumeSse(response) {
 
 async function handleResponse(response) {
 	if (!response.ok) {
-		let body = "";
+		let body;
 		try {
 			body = await response.text();
 		} catch {

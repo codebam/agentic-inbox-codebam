@@ -59,6 +59,7 @@ function isWhitespace(ch: string | undefined): boolean {
  */
 export function isRemoteImageUrl(url: string): boolean {
 	if (typeof url !== "string") return false;
+	// eslint-disable-next-line no-control-regex -- deliberate: control characters are what browsers strip while parsing a URL
 	const cleaned = url.replace(/[\u0000-\u0020]/g, "");
 	return /^(?:https?:)?\/\//i.test(cleaned);
 }
@@ -127,7 +128,7 @@ function rewriteImgTag(tag: string): { tag: string; blockedCount: number } {
 
 		// Value, quoted or unquoted.
 		let quote = "";
-		let value = "";
+		let value: string;
 		if (i < len && (tag[i] === '"' || tag[i] === "'")) {
 			quote = tag[i] ?? "";
 			const valueStart = ++i;
