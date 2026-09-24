@@ -39,4 +39,7 @@ export const queryKeys = {
 	models: {
 		global: ["global-models"] as const,
 	},
+	emailView: {
+		global: ["global-email-view"] as const,
+	},
 };

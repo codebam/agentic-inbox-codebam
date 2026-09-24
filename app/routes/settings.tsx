@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
+import EmailViewCard from "~/components/EmailViewCard";
 import {
 	defaultCategorizationSettings,
 	normalizeCategorizationSettings,
@@ -23,6 +24,11 @@ import {
 	normalizeModelConfig,
 	type ModelConfig,
 } from "shared/models";
+import {
+	normalizeEmailViewMode,
+	resolveDefaultEmailView,
+	type EmailViewMode,
+} from "shared/email-view";
 import {
 	normalizeSignatureSettings,
 	type SignatureSettings,
@@ -35,6 +41,7 @@ import {
 import { getSignatureBlock } from "~/lib/utils";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import { useGlobalModels } from "~/queries/models";
+import { useGlobalEmailView } from "~/queries/email-view";
 
 // Placeholder shown in the textarea when no custom prompt is set.
 // The authoritative default prompt lives in workers/agent/index.ts (DEFAULT_SYSTEM_PROMPT).
@@ -45,6 +52,7 @@ export default function SettingsRoute() {
 	const toastManager = useKumoToastManager();
 	const { data: mailbox } = useMailbox(mailboxId);
 	const { data: globalModels } = useGlobalModels();
+	const { data: globalEmailView } = useGlobalEmailView();
 	const updateMailboxMutation = useUpdateMailbox();
 
 	const [displayName, setDisplayName] = useState("");
@@ -57,6 +65,7 @@ export default function SettingsRoute() {
 		text: "",
 	});
 	const [models, setModels] = useState<ModelConfig>({});
+	const [defaultEmailView, setDefaultEmailView] = useState<EmailViewMode | undefined>(undefined);
 	// Held as a string so the field can be cleared while typing; normalized
 	// (default 30, 0 = off, capped) on save.
 	const [trashRetentionDays, setTrashRetentionDays] = useState(
@@ -78,6 +87,7 @@ export default function SettingsRoute() {
 				},
 			);
 			setModels(mailbox.settings?.models ?? {});
+			setDefaultEmailView(normalizeEmailViewMode(mailbox.settings?.defaultEmailView));
 			setTrashRetentionDays(
 				String(normalizeTrashRetentionDays(mailbox.settings?.trashRetentionDays)),
 			);
@@ -104,6 +114,7 @@ export default function SettingsRoute() {
 			categorization: normalizeCategorizationSettings(categorization),
 			signature: normalizeSignatureSettings(signature),
 			models: normalizeModelConfig(models),
+			defaultEmailView: normalizeEmailViewMode(defaultEmailView) ?? null,
 			trashRetentionDays: normalizeTrashRetentionDays(trashRetentionDays),
 		};
 		try {
@@ -305,6 +316,14 @@ export default function SettingsRoute() {
 					models={models}
 					onChange={setModels}
 					inherited={globalModels?.models}
+				/>
+
+				<EmailViewCard
+					title="Message view"
+					description="Override the app-wide default for this mailbox. Leave it blank to inherit it (shown in the badge)."
+					value={defaultEmailView}
+					onChange={setDefaultEmailView}
+					inherited={resolveDefaultEmailView(undefined, globalEmailView)}
 				/>
 
 

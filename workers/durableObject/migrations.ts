@@ -220,4 +220,11 @@ export const mailboxMigrations: Migration[] = [
 		name: "12_add_trashed_at",
 		sql: txn(`ALTER TABLE emails ADD COLUMN trashed_at TEXT;`),
 	},
+	{
+		// The text/plain alternative from the inbound message, kept alongside
+		// the HTML `body` so a reader can switch to a plain-text view without
+		// converting markup on the fly. NULL for messages with no text part.
+		name: "13_add_body_text",
+		sql: txn(`ALTER TABLE emails ADD COLUMN body_text TEXT;`),
+	},
 ];

@@ -118,6 +118,8 @@ interface EmailData {
 	bcc?: string | null;
 	date: string;
 	body: string;
+	/** The message's text/plain alternative, when the sender included one. */
+	body_text?: string | null;
 	read?: boolean;
 	starred?: boolean;
 	in_reply_to?: string | null;
@@ -209,6 +211,7 @@ export class MailboxDO extends DurableObject<Env> {
 				category: schema.emails.category,
 				category_confidence: schema.emails.category_confidence,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
+				body_text: schema.emails.body_text,
 			})
 			.from(schema.emails)
 			.where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -1217,6 +1220,7 @@ export class MailboxDO extends DurableObject<Env> {
 				read: isSent ? 1 : (email.read ? 1 : 0),
 				starred: email.starred ? 1 : 0,
 				body: email.body,
+				body_text: email.body_text ?? null,
 				in_reply_to: email.in_reply_to ?? null,
 				email_references: email.email_references ?? null,
 				thread_id: email.thread_id ?? null,

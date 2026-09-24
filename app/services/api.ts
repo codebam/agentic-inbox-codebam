@@ -5,6 +5,7 @@
 import type { GlobalCategorizationSettings } from "shared/categories";
 import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
+import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
@@ -118,6 +119,11 @@ const api = {
 	getGlobalModels: () => get<GlobalModelSettings>("/api/v1/models"),
 	updateGlobalModels: (settings: GlobalModelSettings) =>
 		put<GlobalModelSettings>("/api/v1/models", settings),
+
+	// Global default email view (applies to every mailbox without its own)
+	getGlobalEmailView: () => get<GlobalEmailViewSettings>("/api/v1/email-view"),
+	updateGlobalEmailView: (settings: GlobalEmailViewSettings) =>
+		put<GlobalEmailViewSettings>("/api/v1/email-view", settings),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),

@@ -4,6 +4,7 @@
 
 import type { CategorizationSettings } from "shared/categories";
 import type { ModelConfig } from "shared/models";
+import type { EmailViewMode } from "shared/email-view";
 
 export interface SignatureSettings {
 	enabled: boolean;
@@ -20,6 +21,8 @@ export interface MailboxSettings {
 	categorization?: CategorizationSettings;
 	/** Mailbox-level AI model overrides; blank fields inherit. */
 	models?: ModelConfig;
+	/** Mailbox-level default message view; blank/null inherits the app-wide default. */
+	defaultEmailView?: EmailViewMode | null;
 	/** Days a message may sit in Trash before the retention sweep deletes it; 0 disables. */
 	trashRetentionDays?: number;
 }
@@ -45,6 +48,8 @@ export interface Email {
 	read: boolean;
 	starred: boolean;
 	body?: string | null;
+	/** The message's text/plain alternative, when the sender included one. */
+	body_text?: string | null;
 	in_reply_to?: string | null;
 	email_references?: string | null;
 	message_id?: string | null;

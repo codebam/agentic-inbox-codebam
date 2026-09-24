@@ -26,6 +26,7 @@ import {
 import { isSpamMarkedEmail } from "../shared/spam";
 import { applySignatureToBody } from "../shared/signature";
 import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
+import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-view";
 import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
@@ -52,6 +53,7 @@ import {
 	putGlobalCategorization,
 } from "./lib/global-categorization";
 import { getGlobalModels, putGlobalModels } from "./lib/global-models";
+import { getGlobalEmailView, putGlobalEmailView } from "./lib/global-email-view";
 import {
 	loadMailboxSignature,
 	resolveMailboxModels,
@@ -182,6 +184,22 @@ app.put("/api/v1/models", async (c) => {
 	return c.json(await putGlobalModels(c.env.BUCKET, body));
 });
 
+// -- Global email view ----------------------------------------------
+
+app.get("/api/v1/email-view", async (c) => {
+	return c.json(await getGlobalEmailView(c.env.BUCKET));
+});
+
+app.put("/api/v1/email-view", async (c) => {
+	const body = await c.req.json().catch(() => null);
+	if (!body || typeof body !== "object") {
+		return c.json({ error: "Invalid email view settings" }, 400);
+	}
+	const error = emailViewSettingError(body);
+	if (error) return c.json({ error }, 400);
+	return c.json(await putGlobalEmailView(c.env.BUCKET, body));
+});
+
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
@@ -236,6 +254,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings.categorization),
 		models: normalizeModelConfig(settings.models),
+		defaultEmailView: normalizeEmailViewMode(settings.defaultEmailView) ?? null,
 		// Missing or unusable values fall back to the 30-day default; 0 keeps
 		// trashed mail until someone empties Trash by hand.
 		trashRetentionDays: normalizeTrashRetentionDays(settings.trashRetentionDays),
@@ -1068,6 +1087,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
 		date: new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",
+		body_text: parsedEmail.text ?? null,
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 		// A rule's category is authoritative; the classifier only fills it in

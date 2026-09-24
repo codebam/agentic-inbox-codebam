@@ -24,6 +24,8 @@ export function defaultMailboxSettings(name: string) {
 		signature: { enabled: false, text: "" },
 		autoReply: { enabled: false, subject: "", message: "" },
 		categorization: defaultCategorizationSettings(),
+		// Explicit "inherit the app-wide default"; a mailbox can pin html/text.
+		defaultEmailView: null,
 		// Automatic Trash cleanup after 30 days; 0 disables it.
 		trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
 	};
