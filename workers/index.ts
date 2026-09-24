@@ -52,6 +52,7 @@ import {
 import {
 	emptyRuleRunResult,
 	isRuleValidationError,
+	resolveRuleFolderId,
 	runRules,
 } from "./lib/rules";
 import type { Env } from "./types";
@@ -596,6 +597,28 @@ app.delete("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => 
 // -- Rules (deterministic per-mailbox filters) ----------------------
 
 
+/**
+ * Validate a rule's move_to_folder target so the API answers 400 for an unknown
+ * folder. The Durable Object still enforces this, but its throw is rebuilt by
+ * RPC and would otherwise surface as a 500.
+ */
+async function unknownRuleFolder(
+	mailboxStub: MailboxContext["Variables"]["mailboxStub"],
+	actions: { move_to_folder?: string } | undefined,
+): Promise<string | null> {
+	const folder = actions?.move_to_folder;
+	if (!folder) return null;
+	const folders = (await mailboxStub.getFolders()) as {
+		id: string;
+		name: string;
+	}[];
+	if (resolveRuleFolderId(folder, folders)) return null;
+	return `Unknown folder: ${folder}`;
+}
+
+
+
+
 app.get("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
 	return c.json(await c.var.mailboxStub.listRules());
 });
@@ -604,6 +627,8 @@ app.get("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
 app.post("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
 	const parsed = CreateRuleSchema.safeParse(await c.req.json().catch(() => null));
 	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+	const folderError = await unknownRuleFolder(c.var.mailboxStub, parsed.data.actions);
+	if (folderError) return c.json({ error: folderError }, 400);
 	try {
 		return c.json(await c.var.mailboxStub.createRule(parsed.data), 201);
 	} catch (e) {
@@ -616,6 +641,8 @@ app.post("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
 app.put("/api/v1/mailboxes/:mailboxId/rules/:ruleId", async (c: AppContext) => {
 	const parsed = UpdateRuleSchema.safeParse(await c.req.json().catch(() => null));
 	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+	const folderError = await unknownRuleFolder(c.var.mailboxStub, parsed.data.actions);
+	if (folderError) return c.json({ error: folderError }, 400);
 	try {
 		const rule = await c.var.mailboxStub.updateRule(c.req.param("ruleId")!, parsed.data);
 		return rule ? c.json(rule) : c.json({ error: "Rule not found" }, 404);

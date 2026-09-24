@@ -15,6 +15,7 @@ import {
 	normalizeRuleActions,
 	normalizeRuleMatch,
 	RuleValidationError,
+	resolveRuleFolderId,
 	MAX_RULE_NAME_LENGTH,
 	MAX_RULE_PRIORITY,
 	type MailRule,
@@ -1258,14 +1259,12 @@ export class MailboxDO extends DurableObject<Env> {
 
 	/** Resolve a folder name or id to the real folder id, rejecting unknowns. */
 	#resolveRuleFolder(folder: string): string {
-		const row = [
-			...this.ctx.storage.sql.exec(
-				`SELECT id FROM folders WHERE id = ?1 OR name = ?1 LIMIT 1`,
-				folder,
-			),
-		][0] as { id: string } | undefined;
-		if (!row) throw new RuleValidationError(`Unknown folder: ${folder}`);
-		return String(row.id);
+		const folders = [
+			...this.ctx.storage.sql.exec(`SELECT id, name FROM folders`),
+		] as { id: string; name: string }[];
+		const resolved = resolveRuleFolderId(folder, folders);
+		if (!resolved) throw new RuleValidationError(`Unknown folder: ${folder}`);
+		return resolved;
 	}
 }
 

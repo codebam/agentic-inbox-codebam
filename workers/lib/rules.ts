@@ -58,10 +58,38 @@ export class RuleValidationError extends Error {
  * may rebuild the error, so the class check is backed up by a name check.
  */
 export function isRuleValidationError(error: unknown): boolean {
-	return (
-		error instanceof RuleValidationError ||
-		(error instanceof Error && error.name === "RuleValidationError")
-	);
+	if (error instanceof RuleValidationError) return true;
+	if (!(error instanceof Error)) return false;
+	if (error.name === "RuleValidationError") return true;
+	// Durable Object RPC rebuilds thrown errors, so the class identity is lost
+	// and the name survives only as the message prefix.
+	return error.message.startsWith("RuleValidationError");
+}
+
+
+/**
+ * Resolve a rule action's folder reference to a canonical folder id.
+ *
+ * Accepts a folder id or display name, case-insensitively — the same rule the
+ * Durable Object applies when storing the action. Returns null when the folder
+ * does not exist, so callers can reject the rule at the edge instead of letting
+ * a remote DO error surface as a 500.
+ */
+export function resolveRuleFolderId(
+	folder: string,
+	folders: { id: string; name: string }[],
+): string | null {
+	const needle = folder.trim().toLowerCase();
+	if (!needle) return null;
+	for (const option of folders) {
+		if (
+			option.id.toLowerCase() === needle ||
+			option.name.toLowerCase() === needle
+		) {
+			return option.id;
+		}
+	}
+	return null;
 }
 
 

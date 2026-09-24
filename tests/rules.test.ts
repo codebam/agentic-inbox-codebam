@@ -1,3 +1,4 @@
+import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
@@ -17,6 +18,33 @@ const MAILBOX = "rules@example.com";
 
 function stubFor(mailbox = MAILBOX) {
 	return env.MAILBOX.get(env.MAILBOX.idFromName(mailbox));
+}
+
+
+/** Register the mailbox record the API middleware checks before routing. */
+async function registerMailbox(mailbox: string) {
+	await env.BUCKET.put(`mailboxes/${mailbox}.json`, JSON.stringify({}));
+}
+
+
+/**
+ * POST a rule through the real route.
+ *
+ * Validation failures are asserted at the HTTP contract on purpose: a rejected
+ * Durable Object RPC call is also reported by the vitest pool as an unhandled
+ * rejection, which would fail the whole run even though the test passed.
+ */
+async function postRule(mailbox: string, body: unknown) {
+	await registerMailbox(mailbox);
+	const res = await SELF.fetch(
+		`http://example.com/api/v1/mailboxes/${mailbox}/rules`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		},
+	);
+	return { status: res.status, body: (await res.json()) as { error?: string } };
 }
 
 
@@ -356,34 +384,42 @@ describe("MailboxDO rules CRUD", () => {
 
 
 	it("resolves folder display names and rejects unknown folders", async () => {
-		const stub = stubFor("folders@example.com");
+		const mailbox = "folders@example.com";
+		const stub = stubFor(mailbox);
 		const created = await stub.createRule(
 			draft({ actions: { move_to_folder: "Archive" } }),
 		);
 		expect(created.actions.move_to_folder).toBe(Folders.ARCHIVE);
 
-		await expect(
-			stub.createRule(draft({ actions: { move_to_folder: "no-such-folder" } })),
-		).rejects.toThrow(/Unknown folder/);
+		const rejected = await postRule(
+			mailbox,
+			draft({ actions: { move_to_folder: "no-such-folder" } }),
+		);
+		expect(rejected.status).toBe(400);
+		expect(rejected.body.error).toMatch(/Unknown folder/);
 	});
 
 
 	it("rejects rules with no conditions or no actions", async () => {
-		const stub = stubFor("invalid@example.com");
+		const mailbox = "invalid@example.com";
 
-		await expect(
-			stub.createRule(
-				draft({ match: { mode: "all", conditions: { subject_contains: "  " } } }),
-			),
-		).rejects.toThrow(/at least one match condition/);
+		const noConditions = await postRule(
+			mailbox,
+			draft({ match: { mode: "all", conditions: { subject_contains: "  " } } }),
+		);
+		expect(noConditions.status).toBe(400);
+		expect(noConditions.body.error).toMatch(/at least one match condition/);
 
-		await expect(
-			stub.createRule(draft({ actions: { discard: false } })),
-		).rejects.toThrow(/at least one action/);
+		const noActions = await postRule(mailbox, draft({ actions: { discard: false } }));
+		expect(noActions.status).toBe(400);
+		expect(noActions.body.error).toMatch(/at least one action/);
 
-		await expect(
-			stub.createRule(draft({ actions: { mark_read: true, mark_unread: true } })),
-		).rejects.toThrow(/cannot both be set/);
+		const conflicting = await postRule(
+			mailbox,
+			draft({ actions: { mark_read: true, mark_unread: true } }),
+		);
+		expect(conflicting.status).toBe(400);
+		expect(conflicting.body.error).toMatch(/cannot both be set/);
 	});
 
 
