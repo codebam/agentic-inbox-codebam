@@ -106,17 +106,17 @@ export function resolveRuleFolderId(
 /** Match conditions. Every field is optional; absent/empty means "inactive". */
 export interface RuleConditions {
 	/** Case-insensitive substring of the sender address (or display name). */
-	from_contains?: string;
+	from_contains?: string | undefined;
 	/** Case-insensitive substring of any recipient (to/cc/bcc/envelope). */
-	to_contains?: string;
+	to_contains?: string | undefined;
 	/** Case-insensitive substring of the subject. */
-	subject_contains?: string;
+	subject_contains?: string | undefined;
 	/** Case-insensitive substring of the body (HTML or text, as stored). */
-	body_contains?: string;
+	body_contains?: string | undefined;
 	/** Exact test: the message carries at least one attachment. */
-	has_attachment?: boolean;
+	has_attachment?: boolean | undefined;
 	/** Case-insensitive equality against the email's category id. */
-	category_equals?: string;
+	category_equals?: string | undefined;
 }
 
 
@@ -130,28 +130,28 @@ export interface RuleMatchSpec {
 /** Actions a rule may apply to a matching message. */
 export interface RuleActions {
 	/** Folder id to file the message in (validated against the folders table). */
-	move_to_folder?: string;
+	move_to_folder?: string | undefined;
 	/** Category id to stamp on the message. */
-	set_category?: string;
-	mark_read?: boolean;
-	mark_unread?: boolean;
-	star?: boolean;
-	unstar?: boolean;
+	set_category?: string | undefined;
+	mark_read?: boolean | undefined;
+	mark_unread?: boolean | undefined;
+	star?: boolean | undefined;
+	unstar?: boolean | undefined;
 	/** Drop the message entirely: it is never stored. */
-	discard?: boolean;
+	discard?: boolean | undefined;
 	/**
 	 * Forward the message to this single address. Outbound: the inbound
 	 * pipeline sends it after the message is stored, never for spam or for a
 	 * discarded message. Operator-only — the agent/MCP tool paths strip it.
 	 */
-	forward_to?: string;
+	forward_to?: string | undefined;
 	/**
 	 * Auto-reply body sent to the original sender. Outbound, and subject to
 	 * the loop guards in workers/lib/rule-outbound.ts (Auto-Submitted /
 	 * List-Id / bulk precedence headers, self-sent mail, and one auto-reply
 	 * per sender per day). Operator-only — the agent/MCP tool paths strip it.
 	 */
-	auto_reply_text?: string;
+	auto_reply_text?: string | undefined;
 }
 
 
@@ -174,15 +174,20 @@ export interface MailRule {
 /** Wire shape accepted when creating a rule (id/created_at are server-side). */
 export interface RuleDraft {
 	name: string;
-	enabled?: boolean;
-	priority?: number;
+	enabled?: boolean | undefined;
+	priority?: number | undefined;
 	match: RuleMatchSpec;
 	actions: RuleActions;
 }
 
 
-/** Wire shape accepted when updating a rule; every field is optional. */
-export type RulePatch = Partial<RuleDraft>;
+/**
+ * Wire shape accepted when updating a rule; every field is optional and may be
+ * explicitly `undefined` (the partial schemas emit every key).
+ */
+export type RulePatch = {
+	[K in keyof RuleDraft]?: RuleDraft[K] | undefined;
+};
 
 
 
@@ -228,7 +233,7 @@ export interface RulePreviewResult {
  * targets by the route, never executed).
  */
 export interface RulePreviewDraft {
-	name?: string;
+	name?: string | undefined;
 	match: RuleMatchSpec;
 }
 

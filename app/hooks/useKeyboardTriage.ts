@@ -34,7 +34,7 @@ export interface KeyboardTriageOptions {
 	/** Rows of the current page, in display order. */
 	emails: Email[];
 	/** Mailbox that owns the rows; without it no mutation runs. */
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	/** Row the panel is showing — the "current" row for j/k, Enter/o, x, s, u. */
 	currentEmailId: string | null;
 	/** Selection state from `useEmailSelection`. */

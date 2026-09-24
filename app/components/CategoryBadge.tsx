@@ -11,9 +11,9 @@ import {
 
 interface CategoryBadgeProps {
 	/** Category ID stored on the email (`spam` or a configured category). */
-	category?: string | null;
+	category?: string | null | undefined;
 	/** Mailbox categories, used to resolve IDs to display names. */
-	categories?: EmailCategory[];
+	categories?: EmailCategory[] | undefined;
 	className?: string;
 }
 

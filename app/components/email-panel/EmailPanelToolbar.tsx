@@ -26,13 +26,13 @@ import type { Folder, Email } from "~/types";
 
 interface EmailPanelToolbarProps {
 	email: Email;
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	isDraftFolder: boolean;
 	/** The email sits in the Trash folder: delete purges and Restore is offered. */
 	isTrash: boolean;
 	isSending: boolean;
 	moveToFolders: Folder[];
-	lastReceivedMessage?: Email;
+	lastReceivedMessage?: Email | undefined;
 	onBack: () => void;
 	onSendDraft: () => void;
 	onEditDraft: () => void;

@@ -17,7 +17,7 @@ import type { Email } from "~/types";
 
 interface RemoteImagesNoticeProps {
 	email: Email;
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 }
 
 /**

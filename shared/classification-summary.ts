@@ -24,9 +24,9 @@ import { SPAM_CATEGORY_ID } from "./categories";
 
 
 export interface ClassificationSummaryInput {
-	classification?: string | Record<string, unknown> | null;
-	category?: string | null;
-	category_confidence?: number | null;
+	classification?: string | Record<string, unknown> | null | undefined;
+	category?: string | null | undefined;
+	category_confidence?: number | null | undefined;
 	/** Display label for `category`, already resolved by the caller. */
 	categoryLabel?: string | null;
 }

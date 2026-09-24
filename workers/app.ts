@@ -27,7 +27,24 @@ declare module "react-router" {
 }
 
 const requestHandler = createRequestHandler(
-	() => import("virtual:react-router/server-build"),
+	async () => {
+		// The generated server-build module declares every ServerBuild field as a
+		// required export, so the optional ones arrive as explicitly `undefined`
+		// when unset. Under exactOptionalPropertyTypes an optional property must
+		// be absent instead, so drop the ones that are unset.
+		const { basename, unstable_getCriticalCss, allowedActionOrigins, ...build } =
+			await import("virtual:react-router/server-build");
+		return {
+			...build,
+			...(basename !== undefined ? { basename } : {}),
+			...(unstable_getCriticalCss !== undefined
+				? { unstable_getCriticalCss }
+				: {}),
+			...(allowedActionOrigins !== undefined
+				? { allowedActionOrigins }
+				: {}),
+		};
+	},
 	import.meta.env.MODE,
 );
 

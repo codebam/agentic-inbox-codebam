@@ -72,7 +72,7 @@ export interface McpAuthIdentity {
 	/** Inbox domain that proved the credential, when `authMethod` is `domain`. */
 	matchedDomain?: string;
 	/** All accounts the credential appears to have access to. */
-	accounts: Array<{ id: string; name?: string }>;
+	accounts: Array<{ id: string; name?: string | undefined }>;
 }
 
 export interface McpAuthSuccess {
@@ -267,7 +267,7 @@ function parseMatchingZone(data: unknown, domain: string): z.infer<typeof ZoneSc
 	return null;
 }
 
-function parseAccount(data: unknown, fallbackId: string): { id: string; name?: string } {
+function parseAccount(data: unknown, fallbackId: string): { id: string; name?: string | undefined } {
 	const parsed = CloudflareEnvelopeSchema.safeParse(data);
 	if (parsed.success) {
 		const account = AccountSchema.safeParse(parsed.data.result);

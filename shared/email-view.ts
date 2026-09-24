@@ -35,7 +35,7 @@ export const EMAIL_VIEW_LABELS: Record<EmailViewMode, string> = {
 /** App-wide email view settings stored in R2 (`config/email-view.json`). */
 export interface GlobalEmailViewSettings {
 	/** Blank/absent means the built-in default (`html`). */
-	defaultEmailView?: EmailViewMode;
+	defaultEmailView?: EmailViewMode | undefined;
 }
 
 

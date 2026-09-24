@@ -794,7 +794,7 @@ app.delete("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => 
  */
 async function unknownRuleFolder(
 	mailboxStub: MailboxContext["Variables"]["mailboxStub"],
-	actions: { move_to_folder?: string } | undefined,
+	actions: { move_to_folder?: string | undefined } | undefined,
 ): Promise<string | null> {
 	const folder = actions?.move_to_folder;
 	if (!folder) return null;

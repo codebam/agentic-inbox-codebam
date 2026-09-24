@@ -25,23 +25,23 @@ import type { Email } from "~/types";
 
 interface ThreadMessageProps {
 	email: Email;
-	mailboxId?: string;
-	mailboxEmail?: string;
+	mailboxId?: string | undefined;
+	mailboxEmail?: string | undefined;
 	/** Effective HTML | plain text mode for the panel. */
 	viewMode: EmailViewMode;
 	isLast: boolean;
-	isDraft?: boolean;
-	isSending?: boolean;
+	isDraft?: boolean | undefined;
+	isSending?: boolean | undefined;
 	isExpanded: boolean;
 	onToggleExpand: () => void;
-	onSendDraft?: () => void;
-	onEditDraft?: () => void;
-	onDeleteDraft?: () => void;
+	onSendDraft?: (() => void) | undefined;
+	onEditDraft?: (() => void) | undefined;
+	onDeleteDraft?: (() => void) | undefined;
 	onViewSource?: () => void;
 	onPreviewImage?: (url: string, filename: string) => void;
 }
 
-function Avatar({ isDraft, isSelf, sender }: { isDraft?: boolean; isSelf: boolean; sender: string }) {
+function Avatar({ isDraft, isSelf, sender }: { isDraft?: boolean | undefined; isSelf: boolean; sender: string }) {
 	return (
 		<div
 			className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
@@ -180,7 +180,7 @@ export default function ThreadMessage({
 								size="sm"
 								icon={<PaperPlaneTiltIcon size={14} />}
 								onClick={onSendDraft}
-								loading={isSending}
+								loading={isSending ?? false}
 								disabled={isSending}
 							>
 								{isSending ? "Sending..." : "Send"}

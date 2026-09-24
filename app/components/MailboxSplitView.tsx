@@ -19,7 +19,7 @@ interface MailboxSplitViewProps {
 	selectedEmailId: string | null;
 	isComposing: boolean;
 	/** Mailbox that owns the selected email. Defaults to the route param. */
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	children: ReactNode;
 }
 

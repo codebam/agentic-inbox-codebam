@@ -10,7 +10,7 @@ interface EmailPanelHeaderProps {
 	showThreadCount: boolean;
 	/** Jev-assigned category label, if this email has been classified. */
 	categoryLabel?: string | null;
-	categoryConfidence?: number | null;
+	categoryConfidence?: number | null | undefined;
 	isSpam?: boolean;
 }
 

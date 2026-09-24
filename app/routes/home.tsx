@@ -376,8 +376,8 @@ export default function HomeRoute() {
 						/>
 						<div className="flex justify-end gap-2 pt-2">
 							<Dialog.Close
-								render={(props) => (
-									<Button {...props} variant="secondary" size="sm">
+								render={({ className, ...props }) => (
+									<Button {...props} {...(className ? { className } : {})} variant="secondary" size="sm">
 										Cancel
 									</Button>
 								)}
@@ -418,8 +418,8 @@ export default function HomeRoute() {
 					</Dialog.Description>
 					<div className="flex justify-end gap-2">
 						<Dialog.Close
-							render={(props) => (
-								<Button {...props} variant="secondary" size="sm">
+							render={({ className, ...props }) => (
+								<Button {...props} {...(className ? { className } : {})} variant="secondary" size="sm">
 									Cancel
 								</Button>
 							)}

@@ -52,8 +52,8 @@ export interface Email {
 	sender: string;
 	recipient: string;
 	envelope_recipient?: string | null;
-	cc?: string;
-	bcc?: string;
+	cc?: string | undefined;
+	bcc?: string | undefined;
 	date: string;
 	read: boolean;
 	starred: boolean;
@@ -67,7 +67,7 @@ export interface Email {
 	category?: string | null;
 	category_confidence?: number | null;
 	classification?: string | null;
-	attachments?: Attachment[];
+	attachments?: Attachment[] | undefined;
 	snippet?: string | null;
 	// Thread aggregate fields (only present in threaded list view)
 	thread_count?: number;
@@ -114,6 +114,6 @@ export interface BulkEmailTarget {
 	mailboxId: string;
 	id: string;
 	/** Thread fields from the list row, used to expand read/unread to conversations. */
-	threadId?: string | null;
-	threadCount?: number;
+	threadId?: string | null | undefined;
+	threadCount?: number | undefined;
 }

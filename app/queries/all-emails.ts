@@ -21,6 +21,8 @@ export function useAllEmails(params: Record<string, string>, options?: { refetch
 	return useQuery<AllEmailsResponse>({
 		queryKey: queryKeys.allEmails.list(params),
 		queryFn: () => api.listAllEmails(params),
-		refetchInterval: options?.refetchInterval,
+		...(options?.refetchInterval !== undefined
+			? { refetchInterval: options.refetchInterval }
+			: {}),
 	});
 }

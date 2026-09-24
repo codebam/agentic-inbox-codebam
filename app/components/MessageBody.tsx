@@ -12,13 +12,13 @@ import type { Email } from "~/types";
 
 interface MessageBodyProps {
 	email: Email;
-	mailboxId?: string;
+	mailboxId?: string | undefined;
 	/** Effective view mode for the panel: manual choice or configured default. */
 	viewMode: EmailViewMode;
 	/** When true, the HTML iframe auto-sizes to its content height. */
-	autoSize?: boolean;
+	autoSize?: boolean | undefined;
 	/** When true, remote images (tracking pixels) load in the HTML view. */
-	allowRemoteImages?: boolean;
+	allowRemoteImages?: boolean | undefined;
 }
 
 

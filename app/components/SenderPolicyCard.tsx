@@ -17,7 +17,7 @@ import { useRemoveSenderPolicy, useSenderPolicy } from "~/queries/sender-policy"
  * blocked senders are filed straight into Spam (still stored, never
  * auto-drafted), allowed senders skip spam classification.
  */
-export default function SenderPolicyCard({ mailboxId }: { mailboxId?: string }) {
+export default function SenderPolicyCard({ mailboxId }: { mailboxId?: string | undefined }) {
 	const toastManager = useKumoToastManager();
 	const { data: entries = [], isLoading } = useSenderPolicy(mailboxId);
 	const removePolicy = useRemoveSenderPolicy();

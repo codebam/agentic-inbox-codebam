@@ -21,19 +21,19 @@ const SEARCH_CHUNK = 100;
 
 /** Search filters accepted by the Durable Object (snake_case, as in the API). */
 export interface SearchAllFilters {
-	query?: string;
-	folder?: string;
-	category?: string;
-	from?: string;
-	to?: string;
-	subject?: string;
-	date_start?: string;
-	date_end?: string;
-	is_read?: boolean;
-	is_starred?: boolean;
-	has_attachment?: boolean;
-	page?: number;
-	limit?: number;
+	query?: string | undefined;
+	folder?: string | undefined;
+	category?: string | undefined;
+	from?: string | undefined;
+	to?: string | undefined;
+	subject?: string | undefined;
+	date_start?: string | undefined;
+	date_end?: string | undefined;
+	is_read?: boolean | undefined;
+	is_starred?: boolean | undefined;
+	has_attachment?: boolean | undefined;
+	page?: number | undefined;
+	limit?: number | undefined;
 }
 
 
