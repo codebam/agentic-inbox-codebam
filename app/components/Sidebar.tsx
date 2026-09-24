@@ -15,6 +15,7 @@ import {
 	PencilSimpleIcon,
 	PlusIcon,
 	ProhibitIcon,
+	PulseIcon,
 	TrashIcon,
 	TrayIcon,
 } from "@phosphor-icons/react";
@@ -254,6 +255,21 @@ export default function Sidebar() {
 						to={`/mailbox/${mailboxId}/rules`}
 						icon={<FunnelIcon size={18} />}
 						label="Rules"
+						onClick={handleNavClick}
+					/>
+				</div>
+
+				{/* Agent — what the AI agent and MCP clients did to this mailbox */}
+				<div className="pt-5">
+					<div className="flex items-center justify-between px-3 mb-1.5">
+						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+							Agent
+						</span>
+					</div>
+					<FolderLink
+						to={`/mailbox/${mailboxId}/activity`}
+						icon={<PulseIcon size={18} />}
+						label="Activity"
 						onClick={handleNavClick}
 					/>
 				</div>
