@@ -59,14 +59,15 @@ export default function RemoteImagesNotice({ email, mailboxId }: RemoteImagesNot
 					toastManager.add({
 						title: `Images from ${address} will always be shown`,
 					}),
-				onError: (error) =>
+				onError: (error) => {
 					toastManager.add({
 						title:
 							error instanceof Error
 								? error.message
 								: "Could not save the image allowlist.",
 						variant: "error",
-					}),
+					});
+				},
 			},
 		);
 	};

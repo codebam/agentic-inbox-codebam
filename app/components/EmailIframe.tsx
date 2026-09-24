@@ -18,6 +18,25 @@ interface EmailIframeProps {
 	allowRemoteImages?: boolean | undefined;
 }
 
+/** The height report our sandboxed iframe posts to the parent window. */
+interface EmailIframeHeightReport {
+	__emailIframeHeight: unknown;
+	height: number;
+}
+
+
+/**
+ * A height report from the iframe: a non-null object that flags itself with
+ * `__emailIframeHeight` and carries a positive numeric height.
+ */
+function isHeightReport(value: unknown): value is EmailIframeHeightReport {
+	if (typeof value !== "object" || value === null) return false;
+	if (!("__emailIframeHeight" in value) || !value["__emailIframeHeight"]) return false;
+	if (!("height" in value)) return false;
+	return typeof value["height"] === "number" && value["height"] > 0;
+}
+
+
 /**
  * Renders email HTML inside a sandboxed iframe.
  *
@@ -47,19 +66,12 @@ export default function EmailIframe({
 
 	// Listen for height reports from the sandboxed iframe
 	const handleMessage = useCallback(
-		(event: MessageEvent) => {
+		(event: MessageEvent<unknown>) => {
 			if (!autoSize) return;
 			// Only accept messages from our own iframe
 			if (event.source !== iframeRef.current?.contentWindow) return;
-			if (
-				event.data &&
-				typeof event.data === "object" &&
-				event.data.__emailIframeHeight &&
-				typeof event.data.height === "number" &&
-				event.data.height > 0
-			) {
-				setHeight(event.data.height);
-			}
+			if (!isHeightReport(event.data)) return;
+			setHeight(event.data.height);
 		},
 		[autoSize],
 	);
@@ -108,7 +120,7 @@ export default function EmailIframe({
 				setTimeout(reportHeight, 50);
 				setTimeout(reportHeight, 150);
 				setTimeout(reportHeight, 400);
-			<\/script>`
+			</script>`
 			: "";
 
 		// Use srcdoc so the iframe is truly sandboxed (no same-origin access).

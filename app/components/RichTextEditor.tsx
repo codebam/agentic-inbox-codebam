@@ -101,7 +101,8 @@ export default function RichTextEditor({
 
 	const setLink = useCallback(() => {
 		if (!editor) return;
-		const previousUrl = editor.getAttributes("link")["href"];
+		const linkAttributes: Record<string, unknown> = editor.getAttributes("link");
+		const previousUrl = typeof linkAttributes["href"] === "string" ? linkAttributes["href"] : undefined;
 		const url = window.prompt("URL", previousUrl);
 		if (url === null) return;
 		if (url === "") {

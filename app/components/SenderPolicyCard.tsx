@@ -31,11 +31,12 @@ export default function SenderPolicyCard({ mailboxId }: { mailboxId?: string | u
 					toastManager.add({
 						title: `Removed the ${entry.policy} policy for ${entry.address}`,
 					}),
-				onError: () =>
+				onError: () => {
 					toastManager.add({
 						title: "Failed to remove the sender policy",
 						variant: "error",
-					}),
+					});
+				},
 			},
 		);
 	};

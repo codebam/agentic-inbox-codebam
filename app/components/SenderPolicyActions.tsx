@@ -73,7 +73,7 @@ export default function SenderPolicyActions({
 					variant="secondary"
 					size="xs"
 					icon={<ShieldCheckIcon size={14} />}
-					onClick={() => run("allow")}
+					onClick={() => { void run("allow"); }}
 					loading={busy === "allow"}
 				>
 					Not spam
@@ -83,7 +83,7 @@ export default function SenderPolicyActions({
 				variant="ghost"
 				size="xs"
 				icon={<ProhibitIcon size={14} />}
-				onClick={() => run("block")}
+				onClick={() => { void run("block"); }}
 				loading={busy === "block"}
 			>
 				Block sender

@@ -132,7 +132,7 @@ export default function Sidebar() {
 				<button
 					type="button"
 					onClick={() => {
-						navigate("/");
+						void navigate("/");
 						closeSidebar();
 					}}
 					className="flex items-center gap-1.5 text-kumo-subtle text-sm hover:text-kumo-default transition-colors mb-2.5 cursor-pointer bg-transparent border-0 p-0"

@@ -101,7 +101,7 @@ export default function WebhookCard({
 					icon={<PaperPlaneTiltIcon size={14} />}
 					disabled={!configured}
 					loading={testWebhook.isPending}
-					onClick={handleTest}
+					onClick={() => { void handleTest(); }}
 				>
 					Send test
 				</Button>
