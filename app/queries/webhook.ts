@@ -4,7 +4,6 @@
 
 
 import { useMutation } from "@tanstack/react-query";
-import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import api from "~/services/api";
 
 
@@ -24,6 +23,6 @@ export function useTestWebhook() {
 			mailboxId: string;
 			url?: string;
 			secret?: string;
-		}) => api.testWebhook(mailboxId, { url, secret }) as Promise<WebhookDeliveryResult>,
+		}) => api.testWebhook(mailboxId, { url, secret }),
 	});
 }

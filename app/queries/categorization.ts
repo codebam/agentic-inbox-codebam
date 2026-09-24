@@ -11,7 +11,7 @@ export function useGlobalCategorization() {
 	return useQuery<GlobalCategorizationSettings>({
 		queryKey: queryKeys.categorization.global,
 		queryFn: () =>
-			api.getGlobalCategorization() as Promise<GlobalCategorizationSettings>,
+			api.getGlobalCategorization(),
 	});
 }
 
@@ -21,7 +21,7 @@ export function useUpdateGlobalCategorization() {
 		mutationFn: (settings: GlobalCategorizationSettings) =>
 			api.updateGlobalCategorization(settings),
 		onSuccess: () => {
-			queryClient.invalidateQueries({
+			void queryClient.invalidateQueries({
 				queryKey: queryKeys.categorization.global,
 			});
 		},

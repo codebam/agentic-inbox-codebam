@@ -48,8 +48,8 @@ export function useSearchEmails(
 				| Email[];
 			if (data && typeof data === "object" && "emails" in data) {
 				return {
-					results: (data as SearchResponse).emails ?? [],
-					totalCount: (data as SearchResponse).totalCount ?? 0,
+					results: data.emails ?? [],
+					totalCount: data.totalCount ?? 0,
 				};
 			}
 			const arr = Array.isArray(data) ? data : [];

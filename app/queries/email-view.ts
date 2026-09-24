@@ -13,7 +13,7 @@ export function useGlobalEmailView() {
 	return useQuery<GlobalEmailViewSettings>({
 		queryKey: queryKeys.emailView.global,
 		queryFn: () =>
-			api.getGlobalEmailView() as Promise<GlobalEmailViewSettings>,
+			api.getGlobalEmailView(),
 	});
 }
 
@@ -24,7 +24,7 @@ export function useUpdateGlobalEmailView() {
 		mutationFn: (settings: GlobalEmailViewSettings) =>
 			api.updateGlobalEmailView(settings),
 		onSuccess: () => {
-			queryClient.invalidateQueries({
+			void queryClient.invalidateQueries({
 				queryKey: queryKeys.emailView.global,
 			});
 		},

@@ -12,7 +12,7 @@ import { queryKeys } from "./keys";
 export function useGlobalModels() {
 	return useQuery<GlobalModelSettings>({
 		queryKey: queryKeys.models.global,
-		queryFn: () => api.getGlobalModels() as Promise<GlobalModelSettings>,
+		queryFn: () => api.getGlobalModels(),
 	});
 }
 
@@ -23,7 +23,7 @@ export function useUpdateGlobalModels() {
 		mutationFn: (settings: GlobalModelSettings) =>
 			api.updateGlobalModels(settings),
 		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: queryKeys.models.global });
+			void queryClient.invalidateQueries({ queryKey: queryKeys.models.global });
 		},
 	});
 }
