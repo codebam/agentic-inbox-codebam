@@ -33,6 +33,7 @@ import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-view";
 import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { normalizeImageAllowlist } from "../shared/remote-images";
+import { normalizeAutoDraft } from "../shared/auto-draft";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -259,6 +260,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 		...settings,
 		categorization: normalizeCategorizationSettings(settings?.["categorization"]),
 		imageAllowlist: normalizeImageAllowlist(settings?.["imageAllowlist"]),
+		autoDraft: normalizeAutoDraft(settings?.["autoDraft"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -299,6 +301,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		notifyWebhookUrl: normalizeWebhookUrl(settings["notifyWebhookUrl"]),
 		notifyWebhookSecret: normalizeWebhookSecret(settings["notifyWebhookSecret"]),
 		imageAllowlist: normalizeImageAllowlist(settings["imageAllowlist"]),
+		autoDraft: normalizeAutoDraft(settings["autoDraft"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
@@ -1422,8 +1425,8 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// Do not auto-draft replies to spam: neither AI-classified spam, mail a
 	// rule filed in Spam or stamped with the spam category, nor mail from a
 	// blocked sender (senderDecision.autoDraft). A discard rule has already
-	// returned above.
-	if (senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
+	// returned above. The mailbox switch turns this off entirely.
+	if (normalizeAutoDraft(mailboxSettings["autoDraft"]) && senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 			method: "POST", headers: { "Content-Type": "application/json" },
