@@ -441,6 +441,25 @@ type MailboxUnsubscribeStub = {
 };
 
 
+/** One stored audit row, as MailboxDO.listAgentActions returns it. */
+type MailboxAgentActionRow = Awaited<ReturnType<MailboxDO["listAgentActions"]>>[number];
+
+/** The undo answer MailboxDO.undoAgentAction returns; null marks an unknown id. */
+type MailboxAgentActionUndo = NonNullable<Awaited<ReturnType<MailboxDO["undoAgentAction"]>>>;
+
+/**
+ * The agent-action audit RPCs the two audit routes call. `listAgentActions`
+ * answers newest-first, `countAgentActions` the stored total, and
+ * `undoAgentAction` restores a recorded before-state — never sending and
+ * never deleting mail.
+ */
+type MailboxAgentActionsStub = {
+	listAgentActions: (limit?: number) => Promise<MailboxAgentActionRow[]>;
+	countAgentActions: () => Promise<number>;
+	undoAgentAction: (id: string) => Promise<MailboxAgentActionUndo | null>;
+};
+
+
 /**
  * Fetch the top `top` rows from one mailbox, chunking past the Durable
  * Object's 100-row page limit. Per-mailbox top-K is sufficient to compute
@@ -839,6 +858,46 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe", async (c: AppCon
 	const updated = await stub.setUnsubscribed(id, new Date().toISOString());
 	if (!updated) return c.json({ error: "Email not found" }, 404);
 	return c.json({ status: "unsubscribed", email: updated });
+});
+
+// -- Agent action audit (agent + MCP tools) --------------------------
+
+/** Narrow the mailbox stub to the agent-action audit RPCs the routes use. */
+function agentActionsStub(c: AppContext): MailboxAgentActionsStub {
+	return c.var.mailboxStub;
+}
+
+/**
+ * The mailbox's most recent mutating agent/MCP tool calls, newest first.
+ * Metadata only: ids, flags, folder names, subjects and thread ids — never
+ * message bodies or attachment bytes. `limit` defaults to 50 and is capped
+ * at 200.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/agent-actions", async (c: AppContext) => {
+	const limit = Math.min(Math.max(intQuery(c, "limit") ?? 50, 1), 200);
+	const stub = agentActionsStub(c);
+	const [actions, totalCount] = await Promise.all([
+		stub.listAgentActions(limit),
+		stub.countAgentActions(),
+	]);
+	return c.json({ actions, totalCount });
+});
+
+/**
+ * Undo one recorded agent/MCP action.
+ *
+ * Restores only the read state, star state and folder the action recorded
+ * before it ran — never sends and never deletes mail. Answers 200 with the
+ * restored action and the updated email, 400 when the action is not
+ * undoable or was already undone, and 404 for an unknown action id.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/agent-actions/:actionId/undo", async (c: AppContext) => {
+	const result = await agentActionsStub(c).undoAgentAction(
+		c.req.param("actionId")!,
+	);
+	if (!result) return c.json({ error: "Agent action not found" }, 404);
+	if (!result.ok) return c.json({ error: result.error }, 400);
+	return c.json({ action: result.action, email: result.email });
 });
 
 // -- Bulk actions (list-view multi-select) --------------------------

@@ -997,6 +997,73 @@ export async function toolListSnoozed(env: Env, mailboxId: string) {
 	return { mailboxId, emails, totalCount: emails.length };
 }
 
+// ── agent action audit (list_agent_actions / undo_action) ──────────
+
+/** One stored audit row, as MailboxDO.listAgentActions returns it. */
+type MailboxAgentActionRow = Awaited<ReturnType<MailboxDO["listAgentActions"]>>[number];
+
+/** The undo answer MailboxDO.undoAgentAction returns; null marks an unknown id. */
+type MailboxAgentActionUndo = NonNullable<Awaited<ReturnType<MailboxDO["undoAgentAction"]>>>;
+
+/**
+ * The audit RPCs these two tools call. Declared structurally so the rows
+ * read as plain objects — the stub's own RPC result types carry
+ * `& Disposable`, which the MCP result wrapper cannot accept — the same way
+ * the snooze tools declare their surface.
+ */
+type MailboxAgentActionsStub = {
+	listAgentActions: (limit?: number) => Promise<MailboxAgentActionRow[]>;
+	countAgentActions: () => Promise<number>;
+	undoAgentAction: (id: string) => Promise<MailboxAgentActionUndo | null>;
+};
+
+function mailboxAgentActionsStub(
+	env: Env,
+	mailboxId: string,
+): MailboxAgentActionsStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * List a mailbox's most recent mutating agent/MCP tool calls, newest first,
+ * with the total number stored. Read-only — it changes nothing. The log is
+ * metadata only: no message bodies, no attachment bytes.
+ */
+export async function toolListAgentActions(
+	env: Env,
+	mailboxId: string,
+	limit = 50,
+) {
+	const stub = mailboxAgentActionsStub(env, mailboxId);
+	const [actions, totalCount] = await Promise.all([
+		stub.listAgentActions(limit),
+		stub.countAgentActions(),
+	]);
+	return { mailboxId, actions, totalCount };
+}
+
+/**
+ * Undo one recorded agent/MCP action: restore the message's read state, star
+ * state and folder from the recorded before-state. It never sends and never
+ * deletes mail, and an action can be undone once.
+ *
+ * Returns the restored action plus the updated email row, or `{ error }`
+ * when the id is unknown, the action is not undoable, or it has already been
+ * undone.
+ */
+export async function toolUndoAgentAction(
+	env: Env,
+	mailboxId: string,
+	actionId: string,
+) {
+	const result = await mailboxAgentActionsStub(env, mailboxId).undoAgentAction(
+		actionId,
+	);
+	if (!result) return { error: "Agent action not found" };
+	if (!result.ok) return { error: result.error };
+	return { action: result.action, email: result.email };
+}
+
 // ── send_reply ─────────────────────────────────────────────────────
 
 export async function toolSendReply(
