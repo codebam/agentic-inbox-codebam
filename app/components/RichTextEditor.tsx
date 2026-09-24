@@ -2,6 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+
 import { Button, Tooltip } from "@cloudflare/kumo";
 import {
 	ArrowClockwiseIcon,
@@ -29,12 +30,14 @@ import StarterKit from "@tiptap/starter-kit";
 import { type ReactNode, useCallback, useEffect } from "react";
 import { looksLikeMarkdown, markdownToHtml } from "~/lib/markdown";
 
+
 interface RichTextEditorProps {
 	value: string;
 	onChange: (value: string) => void;
 	/** Optional controls rendered at the end of the toolbar (e.g. mode switch). */
 	toolbarEnd?: ReactNode;
 }
+
 
 export default function RichTextEditor({
 	value,
@@ -80,6 +83,7 @@ export default function RichTextEditor({
 		},
 	});
 
+
 	useEffect(() => {
 		if (editor && !editor.isDestroyed && value !== editor.getHTML()) {
 			editor.commands.setContent(value);
@@ -91,7 +95,9 @@ export default function RichTextEditor({
 			});
 			return () => cancelAnimationFrame(rafId);
 		}
+		return;
 	}, [value, editor]);
+
 
 	const setLink = useCallback(() => {
 		if (!editor) return;
@@ -105,7 +111,9 @@ export default function RichTextEditor({
 		editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
 	}, [editor]);
 
+
 	if (!editor) return null;
+
 
 	return (
 		<div className="rounded-lg border border-kumo-line overflow-hidden flex flex-col h-full">
@@ -153,7 +161,9 @@ export default function RichTextEditor({
 					/>
 				</Tooltip>
 
+
 				<div className="mx-1 h-5 w-px bg-kumo-fill" />
+
 
 				{/* Lists */}
 				<Tooltip content="Bullet list" side="bottom" asChild>
@@ -177,7 +187,9 @@ export default function RichTextEditor({
 					/>
 				</Tooltip>
 
+
 				<div className="mx-1 h-5 w-px bg-kumo-fill" />
+
 
 				{/* Block formatting */}
 				<Tooltip content="Blockquote" side="bottom" asChild>
@@ -223,7 +235,9 @@ export default function RichTextEditor({
 					/>
 				</Tooltip>
 
+
 				<div className="mx-1 h-5 w-px bg-kumo-fill" />
+
 
 				{/* Undo/Redo */}
 				<Tooltip content="Undo" side="bottom" asChild>
@@ -249,6 +263,7 @@ export default function RichTextEditor({
 					/>
 				</Tooltip>
 
+
 				{toolbarEnd && (
 					<>
 						<div className="mx-1 h-5 w-px bg-kumo-fill" />
@@ -257,6 +272,7 @@ export default function RichTextEditor({
 				)}
 			</div>
 
+
 			{/* Editor content */}
 			<div className="flex-1 overflow-y-auto">
 				<EditorContent editor={editor} />
@@ -264,3 +280,4 @@ export default function RichTextEditor({
 		</div>
 	);
 }
+

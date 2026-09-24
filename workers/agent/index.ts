@@ -2,6 +2,9 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+
+
+
 import { AIChatAgent } from "@cloudflare/ai-chat";
 import {
 	streamText,
@@ -45,6 +48,9 @@ import { isAllMailboxesAgentId } from "../../shared/mailboxes";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import type { Env } from "../types";
 
+
+
+
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
 // objects matching the Tool type to avoid overload resolution issues.
 function defineTool(def: {
@@ -59,20 +65,32 @@ function defineTool(def: {
 	};
 }
 
+
+
+
 /**
  * Default system prompt used when no custom prompt is configured for a mailbox.
  * Users can override this on a per-mailbox basis via the Settings UI.
  */
 const DEFAULT_SYSTEM_PROMPT = `You are an email assistant that helps manage this inbox. You read emails, draft replies, and help organize conversations.
 
+
+
+
 ## Writing Style
 Write like a real person. Short, direct, flowing prose. Get to the point. Plain text only - no HTML tags in your replies.
+
+
+
 
 **Formatting rules:**
 - Write in natural paragraphs. NO bullet points, NO numbered lists, NO dashes, NO markdown formatting in email drafts.
 - NO bold (**), NO italic (*), NO headers (#), NO horizontal rules (---), NO code blocks. Plain text only.
 - Links go inline in the text, not on separate lines.
 - Don't structure replies like a template or form letter. Just talk normally.
+
+
+
 
 **Agent Behavior Rules (CRITICAL):**
 - NEVER output meta-commentary about what you are doing (e.g. do not say "I am drafting a reply to Alex", "I checked the thread", etc).
@@ -84,22 +102,43 @@ Write like a real person. Short, direct, flowing prose. Get to the point. Plain 
 - Your reply should only contain NEW information or directly respond to what the person just said. Move the conversation forward, don't rehash it.
 - NEVER draft a reply to an email marked as spam: an email in the Spam folder, an email with the \`spam\` category, or an email whose classification audit says it is spam. Leave spam alone; if the operator asks for a reply to spam, explain that you cannot draft it.
 
+
+
+
 ## Who Are You Replying To?
 Use the name the person gives in their email body / signature. That's their name - use it. The "from" address is where you send the reply, but the name in the email is how you greet them.
 
+
+
+
 ## CRITICAL: Draft Only - Never Send
 You can ONLY draft emails. You do NOT have the ability to send emails directly.
+
+
+
 
 - Use draft_reply to draft replies to existing emails
 - Use draft_email to draft new outbound emails
 - The operator will review and send drafts from the UI - you cannot send them
 
+
+
+
 **CRITICAL: The draft body must contain ONLY the email text.** Never include agent commentary, status messages, meta-notes, markdown formatting, or anything that isn't part of the actual email in the draft body. No "Draft created.", no "---", no "**bold**", no "Here's the draft:", no separators. The body field is the literal email the recipient will read. Everything else goes in your chat message, not in the draft body.
+
+
+
 
 **Don't paste draft contents into the chat.** The drafts are saved via tools - the operator can see them in the Drafts folder. In your chat message, just briefly say what you drafted (e.g. "Drafted a reply to Tim"). Don't duplicate the full email body in the chat.
 
+
+
+
 ## Draft Management
 Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
+
+
+
 
 /**
  * Extra instructions appended to the default prompt when the built-in chat is
@@ -108,8 +147,14 @@ Use discard_draft to delete drafts that the operator rejects or that are no long
  */
 const ALL_MAILBOXES_SYSTEM_PROMPT = `
 
+
+
+
 ## All-mailbox mode
 You are connected to every mailbox in this account, not just one inbox.
+
+
+
 
 - Start any request that spans mailboxes by calling \`list_mailboxes\`. Each returned object has an \`id\`/\`email\`; pass that exact value as \`mailboxId\` to every other tool.
 - When the operator asks about "all my inboxes" or "all mailboxes", check every mailbox returned by list_mailboxes rather than only the most recent one.
@@ -117,6 +162,9 @@ You are connected to every mailbox in this account, not just one inbox.
 - When the operator explicitly asks to delete spam across mailboxes, call \`delete_spam_emails\` (omit mailboxId to cover every mailbox). That tool only deletes messages marked as spam (Spam folder, \`spam\` category, or classifier audit). Report the per-mailbox counts back to the operator.
 - Never delete non-spam mail through delete_spam_emails, and never try to draft a reply to spam: both are enforced by the tools, but do not attempt to work around a refusal.
 `;
+
+
+
 
 /**
  * Fetch the custom system prompt for a mailbox from its R2 settings.
@@ -138,8 +186,14 @@ async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
 	return DEFAULT_SYSTEM_PROMPT;
 }
 
+
+
+
 function createEmailTools(env: Env, fixedMailboxId: string | null) {
 	const allMailboxes = fixedMailboxId === null;
+
+
+
 
 	const mailboxIdField: z.ZodRawShape = allMailboxes
 		? {
@@ -163,10 +217,16 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			}
 		: {};
 
+
+
+
 	const missingMailbox = {
 		error:
 			"mailboxId is required. Call list_mailboxes first and pass the exact mailbox address.",
 	};
+
+
+
 
 	/**
 	 * Resolve the mailbox for one tool call. Global mode requires an explicit
@@ -189,6 +249,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 		return normalized;
 	};
 
+
+
+
 	return {
 		// Only expose the mailbox list when the chat is not already scoped to
 		// a single mailbox; per-mailbox chats should stay focused.
@@ -204,6 +267,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					}),
 				}
 			: {}),
+
+
+
 
 		list_emails: defineTool({
 			description:
@@ -241,6 +307,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			},
 		}),
 
+
+
+
 		get_email: defineTool({
 			description:
 				"Get a single email with its full body content and attachments. Use this to read the actual content of an email.",
@@ -254,6 +323,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolGetEmail(env, mailboxId, args.emailId);
 			},
 		}),
+
+
+
 
 		get_thread: defineTool({
 			description:
@@ -272,6 +344,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolGetThread(env, mailboxId, args.threadId);
 			},
 		}),
+
+
+
 
 		search_emails: defineTool({
 			description:
@@ -354,6 +429,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			},
 		}),
 
+
+
+
 		draft_email: defineTool({
 			description:
 				"Draft a new email (not a reply) and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review. Use this for composing new outbound emails. Write the body as plain text — no HTML tags.",
@@ -379,6 +457,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				});
 			},
 		}),
+
+
+
 
 		draft_reply: defineTool({
 			description:
@@ -413,6 +494,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			},
 		}),
 
+
+
+
 		mark_email_read: defineTool({
 			description: "Mark an email as read or unread.",
 			parameters: z.object({
@@ -428,6 +512,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolMarkEmailRead(env, mailboxId, args.emailId, args.read);
 			},
 		}),
+
+
+
 
 		move_email: defineTool({
 			description:
@@ -445,6 +532,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolMoveEmail(env, mailboxId, args.emailId, args.folderId);
 			},
 		}),
+
+
+
 
 		delete_email: defineTool({
 			description:
@@ -465,6 +555,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true);
 			},
 		}),
+
+
+
 
 		delete_spam_emails: defineTool({
 			description:
@@ -487,6 +580,9 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 			},
 		}),
 
+
+
+
 		discard_draft: defineTool({
 			description:
 				"Permanently delete a draft email — drafts are not moved to Trash and cannot be restored. Use this to discard drafts that are no longer needed or were rejected by the operator.",
@@ -500,6 +596,12 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolDiscardDraft(env, mailboxId, args.draftId);
 			},
 		}),
+
+
+
+
+
+
 
 
 		// Rules: deterministic per-mailbox filters. These tools can shape mail
@@ -519,6 +621,12 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 		}),
 
 
+
+
+
+
+
+
 		create_rule: defineTool({
 			description:
 				"Create a deterministic rule for incoming mail: move it to a folder, set a category, star/unstar, mark read/unread, or discard it. A rule needs at least one match condition and at least one action. Rules created here cannot send mail: forward_to and auto_reply_text are operator-only and are stripped.",
@@ -535,6 +643,12 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				});
 			},
 		}),
+
+
+
+
+
+
 
 
 		update_rule: defineTool({
@@ -567,11 +681,14 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 	};
 }
 
+
+
+
 // Use `any` for the Env generic to avoid type conflicts between the custom
 // SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
 // is fully typed inside the tools via the closure.
 export class EmailAgent extends AIChatAgent<any> {
-	async onChatMessage(onFinish: any) {
+	override async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
 		const agentName = this.name;
 		const allMailboxes = isAllMailboxesAgentId(agentName);
@@ -581,11 +698,17 @@ export class EmailAgent extends AIChatAgent<any> {
 			? `${DEFAULT_SYSTEM_PROMPT}${ALL_MAILBOXES_SYSTEM_PROMPT}`
 			: await getSystemPrompt(env, agentName);
 
+
+
+
 		// Model ids come from the mailbox settings. The all-mailboxes agent
 		// has no mailbox of its own, so it uses the app-wide/default model.
 		const models = allMailboxes
 			? await resolveMailboxModels(env, agentName, {})
 			: await resolveMailboxModels(env, agentName);
+
+
+
 
 		const result = streamText({
 			model: workersai(models.agent),
@@ -599,14 +722,20 @@ export class EmailAgent extends AIChatAgent<any> {
 			onFinish,
 		});
 
+
+
+
 		return result.toUIMessageStreamResponse();
 	}
+
+
+
 
 	/**
 	 * Handle HTTP requests to the agent DO. Intercepts /onNewEmail
 	 * before passing to the default AIChatAgent handler.
 	 */
-	async onRequest(request: Request): Promise<Response> {
+	override async onRequest(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.pathname === "/onNewEmail" && request.method === "POST") {
 			try {
@@ -632,6 +761,9 @@ export class EmailAgent extends AIChatAgent<any> {
 		return super.onRequest(request);
 	}
 
+
+
+
 	/**
 	 * Called when a new email arrives. Reads it, loads the thread,
 	 * drafts a response, and saves it to the Drafts folder.
@@ -651,14 +783,23 @@ export class EmailAgent extends AIChatAgent<any> {
 		// settings and the built-in defaults.
 		const models = await resolveMailboxModels(env, emailData.mailboxId);
 
+
+
+
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
 		const stub = getMailboxStub(env, emailData.mailboxId);
+
+
+
 
 		let emailBody = "";
 		let threadContext = "";
 		try {
 			const email = (await stub.getEmail(emailData.emailId)) as EmailFull | null;
+
+
+
 
 			// Defense in depth: the inbound Worker already skips auto-draft for
 			// mail classified as spam, but re-check the stored row so a direct
@@ -701,6 +842,9 @@ export class EmailAgent extends AIChatAgent<any> {
 				emailBody = stripHtmlToText(email.body);
 			}
 
+
+
+
 		// Load thread for conversation context
 		const threadEmails = (await stub.getEmails({ thread_id: emailData.threadId })) as EmailMetadata[];
 		if (threadEmails.length > 1) {
@@ -715,6 +859,9 @@ export class EmailAgent extends AIChatAgent<any> {
 			threadContext = fullThread
 				.map((e) => `[${e.date}] ${e.sender} → ${e.recipient} (${e.folder_id}): ${e.body_text.substring(0, 500)}`)
 				.join("\n\n");
+
+
+
 
 			// Scan thread context for prompt injection too -- an attacker
 			// could plant an injection in an earlier email in the thread
@@ -748,7 +895,13 @@ export class EmailAgent extends AIChatAgent<any> {
 			console.warn("Pre-read failed, agent will use tools:", (e as Error).message);
 		}
 
+
+
+
 		let autoPrompt = `A new email just arrived. Draft an appropriate response using draft_reply.
+
+
+
 
 Email details:
 - Mailbox: ${emailData.mailboxId}
@@ -757,23 +910,44 @@ Email details:
 - Subject: ${emailData.subject}
 - Thread ID: ${emailData.threadId}
 
+
+
+
 Email body:
 ${emailBody || "(could not pre-read — use get_email to read it)"}`;
 
+
+
+
 		if (threadContext) {
 			autoPrompt += `
+
+
+
 
 Full thread history (${emailData.threadId}):
 ${threadContext}`;
 		} else {
 			autoPrompt += `
 
+
+
+
 This is the first message in the thread (no prior conversation).`;
 		}
 
+
+
+
 		autoPrompt += `
 
+
+
+
 Based on the email content and thread context above, draft a reply using draft_reply. If you need more context, use get_thread with thread ID "${emailData.threadId}".`;
+
+
+
 
 		// Fresh context for auto-draft -- don't include prior chat history
 		// to avoid confusing the model with old messages and tool calls
@@ -786,6 +960,9 @@ Based on the email content and thread context above, draft a reply using draft_r
 			},
 		];
 
+
+
+
 		try {
 			const result = await generateText({
 				model: workersai(models.agent),
@@ -794,6 +971,9 @@ Based on the email content and thread context above, draft a reply using draft_r
 				tools,
 				stopWhen: stepCountIs(5),
 			});
+
+
+
 
 			// Check whether a draft was actually saved. A draft_reply call that
 			// was refused (for example because the email is spam) must not be
@@ -813,6 +993,9 @@ Based on the email content and thread context above, draft a reply using draft_r
 					);
 				}),
 			);
+
+
+
 
 			let inlineDraftSaved = false;
 			if (!draftToolCalled && result.text.trim()) {
@@ -858,11 +1041,17 @@ Based on the email content and thread context above, draft a reply using draft_r
 				}
 			}
 
+
+
+
 			// Persist the conversation into the agent's chat history.
 			const assistantText = draftToolSucceeded || inlineDraftSaved
 				? `Created draft reply to ${emailData.sender}.`
 				: result.text.trim() ||
 					"No draft was created. The email may be marked as spam; check the Spam folder.";
+
+
+
 
 			const newMessages = [
 				{
@@ -891,7 +1080,13 @@ Based on the email content and thread context above, draft a reply using draft_r
 				},
 			];
 
+
+
+
 			await this.persistMessages([...this.messages, ...newMessages]);
+
+
+
 
 			return { status: "draft_generated", text: result.text };
 		} catch (e) {
@@ -900,3 +1095,6 @@ Based on the email content and thread context above, draft a reply using draft_r
 		}
 	}
 }
+
+
+

@@ -9,9 +9,19 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "strict": true,
+    "isolatedModules": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
     "noEmit": true,
     "types": [
         "./worker-configuration.d.ts"
     ]
   }
 }
+

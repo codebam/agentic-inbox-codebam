@@ -99,7 +99,6 @@ function focusSearchInput(): boolean {
  * markup instead of sharing a list component, so it is not wired yet.
  */
 export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriage {
-	const { emails, mailboxId, currentEmailId, selection, isTrashFolder = false, isComposing = false } = options;
 	const { selectEmail, startCompose, closePanel } = useUIStore();
 	const updateEmail = useUpdateEmail();
 	const moveEmail = useMoveEmail();

@@ -2,10 +2,10 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+
 import {
 	Button,
 	Dialog,
-	Empty,
 	Input,
 	Loader,
 	Select,
@@ -32,9 +32,11 @@ import {
 } from "~/queries/mailboxes";
 import { queryKeys } from "~/queries/keys";
 
+
 export function meta() {
 	return [{ title: "Agentic Inbox Codebam" }];
 }
+
 
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
@@ -42,11 +44,13 @@ export default function HomeRoute() {
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
 
+
 	const { data: configData } = useQuery({
 		queryKey: queryKeys.config,
 		queryFn: () => api.getConfig(),
 		staleTime: Infinity, // config rarely changes
 	});
+
 
 	const domains = configData?.domains ?? [];
 	const emailAddresses = configData?.emailAddresses ?? [];
@@ -59,6 +63,7 @@ export default function HomeRoute() {
 		() => new Set(catchAllMailboxes.map((address) => address.toLowerCase())),
 		[catchAllMailboxes],
 	);
+
 
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newPrefix, setNewPrefix] = useState("");
@@ -73,12 +78,14 @@ export default function HomeRoute() {
 	} | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
 
+
 	// Set default domain when config loads
 	useEffect(() => {
 		if (domains.length > 0 && !selectedDomain) {
 			setSelectedDomain(domains[0]);
 		}
 	}, [domains, selectedDomain]);
+
 
 	// Auto-create configured mailboxes, including the per-domain catch-all
 	// mailboxes, once both config and the current mailbox list are ready.
@@ -112,6 +119,7 @@ export default function HomeRoute() {
 		return () => { cancelled = true; };
 	}, [configData, configuredMailboxAddresses, mailboxes, mailboxesFetched, refetchMailboxes]);
 
+
 	const handleCreate = async (e: FormEvent) => {
 		e.preventDefault();
 		setCreateError(null);
@@ -136,6 +144,7 @@ export default function HomeRoute() {
 		}
 	};
 
+
 	const handleDelete = async () => {
 		if (!mailboxToDelete) return;
 		setIsDeleting(true);
@@ -151,6 +160,7 @@ export default function HomeRoute() {
 		}
 	};
 
+
 	const isConfigured = emailAddresses.length > 0;
 	const accounts = isConfigured
 		? configuredMailboxAddresses.map((addr) => ({
@@ -160,7 +170,9 @@ export default function HomeRoute() {
 			}))
 		: mailboxes;
 
+
 	const isLoading = !configData;
+
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
@@ -193,6 +205,7 @@ export default function HomeRoute() {
 						</p>
 					)}
 				</div>
+
 
 				{isLoading ? (
 					<div className="flex justify-center py-20">
@@ -301,6 +314,7 @@ export default function HomeRoute() {
 				)}
 			</div>
 
+
 			{/* Create Dialog */}
 			<Dialog.Root open={isCreateOpen} onOpenChange={setIsCreateOpen}>
 				<Dialog size="sm" className="p-6">
@@ -381,6 +395,7 @@ export default function HomeRoute() {
 				</Dialog>
 			</Dialog.Root>
 
+
 			{/* Delete Dialog */}
 			<Dialog.Root
 				open={isDeleteOpen}
@@ -422,3 +437,4 @@ export default function HomeRoute() {
 		</div>
 	);
 }
+

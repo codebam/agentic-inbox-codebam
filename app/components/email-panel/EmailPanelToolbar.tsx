@@ -2,6 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+
 import { Button, Tooltip } from "@cloudflare/kumo";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -21,6 +22,7 @@ import {
 	XIcon,
 } from "@phosphor-icons/react";
 import type { Folder, Email } from "~/types";
+
 
 interface EmailPanelToolbarProps {
 	email: Email;
@@ -45,9 +47,9 @@ interface EmailPanelToolbarProps {
 	onRestore: () => void;
 }
 
+
 export default function EmailPanelToolbar({
 	email,
-	mailboxId,
 	isDraftFolder,
 	isTrash,
 	isSending,
@@ -76,6 +78,7 @@ export default function EmailPanelToolbar({
 				aria-label="Back to list"
 				className="md:hidden shrink-0"
 			/>
+
 
 			{isDraftFolder ? (
 				<>
@@ -132,7 +135,9 @@ export default function EmailPanelToolbar({
 				</>
 			)}
 
+
 			<div className="h-5 w-px bg-kumo-fill mx-0.5" />
+
 
 			<Tooltip content={email.starred ? "Unstar" : "Star"} side="bottom" asChild>
 				<Button
@@ -151,6 +156,7 @@ export default function EmailPanelToolbar({
 				/>
 			</Tooltip>
 
+
 			<Tooltip content={email.read ? "Mark as unread" : "Mark as read"} side="bottom" asChild>
 				<Button
 					variant="ghost"
@@ -162,7 +168,9 @@ export default function EmailPanelToolbar({
 				/>
 			</Tooltip>
 
+
 			<MoveToFolderMenu folders={moveToFolders} onMove={onMove} />
+
 
 			<div className="ml-auto flex items-center gap-0.5">
 				<Tooltip content="View source" side="bottom" asChild>
@@ -217,9 +225,11 @@ export default function EmailPanelToolbar({
 	);
 }
 
+
 function MoveToFolderMenu({ folders, onMove }: { folders: Folder[]; onMove: (id: string) => void }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
+
 
 	useEffect(() => {
 		if (!open) return;
@@ -229,6 +239,7 @@ function MoveToFolderMenu({ folders, onMove }: { folders: Folder[]; onMove: (id:
 		document.addEventListener("mousedown", handler);
 		return () => document.removeEventListener("mousedown", handler);
 	}, [open]);
+
 
 	return (
 		<div ref={ref} className="relative">
@@ -261,3 +272,4 @@ function MoveToFolderMenu({ folders, onMove }: { folders: Folder[]; onMove: (id:
 		</div>
 	);
 }
+
