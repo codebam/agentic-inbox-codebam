@@ -136,3 +136,22 @@ export const agentActions = sqliteTable("agent_actions", {
 	undone_at: text("undone_at"),
 	created_at: text("created_at").notNull(),
 });
+
+
+/**
+ * Mail-flow contacts (migration 21_add_contacts): one row per address this
+ * mailbox has exchanged mail with, fed by MailboxDO.createEmail. Metadata
+ * only — address, display name, sent/received counts, timestamps — never
+ * message bodies. `email` is stored lowercased and is the upsert target;
+ * MailboxDO prunes each mailbox back to its newest 5000 rows on every write
+ * (workers/lib/contacts.ts).
+ */
+export const contacts = sqliteTable("contacts", {
+	id: text("id").primaryKey(),
+	email: text("email").notNull().unique(),
+	name: text("name"),
+	sent_count: integer("sent_count").notNull().default(0),
+	received_count: integer("received_count").notNull().default(0),
+	first_seen_at: text("first_seen_at").notNull(),
+	last_seen_at: text("last_seen_at").notNull(),
+});

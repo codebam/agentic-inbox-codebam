@@ -30,6 +30,7 @@
 import { sendEmail, type SendEmailParams } from "../email-sender";
 import { stripHtmlToText, textToHtml } from "./email-helpers";
 import { isRuleEmailAddress, type RuleOutboundAction } from "./rules";
+import { Folders } from "../../shared/folders";
 
 
 /** Anything that can deliver one message. Tests inject a fake. */
@@ -52,6 +53,22 @@ export interface RuleOutboundEmail {
 }
 
 
+/**
+ * The Sent copy of one rule-driven send, so a rule's forward or auto-reply
+ * appears in the mailbox exactly like every other send path's copy does
+ * (and feeds the contacts store). Metadata plus the sent body, which is what
+ * createEmail stores for any other sent message.
+ */
+export interface RuleOutboundSentCopy {
+	kind: "forward" | "auto_reply";
+	/** The deliverable recipient the copy was sent to. */
+	to: string;
+	subject: string;
+	/** The send's HTML when it had one, otherwise its text. */
+	body: string;
+}
+
+
 export interface RuleOutboundDeps {
 	/** null when this deployment has no EMAIL binding. */
 	sender: RuleOutboundSender | null;
@@ -59,8 +76,39 @@ export interface RuleOutboundDeps {
 	lastAutoReplyAt: (senderAddress: string) => Promise<string | null>;
 	/** Remember that an auto-reply went out to this sender at `at`. */
 	recordAutoReply: (senderAddress: string, at: string) => Promise<void>;
+	/**
+	 * Store the Sent copy of a delivered message. Optional: a caller that
+	 * cannot store mail (a test with a fake sender) simply omits it, and the
+	 * message is delivered without a copy. Called best-effort — see
+	 * storeSentCopy below.
+	 */
+	storeSentCopy?:
+		| ((copy: RuleOutboundSentCopy) => Promise<void> | void)
+		| undefined;
 	now?: () => Date;
 	log?: (message: string) => void;
+}
+
+
+/**
+ * Best-effort store of the Sent copy for one delivered message. A storage
+ * failure is logged and swallowed: the message has already gone out, so it
+ * must not flip the attempt to "failed" (which would also skip the
+ * auto-reply cooldown bookkeeping and let a duplicate reply go out).
+ */
+async function storeSentCopy(
+	deps: RuleOutboundDeps,
+	log: (message: string) => void,
+	copy: RuleOutboundSentCopy,
+): Promise<void> {
+	if (!deps.storeSentCopy) return;
+	try {
+		await deps.storeSentCopy(copy);
+	} catch (error) {
+		log(
+			`storing the Sent copy of the ${copy.kind} to ${copy.to} failed: ${(error as Error).message}`,
+		);
+	}
 }
 
 
@@ -282,7 +330,14 @@ export async function runRuleOutboundActions(
 				continue;
 			}
 			try {
-				const result = await deps.sender.send(buildForwardParams(action, email));
+				const params = buildForwardParams(action, email);
+				const result = await deps.sender.send(params);
+				await storeSentCopy(deps, log, {
+					kind: "forward",
+					to,
+					subject: params.subject,
+					body: params.html ?? params.text ?? "",
+				});
 				record({
 					kind: "forward",
 					rule_id: action.rule_id,
@@ -346,9 +401,14 @@ export async function runRuleOutboundActions(
 			continue;
 		}
 		try {
-			const result = await deps.sender.send(
-				buildAutoReplyParams(text, email),
-			);
+			const params = buildAutoReplyParams(text, email);
+			const result = await deps.sender.send(params);
+			await storeSentCopy(deps, log, {
+				kind: "auto_reply",
+				to,
+				subject: params.subject,
+				body: params.html ?? params.text ?? "",
+			});
 			// Recorded only after a successful send: a failed attempt must not
 			// consume the sender's daily slot.
 			await deps.recordAutoReply(to, sentAt.toISOString());
@@ -415,10 +475,73 @@ export function resolveRuleOutboundSender(
 }
 
 
+/**
+ * The stored-message fields a rule-driven Sent copy needs. Structural on
+ * purpose: MailboxDO.createEmail takes its own EmailData, and this is the
+ * subset of it the copy fills in.
+ */
+export interface RuleOutboundStoredEmail {
+	id: string;
+	subject: string;
+	sender: string;
+	recipient: string;
+	date: string;
+	body: string;
+	thread_id: string;
+	message_id: string;
+	in_reply_to: null;
+	email_references: null;
+}
+
+
 /** Minimal DO surface the pipeline needs for the auto-reply daily cap. */
 export interface RuleOutboundBookkeepingStub {
 	getLastAutoReplyAt: (senderAddress: string) => Promise<string | null>;
 	recordAutoReply: (senderAddress: string, at: string) => Promise<void>;
+	/**
+	 * Store a message in a folder (MailboxDO.createEmail). Optional: the
+	 * pipeline uses it to keep the Sent copy of a rule-driven send like every
+	 * other send path does; a caller that cannot store mail omits it and the
+	 * message is delivered without a copy.
+	 */
+	createEmail?:
+		| ((
+				folder: string,
+				email: RuleOutboundStoredEmail,
+				attachments: [],
+		  ) => Promise<unknown>)
+		| undefined;
+}
+
+
+/**
+ * The Sent-copy store for one mailbox: MailboxDO.createEmail with a
+ * generated id, exactly like the other send paths (workers/index.ts,
+ * workers/routes/reply-forward.ts, workers/lib/tools.ts). Undefined when
+ * the stub cannot store mail.
+ */
+function buildSentCopyStore(
+	stub: RuleOutboundBookkeepingStub,
+	mailboxId: string,
+): ((copy: RuleOutboundSentCopy) => Promise<void>) | undefined {
+	if (!stub.createEmail) return undefined;
+	const sender = mailboxId.trim().toLowerCase();
+	const domain = sender.split("@")[1] ?? "";
+	return async (copy: RuleOutboundSentCopy) => {
+		const id = crypto.randomUUID();
+		await stub.createEmail!(Folders.SENT, {
+			id,
+			subject: copy.subject,
+			sender,
+			recipient: copy.to.trim().toLowerCase(),
+			date: new Date().toISOString(),
+			body: copy.body,
+			thread_id: id,
+			message_id: domain ? `<${id}@${domain}>` : id,
+			in_reply_to: null,
+			email_references: null,
+		}, []);
+	};
 }
 
 
@@ -466,6 +589,7 @@ export async function handleInboundRuleOutbound(
 		sender: resolveRuleOutboundSender(env),
 		lastAutoReplyAt: (address) => stub.getLastAutoReplyAt(address),
 		recordAutoReply: (address, at) => stub.recordAutoReply(address, at),
+		storeSentCopy: buildSentCopyStore(stub, email.mailboxId),
 		log: (message) => console.log(`Rule outbound: ${message}`),
 	});
 }
