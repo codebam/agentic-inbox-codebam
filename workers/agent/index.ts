@@ -32,7 +32,14 @@ import {
 	toolDiscardDraft,
 	toolDeleteEmail,
 	toolDeleteSpamEmails,
+	toolListRules,
+	toolCreateRule,
+	toolUpdateRule,
+	ruleToolActionsSchema,
+	ruleToolDraftShape,
+	ruleToolMatchSchema,
 } from "../lib/tools";
+import type { RulePatch } from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { isAllMailboxesAgentId } from "../../shared/mailboxes";
 import { isSpamMarkedEmail } from "../../shared/spam";
@@ -491,6 +498,70 @@ function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolDiscardDraft(env, mailboxId, args.draftId);
+			},
+		}),
+
+
+		// Rules: deterministic per-mailbox filters. These tools can shape mail
+		// (file, label, star, discard) but can never author automation that
+		// SENDS mail — forward_to and auto_reply_text are stripped by
+		// toolCreateRule / toolUpdateRule, and a rule carrying them cannot be
+		// enabled from here.
+		list_rules: defineTool({
+			description:
+				"List the mailbox's deterministic rules (file, label, star, mark read, discard) with firing statistics. Rules that forward or auto-reply are operator-only: they are listed, but cannot be created, edited, or enabled through tools.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListRules(env, mailboxId);
+			},
+		}),
+
+
+		create_rule: defineTool({
+			description:
+				"Create a deterministic rule for incoming mail: move it to a folder, set a category, star/unstar, mark read/unread, or discard it. A rule needs at least one match condition and at least one action. Rules created here cannot send mail: forward_to and auto_reply_text are operator-only and are stripped.",
+			parameters: z.object({ ...mailboxIdField, ...ruleToolDraftShape }),
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolCreateRule(env, mailboxId, {
+					name: args.name,
+					enabled: args.enabled,
+					priority: args.priority,
+					match: args.match,
+					actions: args.actions,
+				});
+			},
+		}),
+
+
+		update_rule: defineTool({
+			description:
+				"Update one deterministic rule by id: rename, reorder, change its conditions or actions, enable or pause it. Rules that send mail automatically (forward or auto-reply) cannot be edited or enabled through tools — only the operator can change those.",
+			parameters: z.object({
+				...mailboxIdField,
+				ruleId: z.string().describe("The rule id to update"),
+				name: z.string().optional().describe("New rule name"),
+				enabled: z.boolean().optional().describe("true enables, false pauses"),
+				priority: z.number().int().optional().describe("Lower runs first"),
+				match: ruleToolMatchSchema.optional(),
+				actions: ruleToolActionsSchema.optional(),
+			}),
+			execute: async (args: any): Promise<unknown> => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				const patch = Object.fromEntries(
+					Object.entries({
+						name: args.name,
+						enabled: args.enabled,
+						priority: args.priority,
+						match: args.match,
+						actions: args.actions,
+					}).filter(([, value]) => value !== undefined),
+				) as RulePatch;
+				return toolUpdateRule(env, mailboxId, args.ruleId, patch);
 			},
 		}),
 	};

@@ -5,7 +5,13 @@
 import type { GlobalCategorizationSettings } from "shared/categories";
 import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
-import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
+import type {
+	MailRule,
+	RuleDraft,
+	RulePatch,
+	RulePreviewDraft,
+	RulePreviewResult,
+} from "workers/lib/rules";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -218,6 +224,12 @@ const api = {
 		del<void>(`/api/v1/mailboxes/${mailboxId}/rules/${ruleId}`),
 	reorderRules: (mailboxId: string, ids: string[]) =>
 		post<MailRule[]>(`/api/v1/mailboxes/${mailboxId}/rules/reorder`, { ids }),
+	/** Dry-run a draft against stored mail: matches only, never writes. */
+	previewRule: (mailboxId: string, draft: RulePreviewDraft) =>
+		post<RulePreviewResult>(
+			`/api/v1/mailboxes/${mailboxId}/rules/preview`,
+			draft,
+		),
 
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>

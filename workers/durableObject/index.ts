@@ -12,17 +12,24 @@ import { SPAM_CATEGORY_ID } from "../../shared/categories";
 import {
 	hasActiveActions,
 	hasActiveConditions,
+	matchRule,
 	normalizeRuleActions,
 	normalizeRuleMatch,
 	RuleValidationError,
 	resolveRuleFolderId,
 	MAX_RULE_NAME_LENGTH,
 	MAX_RULE_PRIORITY,
+	RULE_PREVIEW_MAX_MATCHES,
+	RULE_PREVIEW_SCAN_LIMIT,
 	type MailRule,
 	type RuleActions,
 	type RuleDraft,
+	type RuleEmail,
 	type RuleMatchSpec,
 	type RulePatch,
+	type RulePreviewDraft,
+	type RulePreviewMatch,
+	type RulePreviewResult,
 } from "../lib/rules";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
@@ -110,6 +117,9 @@ interface EmailData {
 	category?: string | null;
 	category_confidence?: number | null;
 	classification?: string | null;
+	/** Rule that routed or acted on this message, when a rule fired. */
+	matched_rule_id?: string | null;
+	matched_rule_name?: string | null;
 }
 
 interface AttachmentData {
@@ -1154,6 +1164,8 @@ export class MailboxDO extends DurableObject<Env> {
 				category: email.category ?? null,
 				category_confidence: email.category_confidence ?? null,
 				classification: email.classification ?? null,
+				matched_rule_id: email.matched_rule_id ?? null,
+				matched_rule_name: email.matched_rule_name ?? null,
 			})
 			.run();
 
@@ -1174,9 +1186,12 @@ export class MailboxDO extends DurableObject<Env> {
 	async listRules(): Promise<MailRule[]> {
 		const rows = [
 			...this.ctx.storage.sql.exec(
-				`SELECT id, name, enabled, priority, match, actions, created_at
-				 FROM rules
-				 ORDER BY priority ASC, created_at ASC, id ASC`,
+				`SELECT r.id, r.name, r.enabled, r.priority, r.match, r.actions, r.created_at,
+				        COALESCE(s.fired_count, 0) AS fired_count,
+				        s.last_fired_at AS last_fired_at
+				 FROM rules r
+				 LEFT JOIN rule_stats s ON s.rule_id = r.id
+				 ORDER BY r.priority ASC, r.created_at ASC, r.id ASC`,
 			),
 		] as unknown as RuleRow[];
 		return rows.map(parseRuleRow);
@@ -1212,7 +1227,17 @@ export class MailboxDO extends DurableObject<Env> {
 			createdAt,
 		);
 
-		return { id, name, enabled, priority, match, actions, created_at: createdAt };
+		return {
+			id,
+			name,
+			enabled,
+			priority,
+			match,
+			actions,
+			created_at: createdAt,
+			fired_count: 0,
+			last_fired_at: null,
+		};
 	}
 
 
@@ -1304,12 +1329,164 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 
+	/**
+	 * Dry-run a rule draft against this mailbox: the SAME matcher the live
+	 * engine uses (`matchRule`) runs over the most recent
+	 * `RULE_PREVIEW_SCAN_LIMIT` messages and nothing is written — no stats,
+	 * no email changes, no sends. Returns up to `limit` summaries plus the
+	 * total number of matches within the scanned window.
+	 *
+	 * `enabled` is ignored on purpose: a preview of a paused rule still shows
+	 * what it would do once enabled.
+	 */
+	async previewRule(
+		draft: RulePreviewDraft,
+		limit = RULE_PREVIEW_MAX_MATCHES,
+	): Promise<RulePreviewResult> {
+		const match = normalizeRuleMatch(draft?.match);
+		if (!hasActiveConditions(match.conditions)) {
+			throw new RuleValidationError("A rule needs at least one match condition");
+		}
+		const boundedLimit =
+			Number.isFinite(limit) && limit > 0
+				? Math.min(Math.trunc(limit), RULE_PREVIEW_MAX_MATCHES)
+				: RULE_PREVIEW_MAX_MATCHES;
+		const previewRule: MailRule = {
+			id: "preview",
+			name:
+				typeof draft?.name === "string" && draft.name.trim()
+					? draft.name.trim()
+					: "Preview",
+			enabled: true,
+			priority: 0,
+			match,
+			actions: {},
+			created_at: "",
+		};
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, subject, sender, recipient, envelope_recipient, cc, bcc,
+				        body, category, folder_id, date,
+				        EXISTS (SELECT 1 FROM attachments WHERE attachments.email_id = emails.id) AS has_attachment
+				 FROM emails
+				 ORDER BY date DESC
+				 LIMIT ?1`,
+				RULE_PREVIEW_SCAN_LIMIT,
+			),
+		] as unknown as PreviewEmailRow[];
+
+		const matches: RulePreviewMatch[] = [];
+		let total = 0;
+		for (const row of rows) {
+			if (!matchRule(previewRule, previewRowToRuleEmail(row))) continue;
+			total += 1;
+			if (matches.length < boundedLimit) {
+				matches.push({
+					id: String(row.id),
+					subject: String(row.subject ?? ""),
+					sender: String(row.sender ?? ""),
+					date: String(row.date ?? ""),
+					folder_id: String(row.folder_id ?? ""),
+				});
+			}
+		}
+
+		return {
+			total,
+			scanned: rows.length,
+			scan_limit: RULE_PREVIEW_SCAN_LIMIT,
+			limit: boundedLimit,
+			matches,
+		};
+	}
+
+
+
+
+	/**
+	 * Bump `fired_count` and `last_fired_at` for every rule that acted on one
+	 * inbound message. Ids that no longer exist are ignored, so a rule deleted
+	 * while mail is in flight can never break delivery.
+	 */
+	async recordRuleFirings(ruleIds: readonly string[]): Promise<void> {
+		const ids = [
+			...new Set(
+				(ruleIds ?? []).filter(
+					(id): id is string => typeof id === "string" && id.length > 0,
+				),
+			),
+		];
+		if (ids.length === 0) return;
+		const known = new Set(
+			[...this.ctx.storage.sql.exec(`SELECT id FROM rules`)].map((row) =>
+				String((row as { id: unknown }).id),
+			),
+		);
+		const valid = ids.filter((id) => known.has(id));
+		if (valid.length === 0) return;
+		const firedAt = new Date().toISOString();
+		this.ctx.storage.transactionSync(() => {
+			for (const id of valid) {
+				this.ctx.storage.sql.exec(
+					`INSERT INTO rule_stats (rule_id, fired_count, last_fired_at)
+					 VALUES (?1, 1, ?2)
+					 ON CONFLICT(rule_id) DO UPDATE SET
+						fired_count = fired_count + 1,
+						last_fired_at = ?2`,
+					id,
+					firedAt,
+				);
+			}
+		});
+	}
+
+
+
+
+	/**
+	 * Timestamp of the last auto-reply this mailbox sent to a sender, or null.
+	 * Backed by Durable Object storage (no table needed) and keyed by address.
+	 */
+	async getLastAutoReplyAt(senderAddress: string): Promise<string | null> {
+		const key = this.#autoReplyKey(senderAddress);
+		if (!key) return null;
+		const value = await this.ctx.storage.get<string>(key);
+		return typeof value === "string" ? value : null;
+	}
+
+
+
+
+	/** Remember when this mailbox last auto-replied to a sender. */
+	async recordAutoReply(senderAddress: string, at: string): Promise<void> {
+		const key = this.#autoReplyKey(senderAddress);
+		if (!key || typeof at !== "string" || !at) return;
+		await this.ctx.storage.put(key, at);
+	}
+
+
+
+
+	/** Storage key for the per-sender auto-reply cap; null for junk input. */
+	#autoReplyKey(senderAddress: string): string | null {
+		const normalized = (senderAddress ?? "").trim().toLowerCase();
+		if (!normalized) return null;
+		return `ruleAutoReply:${normalized}`;
+	}
+
+
+
+
 	/** Load one rule by id, or null when it does not exist. */
 	#getRule(id: string): MailRule | null {
 		const rows = [
 			...this.ctx.storage.sql.exec(
-				`SELECT id, name, enabled, priority, match, actions, created_at
-				 FROM rules WHERE id = ?1`,
+				`SELECT r.id, r.name, r.enabled, r.priority, r.match, r.actions, r.created_at,
+				        COALESCE(s.fired_count, 0) AS fired_count,
+				        s.last_fired_at AS last_fired_at
+				 FROM rules r
+				 LEFT JOIN rule_stats s ON s.rule_id = r.id
+				 WHERE r.id = ?1`,
 				id,
 			),
 		] as unknown as RuleRow[];
@@ -1397,6 +1574,49 @@ interface RuleRow {
 	match: string;
 	actions: string;
 	created_at: string;
+	/** From the rule_stats LEFT JOIN; 0 when the rule never fired. */
+	fired_count?: number | null;
+	last_fired_at?: string | null;
+}
+
+
+
+
+/**
+ * Raw row shape for a preview scan. `has_attachment` comes back from the
+ * EXISTS subquery as 0/1 (SQLite booleans).
+ */
+interface PreviewEmailRow {
+	id: string;
+	subject: string | null;
+	sender: string | null;
+	recipient: string | null;
+	envelope_recipient: string | null;
+	cc: string | null;
+	bcc: string | null;
+	body: string | null;
+	category: string | null;
+	folder_id: string | null;
+	date: string | null;
+	has_attachment: number | boolean;
+}
+
+
+
+
+/** Map a stored email row onto the engine's `RuleEmail` view. */
+function previewRowToRuleEmail(row: PreviewEmailRow): RuleEmail {
+	return {
+		sender: row.sender,
+		recipient: row.recipient,
+		envelope_recipient: row.envelope_recipient,
+		cc: row.cc,
+		bcc: row.bcc,
+		subject: row.subject,
+		body: row.body,
+		category: row.category,
+		has_attachment: row.has_attachment === 1 || row.has_attachment === true,
+	};
 }
 
 
@@ -1413,6 +1633,13 @@ function parseRuleRow(row: RuleRow): MailRule {
 		match: normalizeRuleMatch(safeJsonParse(row.match)),
 		actions: normalizeRuleActions(safeJsonParse(row.actions)),
 		created_at: String(row.created_at ?? ""),
+		fired_count: Number.isFinite(Number(row.fired_count))
+			? Number(row.fired_count)
+			: 0,
+		last_fired_at:
+			typeof row.last_fired_at === "string" && row.last_fired_at
+				? row.last_fired_at
+				: null,
 	};
 }
 

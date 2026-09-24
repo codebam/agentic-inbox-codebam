@@ -33,6 +33,38 @@ export const emails = sqliteTable("emails", {
 	category: text("category"),
 	category_confidence: real("category_confidence"),
 	classification: text("classification"),
+	/** Rule that routed or acted on this message (first one, evaluation order). */
+	matched_rule_id: text("matched_rule_id"),
+	matched_rule_name: text("matched_rule_name"),
+});
+
+
+/**
+ * Deterministic per-mailbox rules (migration 11_add_rules). The CRUD path
+ * uses raw SQL because `match`/`actions` are JSON strings, but the table is
+ * mirrored here so drizzle joins and the stats table can reference it.
+ */
+export const rules = sqliteTable("rules", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	enabled: integer("enabled").notNull().default(1),
+	priority: integer("priority").notNull().default(0),
+	match: text("match").notNull(),
+	actions: text("actions").notNull(),
+	created_at: text("created_at").notNull().default("(datetime('now'))"),
+});
+
+
+/**
+ * Firing statistics (migration 15_add_rule_stats): one row per rule that has
+ * fired at least once. Cascades away with its rule.
+ */
+export const ruleStats = sqliteTable("rule_stats", {
+	rule_id: text("rule_id")
+		.primaryKey()
+		.references(() => rules.id, { onDelete: "cascade" }),
+	fired_count: integer("fired_count").notNull().default(0),
+	last_fired_at: text("last_fired_at"),
 });
 
 export const attachments = sqliteTable("attachments", {

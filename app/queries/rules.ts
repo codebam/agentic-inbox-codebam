@@ -4,7 +4,12 @@
 
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
+import type {
+	MailRule,
+	RuleDraft,
+	RulePatch,
+	RulePreviewDraft,
+} from "workers/lib/rules";
 import api from "~/services/api";
 import { queryKeys } from "./keys";
 
@@ -94,5 +99,40 @@ export function useReorderRules() {
 			}
 			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
 		},
+	});
+}
+export function useReorderRules() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({ mailboxId, ids }: { mailboxId: string; ids: string[] }) =>
+			api.reorderRules(mailboxId, ids),
+		onSuccess: (rules, { mailboxId }) => {
+			// The endpoint returns the new evaluation order, so seed the cache
+			// with it and let the invalidation reconcile.
+			if (rules) {
+				qc.setQueryData(queryKeys.rules.list(mailboxId), rules);
+			}
+			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
+		},
+	});
+}
+
+
+
+
+/**
+ * Dry-run a rule draft: the server matches stored mail with the same engine
+ * the live pipeline uses and returns the matches. Nothing is written, nothing
+ * is sent.
+ */
+export function usePreviewRule() {
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			draft,
+		}: {
+			mailboxId: string;
+			draft: RulePreviewDraft;
+		}) => api.previewRule(mailboxId, draft),
 	});
 }

@@ -208,4 +208,22 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX idx_rules_priority ON rules(priority, created_at);
         `),
 	},
+	{
+		// Firing statistics and the rule stamp on delivered mail.
+		// `rule_stats` is keyed by rule id and cascades away with the rule;
+		// the two email columns record which rule acted on a stored message
+		// (the first rule in evaluation order that acted, matching the
+		// first-write-wins contract of runRules).
+		name: "15_add_rule_stats",
+		sql: txn(`
+            CREATE TABLE rule_stats (
+                rule_id TEXT PRIMARY KEY REFERENCES rules(id) ON DELETE CASCADE,
+                fired_count INTEGER NOT NULL DEFAULT 0,
+                last_fired_at TEXT
+            );
+
+            ALTER TABLE emails ADD COLUMN matched_rule_id TEXT;
+            ALTER TABLE emails ADD COLUMN matched_rule_name TEXT;
+        `),
+	},
 ];
