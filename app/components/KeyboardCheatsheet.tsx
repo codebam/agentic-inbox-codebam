@@ -92,11 +92,15 @@ export default function KeyboardCheatsheet({
 					message forever.
 				</p>
 				<div className="mt-4 flex justify-end">
-					<Dialog.Close>
-						<Button variant="secondary" size="sm">
-							Close
-						</Button>
-					</Dialog.Close>
+					{/* render= keeps Dialog.Close and the Button one element: nesting two
+					    buttons is invalid HTML and trips React hydration warnings. */}
+					<Dialog.Close
+						render={(closeProps) => (
+							<Button variant="secondary" size="sm" {...closeProps}>
+								Close
+							</Button>
+						)}
+					/>
 				</div>
 			</Dialog>
 		</Dialog.Root>
