@@ -70,27 +70,27 @@ async function request<T>(
 	}
 }
 
-function get<T>(url: string, opts?: { params?: Record<string, string>; responseType?: string; signal?: AbortSignal }) {
+function get<T>(url: string, opts?: { params?: Record<string, string>; responseType?: string; signal?: AbortSignal | undefined }) {
 	const query = opts?.params ? `?${new URLSearchParams(opts.params)}` : "";
 	return request<T>(`${url}${query}`, {
 		method: "GET",
-		signal: opts?.signal,
+		...(opts?.signal ? { signal: opts.signal } : {}),
 		...(opts?.responseType === "blob" ? { headers: { Accept: "*/*" } } : {}),
 	});
 }
 
-function post<T>(url: string, body?: unknown, opts?: { signal?: AbortSignal }) {
+function post<T>(url: string, body?: unknown, opts?: { signal?: AbortSignal | undefined }) {
 	return request<T>(url, {
 		method: "POST",
-		signal: opts?.signal,
-		body: body != null ? JSON.stringify(body) : undefined,
+		...(opts?.signal ? { signal: opts.signal } : {}),
+		...(body != null ? { body: JSON.stringify(body) } : {}),
 	});
 }
 
 function put<T>(url: string, body?: unknown) {
 	return request<T>(url, {
 		method: "PUT",
-		body: body != null ? JSON.stringify(body) : undefined,
+		...(body != null ? { body: JSON.stringify(body) } : {}),
 	});
 }
 
@@ -146,7 +146,7 @@ const api = {
 
 	// Outbound webhook notifications (notification only — never sends mail)
 	/** Send a sample payload to the mailbox webhook and report the upstream result. */
-	testWebhook: (mailboxId: string, body: { url?: string; secret?: string }) =>
+	testWebhook: (mailboxId: string, body: { url?: string | undefined; secret?: string | undefined }) =>
 		post<WebhookDeliveryResult>(`/api/v1/mailboxes/${mailboxId}/webhook/test`, body),
 
 	// Emails
@@ -164,7 +164,7 @@ const api = {
 	 * Delete an email. A plain delete moves the message to Trash; an email
 	 * already in Trash — or `permanent: true` — is deleted for good.
 	 */
-	deleteEmail: (mailboxId: string, id: string, opts?: { permanent?: boolean }) =>
+	deleteEmail: (mailboxId: string, id: string, opts?: { permanent?: boolean | undefined }) =>
 		del<{ status: string; trashed: number; purged: number }>(
 			`/api/v1/mailboxes/${mailboxId}/emails/${id}${opts?.permanent ? "?permanent=true" : ""}`,
 		),
@@ -177,8 +177,8 @@ const api = {
 		body: {
 			action: BulkEmailAction;
 			ids: string[];
-			threadIds?: string[];
-			folderId?: string;
+			threadIds?: string[] | undefined;
+			folderId?: string | undefined;
 		},
 	) =>
 		post<{ updated?: number; trashed?: number; purged?: number; restored?: number }>(
@@ -199,15 +199,15 @@ const api = {
 	saveDraft: (
 		mailboxId: string,
 		draft: {
-			to?: string;
-			cc?: string;
-			bcc?: string;
-			subject?: string;
+			to?: string | undefined;
+			cc?: string | undefined;
+			bcc?: string | undefined;
+			subject?: string | undefined;
 			body: string;
-			attachments?: AttachmentPayload[];
-			in_reply_to?: string;
-			thread_id?: string;
-			draft_id?: string;
+			attachments?: AttachmentPayload[] | undefined;
+			in_reply_to?: string | undefined;
+			thread_id?: string | undefined;
+			draft_id?: string | undefined;
 		},
 	) => post<{ id: string; draft_id?: string }>(`/api/v1/mailboxes/${mailboxId}/drafts`, draft),
 	replyToEmail: (mailboxId: string, emailId: string, email: unknown) =>

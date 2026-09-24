@@ -56,7 +56,9 @@ export function useEmails(
 			return { emails: arr, totalCount: arr.length };
 		},
 		enabled: !!mailboxId && (options?.enabled ?? true),
-		refetchInterval: options?.refetchInterval,
+		...(options?.refetchInterval !== undefined
+			? { refetchInterval: options.refetchInterval }
+			: {}),
 	});
 }
 
@@ -265,7 +267,7 @@ export function useMoveEmail() {
 export interface BulkEmailActionVars {
 	action: BulkEmailAction;
 	targets: BulkEmailTarget[];
-	folderId?: string;
+	folderId?: string | undefined;
 }
 
 /** Group selected rows by their owning mailbox. */
@@ -423,16 +425,16 @@ export function useSaveDraft() {
 		}: {
 			mailboxId: string;
 			draft: {
-				to?: string;
-				cc?: string;
-				bcc?: string;
-				subject?: string;
+				to?: string | undefined;
+				cc?: string | undefined;
+				bcc?: string | undefined;
+				subject?: string | undefined;
 				body: string;
 				/** Pending composer files, base64 — persisted with the draft. */
-				attachments?: AttachmentPayload[];
-				in_reply_to?: string;
-				thread_id?: string;
-				draft_id?: string;
+				attachments?: AttachmentPayload[] | undefined;
+				in_reply_to?: string | undefined;
+				thread_id?: string | undefined;
+				draft_id?: string | undefined;
 			};
 		}) => api.saveDraft(mailboxId, draft),
 		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
