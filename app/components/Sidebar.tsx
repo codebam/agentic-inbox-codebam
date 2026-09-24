@@ -6,6 +6,7 @@ import { Badge, Button, Dialog, Input, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	CaretLeftIcon,
+	CheckSquareIcon,
 	ClockCounterClockwiseIcon,
 	ClockIcon,
 	EnvelopeOpenIcon,
@@ -17,6 +18,7 @@ import {
 	PlusIcon,
 	ProhibitIcon,
 	PulseIcon,
+	SunIcon,
 	TrashIcon,
 	TrayIcon,
 } from "@phosphor-icons/react";
@@ -245,6 +247,21 @@ export default function Sidebar() {
 						</div>
 					</div>
 				)}
+				{/* Today — the morning brief for this mailbox */}
+				<div className="pt-5">
+					<div className="flex items-center justify-between px-3 mb-1.5">
+						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+							Today
+						</span>
+					</div>
+					<FolderLink
+						to={`/mailbox/${mailboxId}/digest`}
+						icon={<SunIcon size={18} />}
+						label="Digest"
+						onClick={handleNavClick}
+					/>
+				</div>
+
 				{/* Sending — the composer's queued and past scheduled sends */}
 				<div className="pt-5">
 					<div className="flex items-center justify-between px-3 mb-1.5">
@@ -271,6 +288,21 @@ export default function Sidebar() {
 						to={`/mailbox/${mailboxId}/rules`}
 						icon={<FunnelIcon size={18} />}
 						label="Rules"
+						onClick={handleNavClick}
+					/>
+				</div>
+
+				{/* Tasks — deadlines and obligations extracted from incoming mail */}
+				<div className="pt-5">
+					<div className="flex items-center justify-between px-3 mb-1.5">
+						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+							Tasks
+						</span>
+					</div>
+					<FolderLink
+						to={`/mailbox/${mailboxId}/tasks`}
+						icon={<CheckSquareIcon size={18} />}
+						label="Tasks"
 						onClick={handleNavClick}
 					/>
 				</div>

@@ -38,6 +38,8 @@ import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-v
 import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { normalizeImageAllowlist } from "../shared/remote-images";
 import { normalizeAutoDraft } from "../shared/auto-draft";
+import { normalizeDigestEnabled } from "../shared/digest";
+import { normalizeItemsSettings } from "../shared/items";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -289,6 +291,8 @@ app.post("/api/v1/mailboxes", async (c) => {
 		categorization: normalizeCategorizationSettings(settings?.["categorization"]),
 		imageAllowlist: normalizeImageAllowlist(settings?.["imageAllowlist"]),
 		autoDraft: normalizeAutoDraft(settings?.["autoDraft"]),
+		digestEnabled: normalizeDigestEnabled(settings?.["digestEnabled"]),
+		items: normalizeItemsSettings(settings?.["items"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -330,6 +334,8 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		notifyWebhookSecret: normalizeWebhookSecret(settings["notifyWebhookSecret"]),
 		imageAllowlist: normalizeImageAllowlist(settings["imageAllowlist"]),
 		autoDraft: normalizeAutoDraft(settings["autoDraft"]),
+		digestEnabled: normalizeDigestEnabled(settings["digestEnabled"]),
+		items: normalizeItemsSettings(settings["items"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });

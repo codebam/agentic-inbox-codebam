@@ -33,6 +33,10 @@ export function defaultMailboxSettings(name: string) {
 		notifyWebhookUrl: "",
 		notifyWebhookSecret: "",
 		imageAllowlist: [],
+		// Opt-in: the digest POSTs to the notification webhook each morning.
+		digestEnabled: false,
+		// Task/deadline extraction from new mail; on unless switched off.
+		items: { enabled: true },
 	};
 }
 

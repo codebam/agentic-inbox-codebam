@@ -21,6 +21,8 @@ export default [
 		route("rules", "routes/rules.tsx"),
 		route("activity", "routes/activity.tsx"),
 		route("scheduled", "routes/scheduled.tsx"),
+		route("digest", "routes/digest.tsx"),
+		route("tasks", "routes/tasks.tsx"),
 	]),
 	route("*", "routes/not-found.tsx"),
 ] satisfies RouteConfig;
