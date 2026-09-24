@@ -1,7 +1,14 @@
-import { SELF, runInDurableObject } from "cloudflare:test";
+import {
+	SELF,
+	createExecutionContext,
+	createScheduledController,
+	runInDurableObject,
+	waitOnExecutionContext,
+} from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
+import worker from "../workers/app";
 import { listMailboxes } from "../workers/lib/email-helpers";
 import { sweepTrash } from "../workers/lib/trash-retention";
 
@@ -308,5 +315,25 @@ describe("mailbox settings", () => {
 		const stored = await env.BUCKET.get(`mailboxes/${mailbox}.json`);
 		const storedSettings = (await stored?.json()) as Record<string, unknown>;
 		expect(storedSettings.trashRetentionDays).toBe(0);
+	});
+});
+
+
+describe("cron wiring", () => {
+	it("the scheduled handler runs the sweep", async () => {
+		await resetMailboxes();
+		const mailbox = "retention-cron@example.com";
+		await registerMailbox(mailbox, { trashRetentionDays: 1 });
+		const stub = stubFor(mailbox);
+
+		await seedEmail(stub, "cron-old", Folders.TRASH);
+		await setTrashedAt(stub, "cron-old", "2020-01-01T00:00:00.000Z");
+
+		const ctx = createExecutionContext();
+		await worker.scheduled(createScheduledController({ cron: "0 3 * * *" }), env, ctx);
+		// The handler fires the sweep through ctx.waitUntil(), so wait for it.
+		await waitOnExecutionContext(ctx);
+
+		expect(await stub.getEmail("cron-old")).toBeNull();
 	});
 });
