@@ -11,6 +11,7 @@ import {
 	categoryLabel,
 	mergeCategorizationCategories,
 } from "shared/categories";
+import ExplainPanel from "~/components/ExplainPanel";
 import EmailPanelDialogs from "~/components/email-panel/EmailPanelDialogs";
 import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
@@ -266,6 +267,9 @@ export default function EmailPanel({
 				categoryConfidence={email.category_confidence}
 				isSpam={email.category === SPAM_CATEGORY_ID}
 			/>
+
+
+			<ExplainPanel email={email} categories={categoryNames} />
 
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (
