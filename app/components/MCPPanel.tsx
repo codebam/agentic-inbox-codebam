@@ -32,7 +32,7 @@ function CopyButton({ text }: { text: string }) {
 						<CopyIcon size={12} />
 					)
 				}
-				onClick={handleCopy}
+				onClick={() => { void handleCopy(); }}
 				aria-label="Copy to clipboard"
 			/>
 		</Tooltip>

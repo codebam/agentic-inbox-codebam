@@ -110,8 +110,38 @@ function ToolCallBadge({
 	);
 }
 
+/** A tool-invocation part: the typed `tool-*` parts and AI SDK's `dynamic-tool`. */
+type ToolPart = Extract<UIMessage["parts"][number], { toolCallId: string }>;
+
+/** A tool result payload: any non-null object, as the tools return JSON. */
+function isPayloadObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/** Stand-in for a payload field lookup that found nothing to read. */
+const EMPTY_PAYLOAD_FIELDS: Record<string, unknown> = {};
+
+/** First value that is a string, over the untyped fields of a tool result. */
+function firstString(...values: unknown[]): string | undefined {
+	for (const value of values) {
+		if (typeof value === "string") return value;
+	}
+	return undefined;
+}
+
+function isToolPart(part: UIMessage["parts"][number]): part is ToolPart {
+	return part.type === "dynamic-tool" || part.type.startsWith("tool-");
+}
+
+/** Read a completed tool call's payload; AI SDK v6 uses `output`, older `result`. */
+function readToolOutput(part: UIMessage["parts"][number]): unknown {
+	if (!isToolPart(part)) return undefined;
+	if ("result" in part) return part.output ?? part.result;
+	return part.output;
+}
+
 function getToolNameFromPart(part: UIMessage["parts"][number]): string | null {
-	if (part.type === "dynamic-tool") return (part as any).toolName ?? null;
+	if (part.type === "dynamic-tool") return part.toolName ?? null;
 	if (part.type.startsWith("tool-")) return part.type.replace("tool-", "");
 	return null;
 }
@@ -128,9 +158,9 @@ interface DraftToolResult {
 	to: string;
 	subject: string;
 	body: string;
-	originalEmailId?: string;
-	inReplyTo?: string;
-	threadId?: string;
+	originalEmailId?: string | undefined;
+	inReplyTo?: string | undefined;
+	threadId?: string | undefined;
 }
 
 /**
@@ -147,22 +177,23 @@ function extractDraftResult(
 	for (const part of message.parts) {
 		const toolName = getToolNameFromPart(part);
 		if (toolName !== "draft_reply" && toolName !== "draft_email") continue;
-		const output = (part as any).output ?? (part as any).result;
-		if (!output || typeof output !== "object") continue;
+		const output = readToolOutput(part);
+		if (!isPayloadObject(output)) continue;
 		if ("error" in output) continue;
-		const draft = output.draft ?? output;
-		const draftId = output.draftId ?? draft.draftId ?? draft.id ?? "";
+		const draft = output["draft"] ?? output;
+		const draftFields: Record<string, unknown> = isPayloadObject(draft) ? draft : EMPTY_PAYLOAD_FIELDS;
+		const draftId = firstString(output["draftId"], draftFields["draftId"], draftFields["id"]) ?? "";
 		if (!draftId) continue;
 		return {
 			draftId,
-			mailboxId: draft.mailboxId ?? output.mailboxId ?? agentName,
-			to: draft.to ?? output.to ?? "",
-			subject: draft.subject ?? output.subject ?? "",
-			body: draft.body ?? output.body ?? "",
-			originalEmailId: draft.originalEmailId ?? output.originalEmailId,
+			mailboxId: firstString(draftFields["mailboxId"], output["mailboxId"]) ?? agentName,
+			to: firstString(draftFields["to"], output["to"]) ?? "",
+			subject: firstString(draftFields["subject"], output["subject"]) ?? "",
+			body: firstString(draftFields["body"], output["body"]) ?? "",
+			originalEmailId: firstString(draftFields["originalEmailId"], output["originalEmailId"]),
 			inReplyTo:
-				draft.in_reply_to ?? output.in_reply_to ?? draft.originalEmailId,
-			threadId: draft.thread_id ?? output.thread_id,
+				firstString(draftFields["in_reply_to"], output["in_reply_to"], draftFields["originalEmailId"]),
+			threadId: firstString(draftFields["thread_id"], output["thread_id"]),
 		};
 	}
 	return null;
@@ -328,12 +359,12 @@ function MessageBubble({
 						);
 					}
 					const toolName = getToolNameFromPart(part);
-					if (toolName) {
+					if (toolName && isToolPart(part)) {
 						return (
 							<ToolCallBadge
 								key={key}
 								toolName={toolName}
-								state={(part as any).state ?? "running"}
+								state={part.state ?? "running"}
 							/>
 						);
 					}
@@ -387,7 +418,7 @@ function AgentChatConnected({
 		const text = inputValue.trim();
 		if (!text || isStreaming) return;
 		setInputValue("");
-		sendMessage({ text });
+		void sendMessage({ text });
 		if (inputRef.current) inputRef.current.style.height = "auto";
 	};
 
@@ -462,9 +493,9 @@ function AgentChatConnected({
 								<button
 									key={prompt}
 									type="button"
-									onClick={() =>
-										sendMessage({ text: prompt })
-									}
+									onClick={() => {
+										void sendMessage({ text: prompt });
+									}}
 									className="text-left px-3 py-2 rounded-lg border border-kumo-line text-xs text-kumo-strong hover:bg-kumo-tint hover:border-kumo-fill-hover transition-colors cursor-pointer bg-transparent"
 								>
 									{prompt}
@@ -488,7 +519,7 @@ function AgentChatConnected({
 												!targetMailboxId ||
 												targetMailboxId === ALL_MAILBOXES_AGENT_ID
 											) {
-												sendMessage({
+												void sendMessage({
 													text: "I couldn't determine which mailbox that draft belongs to. Try asking me to draft it again.",
 												});
 												return;
@@ -513,7 +544,7 @@ function AgentChatConnected({
 												},
 											});
 										} else {
-											sendMessage({
+											void sendMessage({
 												text: "Let me edit this draft first. Show me what you have so I can modify it.",
 											});
 										}
@@ -546,7 +577,7 @@ function AgentChatConnected({
 							variant="secondary"
 							size="sm"
 							icon={<StopIcon size={14} weight="fill" />}
-							onClick={() => stop()}
+							onClick={() => { void stop(); }}
 						>
 							Stop generating
 						</Button>

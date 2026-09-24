@@ -173,7 +173,7 @@ function buildInitialComposeFields(
 	};
 }
 
-export function useComposeForm(mailboxId?: string, _folder?: string) {
+export function useComposeForm(mailboxId?: string) {
 	const toastManager = useKumoToastManager();
 	const { composeOptions, closePanel, closeCompose, setComposeDraft } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
@@ -258,13 +258,13 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 
 
 		let cancelled = false;
-		setIsEncodingAttachments(true);
 		void (async () => {
+			setIsEncodingAttachments(true);
 			const loaded: PendingAttachment[] = [];
 			const failures: string[] = [];
 			for (const file of files) {
 				try {
-					const blob = (await api.getAttachment(mailboxId, ownerId, file.id)) as Blob;
+					const blob = await api.getAttachment(mailboxId, ownerId, file.id);
 					loaded.push(pendingAttachmentFromStored(file, await blobToBase64(blob)));
 				} catch {
 					failures.push(`Could not load "${file.filename}" — re-attach it before sending.`);

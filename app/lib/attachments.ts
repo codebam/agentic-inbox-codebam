@@ -243,7 +243,7 @@ export function stripDataUrlPrefix(dataUrl: string): string {
 export async function blobToBase64(blob: Blob): Promise<string> {
 	const dataUrl = await new Promise<string>((resolve, reject) => {
 		const reader = new FileReader();
-		reader.onload = () => resolve(String(reader.result ?? ""));
+		reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
 		reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
 		reader.readAsDataURL(blob);
 	});

@@ -18,18 +18,41 @@ interface EmailPanelDialogsProps {
 	onClosePreview: () => void;
 }
 
+/** Read a stored header entry as a plain object; null when it is not one. */
+function headerRecord(entry: unknown): Record<string, unknown> | null {
+	if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
+	return entry as Record<string, unknown>;
+}
+
+
+/**
+ * One stored header field as a string, mirroring `String(value || "")` for
+ * the primitives a header can hold; anything else contributes nothing.
+ */
+function headerField(entry: unknown, field: string): string {
+	const record = headerRecord(entry);
+	if (!record) return "";
+	const value = record[field];
+	if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		return value ? String(value) : "";
+	}
+	return "";
+}
+
+
 function getSourceHeaders(msg: Email): { key: string; value: string }[] {
 	if (msg.raw_headers) {
 		try {
-			const parsed = JSON.parse(msg.raw_headers);
+			const parsed: unknown = JSON.parse(msg.raw_headers);
 			if (Array.isArray(parsed)) {
-				return parsed.map((header) => ({
-					key: header.key || header.name || "",
-					value: String(header.value || ""),
+				return parsed.map((header: unknown) => ({
+					key: headerField(header, "key") || headerField(header, "name") || "",
+					value: headerField(header, "value"),
 				}));
 			}
-			if (typeof parsed === "object" && parsed !== null) {
-				return Object.entries(parsed).map(([key, value]) => ({
+			const headerMap = headerRecord(parsed);
+			if (headerMap) {
+				return Object.entries(headerMap).map(([key, value]) => ({
 					key,
 					value: String(value),
 				}));

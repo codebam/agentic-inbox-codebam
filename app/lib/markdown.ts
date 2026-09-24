@@ -78,8 +78,8 @@ function splitSoftBreaks(parent: Root | RootContent): void {
 	for (const child of parent.children) {
 		if (child.type === "text" && child.value.includes("\n")) {
 			child.value.split(/\r?\n/).forEach((line, index) => {
-				if (index > 0) next.push({ type: "break" } as RootContent);
-				if (line) next.push({ type: "text", value: line } as RootContent);
+				if (index > 0) next.push({ type: "break" });
+				if (line) next.push({ type: "text", value: line });
 			});
 			continue;
 		}
