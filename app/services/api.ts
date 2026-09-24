@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { GlobalCategorizationSettings } from "shared/categories";
+import type { GlobalModelSettings } from "shared/models";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -110,6 +111,11 @@ const api = {
 		get<GlobalCategorizationSettings>("/api/v1/categorization"),
 	updateGlobalCategorization: (settings: GlobalCategorizationSettings) =>
 		put<GlobalCategorizationSettings>("/api/v1/categorization", settings),
+
+	// Global AI model overrides (apply to every mailbox without its own)
+	getGlobalModels: () => get<GlobalModelSettings>("/api/v1/models"),
+	updateGlobalModels: (settings: GlobalModelSettings) =>
+		put<GlobalModelSettings>("/api/v1/models", settings),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),

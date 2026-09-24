@@ -163,17 +163,23 @@ export function validateModelId(value: string): string | null {
 
 /**
  * Validate every non-empty model id in a settings payload.
+ *
+ * Raw string values are validated before normalization drops oversized or
+ * malformed ids, so the settings UI and the API surface the same errors.
  * @returns a map of field -> error message (empty when everything is valid).
  */
 export function modelConfigErrors(
 	raw: unknown,
 ): Partial<Record<ModelConfigKey, string>> {
-	const models = readModelConfig(raw);
+	if (!raw || typeof raw !== "object") return {};
+	const value = raw as { models?: unknown };
+	const source =
+		value.models && typeof value.models === "object" ? value.models : value;
 	const errors: Partial<Record<ModelConfigKey, string>> = {};
 	for (const key of MODEL_CONFIG_KEYS) {
-		const value = models[key];
-		if (!value) continue;
-		const error = validateModelId(value);
+		const candidate = (source as Record<string, unknown>)[key];
+		if (typeof candidate !== "string" || !candidate.trim()) continue;
+		const error = validateModelId(candidate);
 		if (error) errors[key] = error;
 	}
 	return errors;

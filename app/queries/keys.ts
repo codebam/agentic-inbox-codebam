@@ -31,4 +31,7 @@ export const queryKeys = {
 	categorization: {
 		global: ["global-categorization"] as const,
 	},
+	models: {
+		global: ["global-models"] as const,
+	},
 };

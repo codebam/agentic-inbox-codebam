@@ -2,17 +2,29 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
-import { RobotIcon, ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
+import { Badge, Button, Input, Loader, Switch, useKumoToastManager } from "@cloudflare/kumo";
+import { RobotIcon, ArrowCounterClockwiseIcon, SignatureIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import AiCategorizationCard from "~/components/AiCategorizationCard";
+import AiModelsCard from "~/components/AiModelsCard";
 import {
 	defaultCategorizationSettings,
 	normalizeCategorizationSettings,
 	type CategorizationSettings,
 } from "shared/categories";
+import {
+	modelConfigErrors,
+	normalizeModelConfig,
+	type ModelConfig,
+} from "shared/models";
+import {
+	normalizeSignatureSettings,
+	type SignatureSettings,
+} from "shared/signature";
+import { getSignatureBlock } from "~/lib/utils";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
+import { useGlobalModels } from "~/queries/models";
 
 // Placeholder shown in the textarea when no custom prompt is set.
 // The authoritative default prompt lives in workers/agent/index.ts (DEFAULT_SYSTEM_PROMPT).
@@ -22,6 +34,7 @@ export default function SettingsRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const toastManager = useKumoToastManager();
 	const { data: mailbox } = useMailbox(mailboxId);
+	const { data: globalModels } = useGlobalModels();
 	const updateMailboxMutation = useUpdateMailbox();
 
 	const [displayName, setDisplayName] = useState("");
@@ -29,6 +42,11 @@ export default function SettingsRoute() {
 	const [categorization, setCategorization] = useState<CategorizationSettings>(
 		defaultCategorizationSettings,
 	);
+	const [signature, setSignature] = useState<SignatureSettings>({
+		enabled: false,
+		text: "",
+	});
+	const [models, setModels] = useState<ModelConfig>({});
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
@@ -38,17 +56,36 @@ export default function SettingsRoute() {
 			setCategorization(
 				normalizeCategorizationSettings(mailbox.settings?.categorization),
 			);
+			setSignature(
+				normalizeSignatureSettings(mailbox.settings?.signature) ?? {
+					enabled: false,
+					text: "",
+				},
+			);
+			setModels(mailbox.settings?.models ?? {});
 		}
 	}, [mailbox]);
 
+	const modelErrors = modelConfigErrors({ models });
+
+
 	const handleSave = async () => {
 		if (!mailbox || !mailboxId) return;
+		if (Object.keys(modelErrors).length > 0) {
+			toastManager.add({
+				title: "Fix the highlighted model IDs before saving.",
+				variant: "error",
+			});
+			return;
+		}
 		setIsSaving(true);
 		const settings = {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
 			categorization: normalizeCategorizationSettings(categorization),
+			signature: normalizeSignatureSettings(signature),
+			models: normalizeModelConfig(models),
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -143,6 +180,83 @@ export default function SettingsRoute() {
 						It controls the agent's personality, writing style, and behavior rules.
 					</p>
 				</div>
+
+				{/* Signature */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="flex items-center gap-2 mb-3">
+						<SignatureIcon size={16} weight="duotone" className="text-kumo-subtle" />
+						<span className="text-sm font-medium text-kumo-default">Signature</span>
+						{signature.enabled ? (
+							<Badge variant="primary">On</Badge>
+						) : (
+							<Badge variant="secondary">Off</Badge>
+						)}
+					</div>
+					<p className="text-xs text-kumo-subtle mb-4">
+						Prefilled in the composer for new messages, and appended to drafts the
+						AI agent or MCP creates. Plain text is escaped; HTML signatures keep
+						their formatting with unsafe tags stripped.
+					</p>
+					<div className="space-y-4">
+						<Switch
+							checked={signature.enabled}
+							onCheckedChange={(enabled) => setSignature({ ...signature, enabled })}
+							label="Add signature to outgoing drafts"
+						/>
+						<label className="block">
+							<span className="block text-xs font-medium text-kumo-strong mb-1">
+								Plain-text signature
+							</span>
+							<textarea
+								value={signature.text}
+								onChange={(e) => setSignature({ ...signature, text: e.target.value })}
+								placeholder={"Your name\nRole, Company\nhttps://example.com"}
+								rows={4}
+								className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring leading-relaxed"
+							/>
+						</label>
+						<label className="block">
+							<span className="block text-xs font-medium text-kumo-strong mb-1">
+								HTML signature (optional — replaces the plain-text version)
+							</span>
+							<textarea
+								value={signature.html ?? ""}
+								onChange={(e) => setSignature({ ...signature, html: e.target.value })}
+								placeholder={'<p><strong>Your name</strong><br>Role, Company</p>'}
+								rows={4}
+								className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
+							/>
+						</label>
+						{Boolean(signature.text.trim() || signature.html?.trim()) && (
+							<div>
+								<div className="text-xs font-medium text-kumo-strong mb-1">Preview</div>
+								<div
+									className="rounded-md border border-kumo-line bg-kumo-recessed p-4 text-sm text-kumo-default overflow-x-auto"
+									dangerouslySetInnerHTML={{
+										__html: getSignatureBlock({
+											signature: { ...signature, enabled: true },
+										}),
+									}}
+								/>
+								{!signature.enabled && (
+									<p className="text-xs text-kumo-subtle mt-1">
+										Signature is off — drafts won't include it until you turn it on.
+									</p>
+								)}
+							</div>
+						)}
+					</div>
+				</div>
+
+
+				<AiModelsCard
+					title="AI Models"
+					description="Override the app-wide model choice for this mailbox. Leave a field empty to inherit the app-wide model (shown as the placeholder)."
+					models={models}
+					onChange={setModels}
+					inherited={globalModels?.models}
+				/>
+
 
 				{/* Save */}
 				<div className="flex justify-end">

@@ -10,11 +10,18 @@ import {
 	normalizeGlobalCategorizationSettings,
 	type EmailCategory,
 } from "shared/categories";
+import {
+	modelConfigErrors,
+	normalizeModelConfig,
+	type ModelConfig,
+} from "shared/models";
+import AiModelsCard from "~/components/AiModelsCard";
 import CategoryEditor from "~/components/CategoryEditor";
 import {
 	useGlobalCategorization,
 	useUpdateGlobalCategorization,
 } from "~/queries/categorization";
+import { useGlobalModels, useUpdateGlobalModels } from "~/queries/models";
 
 export function meta() {
 	return [{ title: "Global Settings · Agentic Inbox Codebam" }];
@@ -23,16 +30,33 @@ export function meta() {
 export default function GlobalSettingsRoute() {
 	const toastManager = useKumoToastManager();
 	const { data, isLoading } = useGlobalCategorization();
+	const { data: modelData } = useGlobalModels();
 	const updateGlobalCategorization = useUpdateGlobalCategorization();
+	const updateGlobalModels = useUpdateGlobalModels();
 
 	const [categories, setCategories] = useState<EmailCategory[]>([]);
+	const [models, setModels] = useState<ModelConfig>({});
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
 		if (data) setCategories(data.categories);
 	}, [data]);
 
+	useEffect(() => {
+		if (modelData) setModels(modelData.models ?? {});
+	}, [modelData]);
+
+	const modelErrors = modelConfigErrors({ models });
+
+
 	const handleSave = async () => {
+		if (Object.keys(modelErrors).length > 0) {
+			toastManager.add({
+				title: "Fix the highlighted model IDs before saving.",
+				variant: "error",
+			});
+			return;
+		}
 		setIsSaving(true);
 		try {
 			// Normalize on the client too so the saved state matches exactly
@@ -40,10 +64,13 @@ export default function GlobalSettingsRoute() {
 			const settings = normalizeGlobalCategorizationSettings({ categories });
 			await updateGlobalCategorization.mutateAsync(settings);
 			setCategories(settings.categories);
-			toastManager.add({ title: "Global categories saved!" });
+			await updateGlobalModels.mutateAsync({
+				models: normalizeModelConfig(models),
+			});
+			toastManager.add({ title: "Global settings saved!" });
 		} catch {
 			toastManager.add({
-				title: "Failed to save global categories",
+				title: "Failed to save global settings",
 				variant: "error",
 			});
 		} finally {
@@ -96,9 +123,18 @@ export default function GlobalSettingsRoute() {
 					/>
 				</div>
 
+				<div className="mt-6">
+					<AiModelsCard
+						title="AI Models"
+						description="App-wide model choice for every mailbox that has no override of its own. Leave a field empty to use the built-in default (shown as the placeholder)."
+						models={models}
+						onChange={setModels}
+					/>
+				</div>
+
 				<div className="flex justify-end mt-6">
 					<Button variant="primary" onClick={handleSave} loading={isSaving}>
-						Save Global Categories
+						Save Global Settings
 					</Button>
 				</div>
 			</div>

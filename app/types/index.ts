@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { CategorizationSettings } from "shared/categories";
+import type { ModelConfig } from "shared/models";
 
 export interface SignatureSettings {
 	enabled: boolean;
@@ -17,6 +18,8 @@ export interface MailboxSettings {
 	autoReply?: { enabled: boolean; subject: string; message: string };
 	agentSystemPrompt?: string;
 	categorization?: CategorizationSettings;
+	/** Mailbox-level AI model overrides; blank fields inherit. */
+	models?: ModelConfig;
 }
 
 export interface Mailbox {
