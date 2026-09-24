@@ -6,7 +6,13 @@ import type { GlobalCategorizationSettings } from "shared/categories";
 import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
-import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
+import type {
+	MailRule,
+	RuleDraft,
+	RulePatch,
+	RulePreviewDraft,
+	RulePreviewResult,
+} from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
 import type { BulkEmailAction, Email, Folder, Mailbox } from "~/types";
@@ -231,6 +237,12 @@ const api = {
 		del<void>(`/api/v1/mailboxes/${mailboxId}/rules/${ruleId}`),
 	reorderRules: (mailboxId: string, ids: string[]) =>
 		post<MailRule[]>(`/api/v1/mailboxes/${mailboxId}/rules/reorder`, { ids }),
+	/** Dry-run a draft against stored mail: matches only, never writes. */
+	previewRule: (mailboxId: string, draft: RulePreviewDraft) =>
+		post<RulePreviewResult>(
+			`/api/v1/mailboxes/${mailboxId}/rules/preview`,
+			draft,
+		),
 
 
 

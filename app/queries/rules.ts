@@ -4,7 +4,12 @@
 
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { MailRule, RuleDraft, RulePatch } from "workers/lib/rules";
+import type {
+	MailRule,
+	RuleDraft,
+	RulePatch,
+	RulePreviewDraft,
+} from "workers/lib/rules";
 import api from "~/services/api";
 import { queryKeys } from "./keys";
 
@@ -94,5 +99,25 @@ export function useReorderRules() {
 			}
 			qc.invalidateQueries({ queryKey: queryKeys.rules.list(mailboxId) });
 		},
+	});
+}
+
+
+
+
+/**
+ * Dry-run a rule draft: the server matches stored mail with the same engine
+ * the live pipeline uses and returns the matches. Nothing is written, nothing
+ * is sent.
+ */
+export function usePreviewRule() {
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			draft,
+		}: {
+			mailboxId: string;
+			draft: RulePreviewDraft;
+		}) => api.previewRule(mailboxId, draft),
 	});
 }

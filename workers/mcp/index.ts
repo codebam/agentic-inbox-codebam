@@ -20,7 +20,14 @@ import {
 	toolSendEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolListRules,
+	toolCreateRule,
+	toolUpdateRule,
+	ruleToolActionsSchema,
+	ruleToolDraftShape,
+	ruleToolMatchSchema,
 } from "../lib/tools";
+import type { RuleDraft, RulePatch } from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -531,6 +538,65 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					};
 				}
 				return mcpText(result);
+			},
+		);
+
+
+		// ── list_rules ─────────────────────────────────────────────
+		// Rules are deterministic per-mailbox filters. The agent/MCP rule
+		// tools can shape mail (file, label, star, discard) but can never
+		// author automation that SENDS mail: forward_to and auto_reply_text
+		// are stripped by toolCreateRule / toolUpdateRule, and a rule carrying
+		// them cannot be enabled from here.
+		this.server.tool(
+			"list_rules",
+			"List the mailbox's deterministic rules (file, label, star, mark read, discard) with firing statistics. Rules that forward or auto-reply are operator-only: they are listed, but cannot be created, edited, or enabled through tools.",
+			{ mailboxId: z.string().describe("The mailbox email address") },
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListRules(env, mailboxId));
+			},
+		);
+
+
+		// ── create_rule ────────────────────────────────────────────
+		this.server.tool(
+			"create_rule",
+			"Create a deterministic rule for incoming mail: move it to a folder, set a category, star/unstar, mark read/unread, or discard it. A rule needs at least one match condition and at least one action. Rules created here cannot send mail: forward_to and auto_reply_text are operator-only and are stripped.",
+			{ mailboxId: z.string().describe("The mailbox email address"), ...ruleToolDraftShape },
+			async ({ mailboxId, ...draft }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolCreateRule(env, mailboxId, draft as RuleDraft);
+				return mcpResult(result as unknown as Record<string, unknown>);
+			},
+		);
+
+
+		// ── update_rule ────────────────────────────────────────────
+		this.server.tool(
+			"update_rule",
+			"Update one deterministic rule by id: rename, reorder, change its conditions or actions, enable or pause it. Rules that send mail automatically (forward or auto-reply) cannot be edited or enabled through tools — only the operator can change those.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				ruleId: z.string().describe("The rule id to update"),
+				name: z.string().optional().describe("New rule name"),
+				enabled: z.boolean().optional().describe("true enables, false pauses"),
+				priority: z.number().int().optional().describe("Lower runs first"),
+				match: ruleToolMatchSchema.optional(),
+				actions: ruleToolActionsSchema.optional(),
+			},
+			async ({ mailboxId, ruleId, ...patch }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolUpdateRule(
+					env,
+					mailboxId,
+					ruleId,
+					patch as RulePatch,
+				);
+				return mcpResult(result as unknown as Record<string, unknown>);
 			},
 		);
 	}

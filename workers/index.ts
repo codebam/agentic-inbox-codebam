@@ -20,6 +20,7 @@ import {
 	BulkEmailActionSchema,
 	CreateRuleSchema,
 	DraftBodySchema,
+	PreviewRuleSchema,
 	ReorderRulesSchema,
 	SenderPolicyAddressSchema,
 	SenderPolicyFeedbackSchema,
@@ -85,6 +86,7 @@ import {
 	withoutSpamQuestion,
 	type SenderPolicy,
 } from "./lib/sender-policy";
+import { handleInboundRuleOutbound } from "./lib/rule-outbound";
 import type { Env } from "./types";
 import {
 	defaultMailboxSettings,
@@ -878,6 +880,22 @@ app.put("/api/v1/mailboxes/:mailboxId/sender-policy", async (c: AppContext) => {
 		);
 	} catch (e) {
 		if (isSenderPolicyValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+
+
+/**
+ * Dry-run a rule draft: matched message summaries, no writes, no sends. Same
+ * folder validation as create, so an invalid move target is a 400 here too
+ * instead of a surprise when the rule is saved.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/rules/preview", async (c: AppContext) => {
+	const parsed = PreviewRuleSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: ruleErrorMessage(parsed.error) }, 400);
+	const folderError = await unknownRuleFolder(c.var.mailboxStub, parsed.data.actions);
+	if (folderError) return c.json({ error: folderError }, 400);
+	try {
+		return c.json(await c.var.mailboxStub.previewRule(parsed.data));
+	} catch (e) {
+		if (isRuleValidationError(e)) return c.json({ error: (e as Error).message }, 400);
 		throw e;
 	}
 });
@@ -913,10 +931,6 @@ app.post("/api/v1/mailboxes/:mailboxId/sender-policy/feedback", async (c: AppCon
 		throw e;
 	}
 });
-
-
-
-
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
@@ -1147,6 +1161,17 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	}
 
 
+	// Firing statistics: every rule that acted on this message is counted,
+	// including a discard rule — the message is dropped, but the rule fired.
+	// Best-effort: a stats failure must never block delivery.
+	if (ruleResult.appliedRuleIds.length > 0) {
+		try {
+			await stub.recordRuleFirings(ruleResult.appliedRuleIds);
+		} catch (e) {
+			console.error("Rule stats update failed:", (e as Error).message);
+		}
+	}
+
 	if (ruleResult.discarded) {
 		console.log(`Inbound email discarded by rule(s) for ${mailboxId}: ${ruleResult.appliedRules.join(", ")}`);
 		return;
@@ -1263,6 +1288,10 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		// Rule flags; undefined (no rule matched) leaves the createEmail default.
 		read: ruleResult.mutation.read,
 		starred: ruleResult.mutation.starred,
+		// Which rule acted on this message. The first rule in evaluation order
+		// owns the stamp, mirroring first-write-wins for the mutation.
+		matched_rule_id: ruleResult.appliedRuleIds[0] ?? null,
+		matched_rule_name: ruleResult.appliedRules[0] ?? null,
 	}, attachmentData);
 
 	// Duplicate delivery: this Message-ID is already stored in the mailbox, so
@@ -1278,13 +1307,49 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	}
 
 
+	// Rule-driven outbound actions (forward / auto-reply). Both are skipped
+	// for spam and for discarded messages (a discard rule returned above), and
+	// auto-replies carry their own loop guards. Best-effort: a failed send
+	// must never block delivery, so the report is only logged.
+	const ruleMarkedSpam =
+		destinationFolder === Folders.SPAM ||
+		ruleResult.mutation.category === SPAM_CATEGORY_ID;
+	if (ruleResult.outbound.length > 0) {
+		try {
+			const report = await handleInboundRuleOutbound(
+				env,
+				stub,
+				{
+					mailboxId,
+					sender: (parsedEmail.from?.address || "").toLowerCase(),
+					subject: parsedEmail.subject || "",
+					body: parsedEmail.html || parsedEmail.text || "",
+					rawHeaders: JSON.stringify(parsedEmail.headers),
+				},
+				ruleResult.outbound,
+				isSpam || ruleMarkedSpam
+					? {
+							skip: true,
+							skipReason: "spam: rule outbound actions are skipped",
+						}
+					: {},
+			);
+			for (const attempt of report.attempts) {
+				if (attempt.status === "sent") continue;
+				console.log(
+					`Rule ${attempt.kind} (${attempt.rule_name}) ${attempt.status}: ${attempt.reason ?? ""}`,
+				);
+			}
+		} catch (e) {
+			console.error("Rule outbound action failed:", (e as Error).message);
+		}
+	}
+
+
 	// Do not auto-draft replies to spam: neither AI-classified spam, mail a
 	// rule filed in Spam or stamped with the spam category, nor mail from a
 	// blocked sender (senderDecision.autoDraft). A discard rule has already
 	// returned above.
-	const ruleMarkedSpam =
-		destinationFolder === Folders.SPAM ||
-		ruleResult.mutation.category === SPAM_CATEGORY_ID;
 	if (senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {

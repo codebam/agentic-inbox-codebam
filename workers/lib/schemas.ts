@@ -14,8 +14,11 @@ import { z } from "zod";
 import {
 	hasActiveActions,
 	hasActiveConditions,
+	isRuleEmailAddress,
 	normalizeRuleActions,
 	normalizeRuleConditions,
+	MAX_RULE_ADDRESS_LENGTH,
+	MAX_RULE_AUTO_REPLY_LENGTH,
 	MAX_RULE_CONDITION_LENGTH,
 	MAX_RULE_NAME_LENGTH,
 	MAX_RULE_PRIORITY,
@@ -179,6 +182,28 @@ const RuleActionsSchema = z
 		star: z.boolean().optional(),
 		unstar: z.boolean().optional(),
 		discard: z.boolean().optional(),
+		/**
+		 * Outbound (sends automatically): forward the message to this single
+		 * address. Operator-only — the agent/MCP tool paths strip it.
+		 */
+		forward_to: z
+			.string()
+			.trim()
+			.max(MAX_RULE_ADDRESS_LENGTH)
+			.refine((value) => isRuleEmailAddress(value), {
+				message: "forward_to must be a single email address",
+			})
+			.optional(),
+		/**
+		 * Outbound (sends automatically): auto-reply body sent to the sender.
+		 * Operator-only — the agent/MCP tool paths strip it.
+		 */
+		auto_reply_text: z
+			.string()
+			.trim()
+			.min(1)
+			.max(MAX_RULE_AUTO_REPLY_LENGTH)
+			.optional(),
 	})
 	.refine(
 		(actions) => !(actions.mark_read === true && actions.mark_unread === true),
@@ -244,6 +269,31 @@ export const UpdateRuleSchema = RuleShapeSchema.partial().superRefine(
 export const ReorderRulesSchema = z.object({
 	ids: z.array(z.string().min(1)).min(1).max(200),
 });
+
+
+
+
+/**
+ * Body for POST /rules/preview: a dry-run of the editor's current draft.
+ * `name` is not needed to match anything, and `actions` exist only so the
+ * route can apply the same folder validation as create — the preview never
+ * acts on a message.
+ */
+export const PreviewRuleSchema = z
+	.object({
+		name: z.string().trim().max(MAX_RULE_NAME_LENGTH).optional(),
+		match: RuleMatchSchema,
+		actions: RuleActionsSchema.optional(),
+	})
+	.superRefine((rule, ctx) => {
+		if (!hasActiveConditions(normalizeRuleConditions(rule.match.conditions))) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["match", "conditions"],
+				message: "A rule needs at least one match condition",
+			});
+		}
+	});
 
 
 /**

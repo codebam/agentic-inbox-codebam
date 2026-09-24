@@ -11,6 +11,7 @@ import {
 	Loader,
 	Select,
 	Switch,
+	Textarea,
 	Tooltip,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
@@ -18,23 +19,26 @@ import {
 	ArrowDownIcon,
 	ArrowUpIcon,
 	FunnelIcon,
+	MagnifyingGlassIcon,
 	PencilSimpleIcon,
 	PlusIcon,
 	TrashIcon,
 	WarningCircleIcon,
 } from "@phosphor-icons/react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useParams } from "react-router";
 import {
 	mergeCategorizationCategories,
 	SPAM_CATEGORY_ID,
 } from "shared/categories";
-import type {
-	MailRule,
-	RuleActions,
-	RuleConditions,
-	RuleDraft,
-	RuleMatchMode,
+import {
+	hasOutboundActions,
+	type MailRule,
+	type RuleActions,
+	type RuleConditions,
+	type RuleDraft,
+	type RuleMatchMode,
+	type RulePreviewResult,
 } from "workers/lib/rules";
 import { useGlobalCategorization } from "~/queries/categorization";
 import { useFolders } from "~/queries/folders";
@@ -42,6 +46,7 @@ import { useMailbox } from "~/queries/mailboxes";
 import {
 	useCreateRule,
 	useDeleteRule,
+	usePreviewRule,
 	useReorderRules,
 	useRules,
 	useUpdateRule,
@@ -118,6 +123,10 @@ interface RuleFormState {
 	read: ReadChoice;
 	star: StarChoice;
 	discard: boolean;
+	/** Outbound: matching messages are forwarded to this single address. */
+	forwardTo: string;
+	/** Outbound: auto-reply body sent to the sender (guarded server-side). */
+	autoReplyText: string;
 }
 
 
@@ -136,6 +145,8 @@ const EMPTY_FORM: RuleFormState = {
 	read: "unchanged",
 	star: "unchanged",
 	discard: false,
+	forwardTo: "",
+	autoReplyText: "",
 };
 
 
@@ -175,6 +186,8 @@ function formFromRule(rule: MailRule): RuleFormState {
 					? "unstar"
 					: "unchanged",
 		discard: actions.discard === true,
+		forwardTo: actions.forward_to ?? "",
+		autoReplyText: actions.auto_reply_text ?? "",
 	};
 }
 
@@ -203,6 +216,10 @@ function formToDraft(form: RuleFormState): RuleDraft {
 	if (form.star === "star") actions.star = true;
 	if (form.star === "unstar") actions.unstar = true;
 	if (form.discard) actions.discard = true;
+	const forwardTo = form.forwardTo.trim();
+	if (forwardTo) actions.forward_to = forwardTo;
+	const autoReplyText = form.autoReplyText.trim();
+	if (autoReplyText) actions.auto_reply_text = autoReplyText;
 
 
 	return {
@@ -274,8 +291,99 @@ function actionSummary(
 	if (actions.star === true) parts.push("star");
 	if (actions.unstar === true) parts.push("unstar");
 	if (actions.discard === true) parts.push("discard");
+	if (actions.forward_to) parts.push(`forward to ${actions.forward_to}`);
+	if (actions.auto_reply_text) parts.push("auto-reply");
 	return parts;
 }
+
+
+
+
+/** Short relative time ("2h ago") for firing stats and preview dates. */
+function formatRelativeTime(iso: string): string {
+	const then = Date.parse(iso);
+	if (!Number.isFinite(then)) return iso;
+	const minutes = Math.floor((Date.now() - then) / 60_000);
+	if (minutes < 1) return "just now";
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
+}
+
+
+interface RulePreviewPanelProps {
+	result: RulePreviewResult;
+	/** Optional id -> display name map for the folder column. */
+	folderNames?: Map<string, string>;
+	onClose: () => void;
+}
+
+
+
+
+/**
+ * Dry-run output: what the rule matches right now. Rendered under "Test rule"
+ * in the editor and under a row. A preview never moves, changes, or sends
+ * anything — it only reads stored mail with the live matcher.
+ */
+function RulePreviewPanel({
+	result,
+	folderNames,
+	onClose,
+}: RulePreviewPanelProps) {
+	const matches = result.matches;
+	return (
+		<div className="mt-3 rounded-md border border-kumo-line bg-kumo-recessed p-4">
+			<div className="mb-2 flex items-center justify-between gap-3">
+				<div className="text-xs font-medium text-kumo-strong">
+					Test result — {result.total} matching message
+					{result.total === 1 ? "" : "s"}
+				</div>
+				<Button variant="ghost" size="sm" onClick={onClose}>
+					Close
+				</Button>
+			</div>
+			<p className="mb-3 text-xs text-kumo-subtle">
+				Scanned the {result.scanned} most recent stored message
+				{result.scanned === 1 ? "" : "s"}. Nothing was moved, changed, or sent.
+				{result.total > matches.length
+					? ` Showing the first ${matches.length}.`
+					: ""}
+			</p>
+			{matches.length === 0 ? (
+				<p className="text-xs text-kumo-subtle">
+					No stored message matches these conditions yet.
+				</p>
+			) : (
+				<ul className="max-h-64 space-y-1 overflow-y-auto">
+					{matches.map((match) => (
+						<li
+							key={match.id}
+							className="flex items-baseline justify-between gap-3 rounded border border-kumo-line bg-kumo-base px-3 py-1.5"
+						>
+							<div className="min-w-0">
+								<div className="truncate text-xs font-medium text-kumo-default">
+									{match.subject || "(no subject)"}
+								</div>
+								<div className="truncate text-xs text-kumo-subtle">
+									{match.sender} ·{" "}
+									{folderNames?.get(match.folder_id) ?? match.folder_id}
+								</div>
+							</div>
+							<span className="shrink-0 text-xs text-kumo-subtle">
+								{formatRelativeTime(match.date)}
+							</span>
+						</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+
 
 
 interface RuleRowProps {
@@ -284,13 +392,19 @@ interface RuleRowProps {
 	count: number;
 	isToggling: boolean;
 	isReordering: boolean;
+	isTesting: boolean;
 	folderNames: Map<string, string>;
 	categoryNames: Map<string, string>;
+	/** Rendered inside the row (the "Test rule" results). */
+	previewPanel?: ReactNode;
 	onToggle: (rule: MailRule, enabled: boolean) => void;
 	onMove: (index: number, direction: -1 | 1) => void;
 	onEdit: (rule: MailRule) => void;
 	onDelete: (rule: MailRule) => void;
+	onTest: (rule: MailRule) => void;
 }
+
+
 
 
 function RuleRow({
@@ -299,12 +413,15 @@ function RuleRow({
 	count,
 	isToggling,
 	isReordering,
+	isTesting,
 	folderNames,
 	categoryNames,
+	previewPanel,
 	onToggle,
 	onMove,
 	onEdit,
 	onDelete,
+	onTest,
 }: RuleRowProps) {
 	const conditions = conditionSummary(rule.match?.conditions ?? {});
 	const actions = actionSummary(rule.actions ?? {}, folderNames, categoryNames);
@@ -342,6 +459,17 @@ function RuleRow({
 						{rule.actions?.discard === true && (
 							<Badge variant="warning">Discards mail</Badge>
 						)}
+						{hasOutboundActions(rule.actions ?? {}) && (
+							<Badge variant="warning">Sends mail</Badge>
+						)}
+						{(rule.fired_count ?? 0) > 0 && (
+							<Badge variant="secondary">
+								Fired {rule.fired_count}×
+								{rule.last_fired_at
+									? `, last ${formatRelativeTime(rule.last_fired_at)}`
+									: ""}
+							</Badge>
+						)}
 					</div>
 					<p className="mt-1 text-xs text-kumo-subtle">
 						{conditions.length > 0
@@ -376,6 +504,17 @@ function RuleRow({
 							aria-label={`Move ${rule.name} later`}
 						/>
 					</Tooltip>
+					<Tooltip content="Test rule" asChild>
+						<Button
+							variant="ghost"
+							shape="square"
+							size="sm"
+							icon={<MagnifyingGlassIcon size={16} />}
+							onClick={() => onTest(rule)}
+							disabled={isTesting}
+							aria-label={`Test ${rule.name}`}
+						/>
+					</Tooltip>
 					<Tooltip content="Edit" asChild>
 						<Button
 							variant="ghost"
@@ -398,6 +537,7 @@ function RuleRow({
 					</Tooltip>
 				</div>
 			</div>
+			{previewPanel}
 		</li>
 	);
 }
@@ -405,6 +545,7 @@ function RuleRow({
 
 interface RuleEditorProps {
 	rule: MailRule | null;
+	mailboxId: string;
 	folderItems: SelectItem[];
 	categoryItems: SelectItem[];
 	isSaving: boolean;
@@ -416,6 +557,7 @@ interface RuleEditorProps {
 
 function RuleEditor({
 	rule,
+	mailboxId,
 	folderItems,
 	categoryItems,
 	isSaving,
@@ -427,6 +569,11 @@ function RuleEditor({
 		rule ? formFromRule(rule) : EMPTY_FORM,
 	);
 	const [localError, setLocalError] = useState<string | null>(null);
+	const [previewResult, setPreviewResult] = useState<RulePreviewResult | null>(
+		null,
+	);
+	const [previewError, setPreviewError] = useState<string | null>(null);
+	const previewTest = usePreviewRule();
 
 
 	const update = <K extends keyof RuleFormState>(
@@ -459,6 +606,31 @@ function RuleEditor({
 		}
 		setLocalError(null);
 		onSave(form);
+	};
+
+
+	/**
+	 * "Test rule": dry-run the current form against stored mail. The server
+	 * uses the same matcher as the live pipeline and writes nothing.
+	 */
+	const handleTest = async () => {
+		const validationError = validateForm(form);
+		if (validationError) {
+			setLocalError(validationError);
+			return;
+		}
+		setLocalError(null);
+		setPreviewError(null);
+		try {
+			const result = await previewTest.mutateAsync({
+				mailboxId,
+				draft: formToDraft(form),
+			});
+			setPreviewResult(result);
+		} catch (testError) {
+			setPreviewResult(null);
+			setPreviewError(errorMessage(testError));
+		}
 	};
 
 
@@ -595,6 +767,35 @@ function RuleEditor({
 							size="sm"
 						/>
 					</div>
+					{/* Outbound actions. Both send mail from this mailbox on arrival:
+					    labelled plainly, and skipped for spam and discarded mail. */}
+					<div className="grid gap-3 sm:grid-cols-2">
+						<div>
+							<Input
+								label="Forward to"
+								placeholder="e.g. archive@yourdomain.com"
+								value={form.forwardTo}
+								onChange={(e) => update("forwardTo", e.target.value)}
+							/>
+							<p className="mt-1 text-xs text-kumo-subtle">
+								Sends automatically: matching messages are forwarded to this
+								single address on arrival. Skipped for spam and discarded mail.
+							</p>
+						</div>
+						<div>
+							<Textarea
+								label="Auto-reply"
+								placeholder="e.g. Thanks — I'll get back to you within two working days."
+								value={form.autoReplyText}
+								onChange={(e) => update("autoReplyText", e.target.value)}
+								rows={3}
+							/>
+							<p className="mt-1 text-xs text-kumo-subtle">
+								Sends automatically: the sender gets this reply once per day.
+								Suppressed for bulk/list mail and for your own address.
+							</p>
+						</div>
+					</div>
 					<div>
 						<Switch
 							checked={form.discard}
@@ -617,7 +818,32 @@ function RuleEditor({
 				{shownError && <p className="text-xs text-kumo-danger">{shownError}</p>}
 
 
+				{previewError && (
+					<p className="text-xs text-kumo-danger">{previewError}</p>
+				)}
+
+
+				{previewResult && (
+					<RulePreviewPanel
+						result={previewResult}
+						folderNames={
+							new Map(folderItems.map((item) => [item.value, item.label]))
+						}
+						onClose={() => setPreviewResult(null)}
+					/>
+				)}
+
+
 				<div className="flex justify-end gap-2">
+					<Button
+						variant="secondary"
+						onClick={handleTest}
+						loading={previewTest.isPending}
+						disabled={isSaving}
+						icon={<MagnifyingGlassIcon size={16} />}
+					>
+						Test rule
+					</Button>
 					<Button variant="secondary" onClick={onCancel} disabled={isSaving}>
 						Cancel
 					</Button>
@@ -646,12 +872,18 @@ export default function RulesRoute() {
 	const updateRule = useUpdateRule();
 	const deleteRule = useDeleteRule();
 	const reorderRules = useReorderRules();
+	const previewRule = usePreviewRule();
 
 
 	const [isEditorOpen, setIsEditorOpen] = useState(false);
 	const [editorRule, setEditorRule] = useState<MailRule | null>(null);
 	const [editorError, setEditorError] = useState<string | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<MailRule | null>(null);
+	/** "Test rule" result for one row (rule id -> matches). */
+	const [rowPreview, setRowPreview] = useState<{
+		ruleId: string;
+		result: RulePreviewResult;
+	} | null>(null);
 
 
 	const folderItems = useMemo<SelectItem[]>(
@@ -797,6 +1029,25 @@ export default function RulesRoute() {
 	};
 
 
+	/** Row-level "Test rule": dry-run a stored rule against stored mail. */
+	const handleTestRow = async (rule: MailRule) => {
+		if (!mailboxId) return;
+		try {
+			const result = await previewRule.mutateAsync({
+				mailboxId,
+				draft: { name: rule.name, match: rule.match },
+			});
+			setRowPreview({ ruleId: rule.id, result });
+		} catch (testError) {
+			toastManager.add({
+				title: "Test failed",
+				description: errorMessage(testError),
+				variant: "error",
+			});
+		}
+	};
+
+
 	const togglingRuleId = updateRule.isPending
 		? updateRule.variables?.ruleId
 		: undefined;
@@ -855,7 +1106,8 @@ export default function RulesRoute() {
 				Rules run on arrival, before the AI classifier. Messages a rule handles
 				skip AI categorization, and a rule that discards a message drops it
 				entirely — nothing is stored. Rules run top to bottom; when two rules set
-				the same field, the first one wins.
+				the same field, the first one wins. Rules that forward or auto-reply send
+				mail automatically, and are skipped for spam and discarded messages.
 			</p>
 
 
@@ -863,6 +1115,7 @@ export default function RulesRoute() {
 				<RuleEditor
 					key={editorRule?.id ?? "new"}
 					rule={editorRule}
+					mailboxId={mailboxId ?? ""}
 					folderItems={folderItems}
 					categoryItems={categoryItems}
 					isSaving={createRule.isPending || updateRule.isPending}
@@ -908,6 +1161,17 @@ export default function RulesRoute() {
 							onMove={handleMove}
 							onEdit={openEdit}
 							onDelete={setDeleteTarget}
+							onTest={handleTestRow}
+							isTesting={previewRule.isPending}
+							previewPanel={
+								rowPreview?.ruleId === rule.id ? (
+									<RulePreviewPanel
+										result={rowPreview.result}
+										folderNames={folderNames}
+										onClose={() => setRowPreview(null)}
+									/>
+								) : null
+							}
 						/>
 					))}
 				</ul>

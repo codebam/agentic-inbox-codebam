@@ -14,7 +14,19 @@
  * are reused directly — this module covers the remaining shared operations.
  */
 
+import { z } from "zod";
 import type { EmailFull } from "./schemas";
+import {
+	hasActiveActions,
+	hasOutboundActions,
+	isRuleValidationError,
+	normalizeRuleActions,
+	stripOutboundActions,
+	type MailRule,
+	type RuleActions,
+	type RuleDraft,
+	type RulePatch,
+} from "./rules";
 import {
 	getMailboxStub,
 	getFullEmail,
@@ -917,4 +929,208 @@ export async function toolSendEmail(
 	);
 
 	return { status: "sent", messageId, message: `Email sent to ${params.to}` };
+}
+
+
+// ── Rules (deterministic per-mailbox filters) ──────────────────────
+
+
+/**
+ * Agent/MCP rule tooling.
+ *
+ * Rules are user-configured automation, and an operator-authored rule may send
+ * mail (`forward_to`, `auto_reply_text`). These tools are the only rule write
+ * path the agent and the MCP server have, and they deliberately cannot create,
+ * edit, or enable that automation:
+ *   - outbound actions are stripped from every draft and patch;
+ *   - a stored rule that carries them can never be enabled from here.
+ * The operator's rules settings is the only place that authors them.
+ */
+
+
+/** Message returned whenever a tool had to strip outbound actions. */
+export const RULE_OUTBOUND_ACTIONS_NOTE =
+	"forward_to and auto_reply_text are operator-only: rules created through the agent or MCP tools cannot send mail. Author sending rules in the mailbox's rules settings.";
+
+
+/** Raw input shape shared by the agent and MCP rule tools. */
+export const ruleToolMatchSchema = z.object({
+	mode: z
+		.enum(["all", "any"])
+		.default("all")
+		.describe("'all' = every condition must hold, 'any' = at least one"),
+	conditions: z
+		.object({
+			from_contains: z.string().optional(),
+			to_contains: z.string().optional(),
+			subject_contains: z.string().optional(),
+			body_contains: z.string().optional(),
+			has_attachment: z.boolean().optional(),
+			category_equals: z.string().optional(),
+		})
+		.describe("At least one condition is required, or the rule never matches"),
+});
+
+
+export const ruleToolActionsSchema = z.object({
+	move_to_folder: z.string().optional().describe("Folder id or display name"),
+	set_category: z.string().optional().describe("Category id to stamp"),
+	mark_read: z.boolean().optional(),
+	mark_unread: z.boolean().optional(),
+	star: z.boolean().optional(),
+	unstar: z.boolean().optional(),
+	discard: z.boolean().optional().describe("Drop matching mail entirely"),
+	forward_to: z
+		.string()
+		.optional()
+		.describe("Operator-only: stripped from agent/MCP rule drafts"),
+	auto_reply_text: z
+		.string()
+		.optional()
+		.describe("Operator-only: stripped from agent/MCP rule drafts"),
+});
+
+
+/** Raw input shape for create_rule / update_rule. */
+export const ruleToolDraftShape = {
+	name: z.string().describe("Short human-readable rule name"),
+	enabled: z.boolean().optional().describe("Defaults to true"),
+	priority: z
+		.number()
+		.int()
+		.optional()
+		.describe("Lower runs first; omit to append at the end"),
+	match: ruleToolMatchSchema,
+	actions: ruleToolActionsSchema,
+};
+
+
+export type RuleToolResult =
+	| { rule: MailRule; note?: string; error?: never }
+	| { error: string; note?: string; rule?: never };
+
+
+/** DO methods the rule tools use (RPC stub surface). */
+type MailboxRuleStub = {
+	listRules: () => Promise<MailRule[]>;
+	createRule: (draft: RuleDraft) => Promise<MailRule>;
+	updateRule: (ruleId: string, patch: RulePatch) => Promise<MailRule | null>;
+};
+
+
+function mailboxRuleStub(env: Env, mailboxId: string): MailboxRuleStub {
+	return getMailboxStub(env, mailboxId) as unknown as MailboxRuleStub;
+}
+
+
+/** Strip the outbound actions an agent/MCP draft tried to set. */
+function stripAgentRuleActions(raw: unknown): {
+	actions: RuleActions;
+	stripped: boolean;
+} {
+	const normalized = normalizeRuleActions(raw);
+	return {
+		actions: stripOutboundActions(normalized),
+		stripped: hasOutboundActions(normalized),
+	};
+}
+
+
+export async function toolListRules(env: Env, mailboxId: string) {
+	const rules = await mailboxRuleStub(env, mailboxId).listRules();
+	return {
+		mailboxId,
+		rules: rules.map((rule) => ({
+			id: rule.id,
+			name: rule.name,
+			enabled: rule.enabled,
+			priority: rule.priority,
+			match: rule.match,
+			actions: rule.actions,
+			fired_count: rule.fired_count ?? 0,
+			last_fired_at: rule.last_fired_at ?? null,
+		})),
+		note:
+			"Rules may file, label, star, mark read, or discard mail. Rules that forward or auto-reply are operator-only: they are listed but cannot be created, edited, or enabled through tools.",
+	};
+}
+
+
+export async function toolCreateRule(
+	env: Env,
+	mailboxId: string,
+	draft: RuleDraft,
+): Promise<RuleToolResult> {
+	const { actions, stripped } = stripAgentRuleActions(draft?.actions);
+	if (!hasActiveActions(actions)) {
+		return {
+			error: stripped
+				? RULE_OUTBOUND_ACTIONS_NOTE
+				: "A rule needs at least one action.",
+		};
+	}
+	try {
+		const rule = await mailboxRuleStub(env, mailboxId).createRule({
+			...draft,
+			actions,
+		});
+		return stripped ? { rule, note: RULE_OUTBOUND_ACTIONS_NOTE } : { rule };
+	} catch (e) {
+		if (isRuleValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+
+export async function toolUpdateRule(
+	env: Env,
+	mailboxId: string,
+	ruleId: string,
+	patch: RulePatch,
+): Promise<RuleToolResult> {
+	const stub = mailboxRuleStub(env, mailboxId);
+	const existing = (await stub.listRules()).find((rule) => rule.id === ruleId);
+	if (!existing) return { error: `Rule ${ruleId} not found in ${mailboxId}.` };
+
+	// A rule the operator gave sending powers to is off-limits here: agent/MCP
+	// tooling must not be able to enable it, rewrite its actions, or widen its
+	// conditions (which would send more mail). The single allowed edit is
+	// `enabled: false`, so an agent can still stop noise.
+	if (hasOutboundActions(existing.actions)) {
+		const onlyDisabling =
+			patch.enabled === false &&
+			patch.actions === undefined &&
+			patch.match === undefined &&
+			patch.name === undefined &&
+			patch.priority === undefined;
+		if (!onlyDisabling) {
+			return {
+				error: `Rule "${existing.name}" sends mail automatically (forward or auto-reply). It can only be changed by the operator in the mailbox's rules settings; tools may only pause it (enabled: false).`,
+			};
+		}
+	}
+
+	const next: RulePatch = { ...patch };
+	let stripped = false;
+	if (patch.actions !== undefined) {
+		const result = stripAgentRuleActions(patch.actions);
+		next.actions = result.actions;
+		stripped = result.stripped;
+		if (!hasActiveActions(result.actions)) {
+			return {
+				error: stripped
+					? RULE_OUTBOUND_ACTIONS_NOTE
+					: "A rule needs at least one action.",
+			};
+		}
+	}
+
+	try {
+		const rule = await stub.updateRule(ruleId, next);
+		if (!rule) return { error: `Rule ${ruleId} not found in ${mailboxId}.` };
+		return stripped ? { rule, note: RULE_OUTBOUND_ACTIONS_NOTE } : { rule };
+	} catch (e) {
+		if (isRuleValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
 }

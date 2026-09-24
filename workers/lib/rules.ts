@@ -25,6 +25,12 @@
  *     later rules may still fill in fields it left unset.
  *   - A matching `discard` action stops evaluation: the message is dropped
  *     and no later rule is consulted.
+ *   - Outbound actions (`forward_to`, `auto_reply_text`) are collected, not
+ *     executed: `runRules` stays pure and reports them in `outbound`, and the
+ *     inbound pipeline decides whether to send (spam, discard, and the
+ *     auto-reply loop guards live in workers/lib/rule-outbound.ts). Forward
+ *     targets are de-duplicated case-insensitively, and only the first
+ *     matching rule's auto-reply is kept — one auto-reply per message.
  */
 
 
@@ -39,6 +45,10 @@ export type RuleMatchMode = (typeof RULE_MATCH_MODES)[number];
 export const MAX_RULE_NAME_LENGTH = 120;
 export const MAX_RULE_CONDITION_LENGTH = 500;
 export const MAX_RULE_PRIORITY = 10_000;
+/** Cap for `auto_reply_text`; long enough for a real note, bounded on purpose. */
+export const MAX_RULE_AUTO_REPLY_LENGTH = 2000;
+/** Cap for a `forward_to` address (RFC 5321 practical maximum). */
+export const MAX_RULE_ADDRESS_LENGTH = 320;
 
 
 /**
@@ -129,6 +139,19 @@ export interface RuleActions {
 	unstar?: boolean;
 	/** Drop the message entirely: it is never stored. */
 	discard?: boolean;
+	/**
+	 * Forward the message to this single address. Outbound: the inbound
+	 * pipeline sends it after the message is stored, never for spam or for a
+	 * discarded message. Operator-only — the agent/MCP tool paths strip it.
+	 */
+	forward_to?: string;
+	/**
+	 * Auto-reply body sent to the original sender. Outbound, and subject to
+	 * the loop guards in workers/lib/rule-outbound.ts (Auto-Submitted /
+	 * List-Id / bulk precedence headers, self-sent mail, and one auto-reply
+	 * per sender per day). Operator-only — the agent/MCP tool paths strip it.
+	 */
+	auto_reply_text?: string;
 }
 
 
@@ -141,6 +164,10 @@ export interface MailRule {
 	match: RuleMatchSpec;
 	actions: RuleActions;
 	created_at: string;
+	/** Times the rule acted on an inbound message (absent = never fired). */
+	fired_count?: number;
+	/** ISO timestamp of the last firing, or null when it never fired. */
+	last_fired_at?: string | null;
 }
 
 
@@ -156,6 +183,54 @@ export interface RuleDraft {
 
 /** Wire shape accepted when updating a rule; every field is optional. */
 export type RulePatch = Partial<RuleDraft>;
+
+
+
+
+/** Dry-run bounds: how many recent messages a preview scans and returns. */
+export const RULE_PREVIEW_SCAN_LIMIT = 2000;
+export const RULE_PREVIEW_MAX_MATCHES = 200;
+
+
+
+
+/** One matching message in a preview result. */
+export interface RulePreviewMatch {
+	id: string;
+	subject: string;
+	sender: string;
+	date: string;
+	folder_id: string;
+}
+
+
+
+
+/**
+ * Dry-run result for a rule draft: how many stored messages it matches, plus
+ * the first `limit` summaries. `total` counts matches among the `scanned`
+ * most recent messages; a preview never writes anything.
+ */
+export interface RulePreviewResult {
+	total: number;
+	scanned: number;
+	scan_limit: number;
+	limit: number;
+	matches: RulePreviewMatch[];
+}
+
+
+
+
+/**
+ * Wire shape accepted by the preview endpoint: only the conditions matter, so
+ * `name` is optional and `actions` are ignored (they are validated for folder
+ * targets by the route, never executed).
+ */
+export interface RulePreviewDraft {
+	name?: string;
+	match: RuleMatchSpec;
+}
 
 
 /**
@@ -195,6 +270,25 @@ export interface RuleRunResult {
 	appliedRuleIds: string[];
 	/** Accumulated email mutation. */
 	mutation: RuleEmailMutation;
+	/** Outbound work (forward / auto-reply) the caller may perform. */
+	outbound: RuleOutboundAction[];
+}
+
+
+
+
+/**
+ * One outbound action a matching rule asked for. `runRules` only reports it;
+ * the inbound pipeline performs the send after its spam and loop guards.
+ */
+export interface RuleOutboundAction {
+	kind: "forward" | "auto_reply";
+	rule_id: string;
+	rule_name: string;
+	/** Recipient address (forward only). */
+	to?: string;
+	/** Auto-reply body (auto_reply only). */
+	text?: string;
 }
 
 
@@ -212,6 +306,7 @@ export function emptyRuleRunResult(): RuleRunResult {
 		appliedRules: [],
 		appliedRuleIds: [],
 		mutation: { ...EMPTY_MUTATION },
+		outbound: [],
 	};
 }
 
@@ -260,6 +355,21 @@ export function normalizeRuleMatch(raw: unknown): RuleMatchSpec {
 }
 
 
+/**
+ * Trim auto-reply text, dropping empty strings and enforcing the length cap.
+ * Unlike condition values this keeps internal newlines — it is message body
+ * text, not a needle.
+ */
+function normalizeAutoReplyText(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	return trimmed.slice(0, MAX_RULE_AUTO_REPLY_LENGTH);
+}
+
+
+
+
 /** Turn arbitrary JSON into a bounded action set. */
 export function normalizeRuleActions(raw: unknown): RuleActions {
 	const value =
@@ -277,6 +387,13 @@ export function normalizeRuleActions(raw: unknown): RuleActions {
 	if (typeof value.star === "boolean") actions.star = value.star;
 	if (typeof value.unstar === "boolean") actions.unstar = value.unstar;
 	if (typeof value.discard === "boolean") actions.discard = value.discard;
+	const forwardTo = normalizeConditionValue(value.forward_to);
+	if (forwardTo) {
+		actions.forward_to = forwardTo.slice(0, MAX_RULE_ADDRESS_LENGTH);
+	}
+	const autoReply = normalizeAutoReplyText(value.auto_reply_text);
+	if (autoReply) actions.auto_reply_text = autoReply;
+
 
 	return actions;
 }
@@ -301,8 +418,71 @@ export function hasActiveActions(actions: RuleActions): boolean {
 		actions.mark_unread === true ||
 		actions.star === true ||
 		actions.unstar === true ||
-		actions.discard === true
+		actions.discard === true ||
+		Boolean(actions.forward_to) ||
+		Boolean(actions.auto_reply_text)
 	);
+}
+
+
+
+
+/**
+ * True when the action set would send mail from this mailbox (`forward_to`,
+ * `auto_reply_text`). The inbound pipeline owns execution; agent/MCP tooling
+ * must never store or enable such a rule.
+ */
+export function hasOutboundActions(actions: RuleActions): boolean {
+	return Boolean(actions.forward_to) || Boolean(actions.auto_reply_text);
+}
+
+
+
+
+/**
+ * Copy of the action set with the outbound actions removed. The agent/MCP
+ * tool paths run every inbound draft through this so a rule they create can
+ * only ever shape mail, never send it.
+ */
+export function stripOutboundActions(actions: RuleActions): RuleActions {
+	const { forward_to: _forwardTo, auto_reply_text: _autoReplyText, ...rest } =
+		actions;
+	return rest;
+}
+
+
+
+
+/**
+ * Reject outbound actions outright (agent/MCP tooling). Throws
+ * RuleValidationError so the caller can surface a refusal the model can read.
+ */
+export function forbidOutboundActions(actions: RuleActions): void {
+	if (actions.forward_to) {
+		throw new RuleValidationError(
+			"forward_to is operator-only: rules created through the agent or MCP tools cannot send mail",
+		);
+	}
+	if (actions.auto_reply_text) {
+		throw new RuleValidationError(
+			"auto_reply_text is operator-only: rules created through the agent or MCP tools cannot send mail",
+		);
+	}
+}
+
+
+
+
+/**
+ * Loose single-address test, applied before any outbound send and when a
+ * stored rule is validated. Deliberately strict: one bare address, no display
+ * name, no list, no whitespace.
+ */
+export function isRuleEmailAddress(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const trimmed = value.trim();
+	if (!trimmed || trimmed.length > MAX_RULE_ADDRESS_LENGTH) return false;
+	return /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(trimmed);
 }
 
 
@@ -385,6 +565,9 @@ export function runRules(
 	const appliedRules: string[] = [];
 	const appliedRuleIds: string[] = [];
 	let discarded = false;
+	const outbound: RuleOutboundAction[] = [];
+	const forwardTargets = new Set<string>();
+	let autoReplyTaken = false;
 
 	for (const rule of ordered) {
 		if (!matchRule(rule, email)) continue;
@@ -393,6 +576,33 @@ export function runRules(
 		appliedRuleIds.push(rule.id);
 
 		const actions = rule.actions ?? {};
+
+		// Outbound actions are reported, never executed here: the inbound
+		// pipeline sends them after its own spam/discard/loop guards. Forward
+		// targets are de-duplicated case-insensitively; only the first
+		// matching rule's auto-reply is kept.
+		if (actions.forward_to && isRuleEmailAddress(actions.forward_to)) {
+			const target = actions.forward_to.trim();
+			const key = target.toLowerCase();
+			if (!forwardTargets.has(key)) {
+				forwardTargets.add(key);
+				outbound.push({
+					kind: "forward",
+					rule_id: rule.id,
+					rule_name: rule.name,
+					to: target,
+				});
+			}
+		}
+		if (actions.auto_reply_text && !autoReplyTaken) {
+			autoReplyTaken = true;
+			outbound.push({
+				kind: "auto_reply",
+				rule_id: rule.id,
+				rule_name: rule.name,
+				text: actions.auto_reply_text,
+			});
+		}
 
 		// First write wins: the lowest priority number that sets a field owns it.
 		if (actions.move_to_folder && mutation.folder === undefined) {
@@ -432,5 +642,6 @@ export function runRules(
 		appliedRules,
 		appliedRuleIds,
 		mutation,
+		outbound,
 	};
 }
