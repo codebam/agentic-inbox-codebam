@@ -57,10 +57,10 @@ interface OpenMenu {
 }
 
 /**
- * Dropdown shared by the message toolbar's Snooze and Remind me actions:
- * canned local presets plus a custom date/time. Presets that have slipped
- * into the past are disabled and the custom input refuses past values —
- * the server rejects past timestamps.
+ * Dropdown shared by the message toolbar's Snooze and Remind me actions and
+ * the composer's Send later: canned local presets plus a custom date/time.
+ * Presets that have slipped into the past are disabled and the custom input
+ * refuses past values — the server rejects past timestamps.
  */
 export default function SnoozeMenu({
 	label,
