@@ -281,7 +281,8 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 			if ((mode === "reply" || mode === "reply-all") && originalId) await replyMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
 			else if (mode === "forward" && originalId) await forwardMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
 			else await sendEmailMutation.mutateAsync({ mailboxId, email: emailData });
-			if (draftId) deleteEmailMutation.mutate({ mailboxId, id: draftId });
+			// The sent draft is removed for good, not parked in Trash.
+			if (draftId) deleteEmailMutation.mutate({ mailboxId, id: draftId, permanent: true });
 			toastManager.add({ title: "Email sent!" });
 			onClose();
 		} catch (err: unknown) { const message = (err instanceof Error ? err.message : null) || "Failed to send email."; setError(message); toastManager.add({ title: message, variant: "error" }); }

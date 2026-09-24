@@ -8,6 +8,7 @@ import {
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
 	ArrowLeftIcon,
+	ArrowUUpLeftIcon,
 	ChatCircleIcon,
 	CodeIcon,
 	EnvelopeOpenIcon,
@@ -25,6 +26,8 @@ interface EmailPanelToolbarProps {
 	email: Email;
 	mailboxId?: string;
 	isDraftFolder: boolean;
+	/** The email sits in the Trash folder: delete purges and Restore is offered. */
+	isTrash: boolean;
 	isSending: boolean;
 	moveToFolders: Folder[];
 	lastReceivedMessage?: Email;
@@ -39,12 +42,14 @@ interface EmailPanelToolbarProps {
 	onMove: (folderId: string) => void;
 	onViewSource: () => void;
 	onDelete: () => void;
+	onRestore: () => void;
 }
 
 export default function EmailPanelToolbar({
 	email,
 	mailboxId,
 	isDraftFolder,
+	isTrash,
 	isSending,
 	moveToFolders,
 	onBack,
@@ -58,6 +63,7 @@ export default function EmailPanelToolbar({
 	onMove,
 	onViewSource,
 	onDelete,
+	onRestore,
 }: EmailPanelToolbarProps) {
 	return (
 		<div className="flex items-center gap-1 px-3 py-2 border-b border-kumo-line shrink-0 md:px-4">
@@ -169,14 +175,30 @@ export default function EmailPanelToolbar({
 						aria-label="View source"
 					/>
 				</Tooltip>
-				<Tooltip content="Delete" side="bottom" asChild>
+				{isTrash && (
+					<Tooltip content="Restore to Inbox" side="bottom" asChild>
+						<Button
+							variant="ghost"
+							shape="square"
+							size="sm"
+							icon={<ArrowUUpLeftIcon size={18} />}
+							onClick={onRestore}
+							aria-label="Restore to Inbox"
+						/>
+					</Tooltip>
+				)}
+				<Tooltip
+					content={isTrash ? "Delete forever" : "Move to Trash"}
+					side="bottom"
+					asChild
+				>
 					<Button
 						variant="ghost"
 						shape="square"
 						size="sm"
 						icon={<TrashIcon size={18} />}
 						onClick={onDelete}
-						aria-label="Delete"
+						aria-label={isTrash ? "Delete forever" : "Move to Trash"}
 					/>
 				</Tooltip>
 				<Tooltip content="Close" side="bottom" asChild>

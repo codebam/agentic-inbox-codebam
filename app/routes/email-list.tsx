@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Checkbox, Pagination, Select, Tooltip } from "@cloudflare/kumo";
+import { Button, Checkbox, Pagination, Select, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
@@ -32,6 +32,7 @@ import {
 	useBulkEmailAction,
 	useDeleteEmail,
 	useEmails,
+	useEmptyTrash,
 	useMarkThreadRead,
 	useUpdateEmail,
 } from "~/queries/emails";
@@ -161,6 +162,7 @@ export default function EmailListRoute() {
 		mailboxId: string;
 		folder: string;
 	}>();
+	const isTrashFolder = folder === Folders.TRASH;
 	const {
 		selectedEmailId,
 		isComposing,
@@ -175,6 +177,8 @@ export default function EmailListRoute() {
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
+	const emptyTrash = useEmptyTrash();
+	const toastManager = useKumoToastManager();
 
 	const { data: mailbox } = useMailbox(mailboxId);
 	const { data: globalCategorization } = useGlobalCategorization();
@@ -263,9 +267,29 @@ export default function EmailListRoute() {
 				folderId: options?.folderId,
 			},
 			{
-				onSuccess: () => {
+				onSuccess: (results) => {
+					const counts = { trashed: 0, purged: 0, restored: 0 };
+					for (const result of results ?? []) {
+						counts.trashed += result.trashed ?? 0;
+						counts.purged += result.purged ?? 0;
+						counts.restored += result.restored ?? 0;
+					}
+					if (action === "trash") {
+						toastManager.add({
+							title: `Moved ${counts.trashed} email${counts.trashed === 1 ? "" : "s"} to Trash`,
+						});
+					} else if (action === "restore") {
+						toastManager.add({
+							title: `Restored ${counts.restored} email${counts.restored === 1 ? "" : "s"} to the inbox`,
+						});
+					} else if (action === "delete") {
+						const parts: string[] = [];
+						if (counts.trashed > 0) parts.push(`${counts.trashed} moved to Trash`);
+						if (counts.purged > 0) parts.push(`${counts.purged} deleted forever`);
+						toastManager.add({ title: parts.join(" · ") || "Nothing to delete" });
+					}
 					if (
-						action === "delete" &&
+						(action === "trash" || action === "delete" || action === "restore") &&
 						selectedEmails.some((email) => email.id === selectedEmailId)
 					) {
 						closePanel();
@@ -314,12 +338,44 @@ export default function EmailListRoute() {
 		e.preventDefault();
 		e.stopPropagation();
 		if (mailboxId) {
-			const confirmed = window.confirm("Are you sure you want to delete this email?");
+			const confirmed = window.confirm(
+				isTrashFolder
+					? "Delete this email forever? This cannot be undone."
+					: "Move this email to Trash?",
+			);
 			if (!confirmed) return;
-			deleteEmail.mutate({ mailboxId, id: emailId });
+			deleteEmail.mutate({ mailboxId, id: emailId, permanent: isTrashFolder });
 			if (selectedEmailId === emailId) closePanel();
 		}
 	};
+
+
+	const handleEmptyTrash = () => {
+		if (!mailboxId) return;
+		if (
+			!window.confirm(
+				"Permanently delete every email in Trash? This cannot be undone.",
+			)
+		) {
+			return;
+		}
+		emptyTrash.mutate(
+			{ mailboxId },
+			{
+				onSuccess: ({ purged }) => {
+					toastManager.add({
+						title:
+							purged > 0
+								? `Trash emptied — ${purged} email${purged === 1 ? "" : "s"} deleted forever`
+								: "Trash is already empty",
+					});
+					closePanel();
+					clear();
+				},
+			},
+		);
+	};
+
 
 	const handleRefresh = () => {
 		if (mailboxId) {
@@ -393,6 +449,7 @@ export default function EmailListRoute() {
 							count={selectedCount}
 							isPending={bulkAction.isPending}
 							folders={moveFolders}
+							inTrash={isTrashFolder}
 							onMarkRead={() => runBulkAction("mark_read")}
 							onMarkUnread={() => runBulkAction("mark_unread")}
 							onStar={() => runBulkAction("star")}
@@ -402,9 +459,15 @@ export default function EmailListRoute() {
 							}
 							onSpam={() => runBulkAction("move", { folderId: Folders.SPAM })}
 							onMove={(folderId) => runBulkAction("move", { folderId })}
+							onTrash={() =>
+								runBulkAction("trash", {
+									confirm: `Move ${selectedCount} email${selectedCount === 1 ? "" : "s"} to Trash?`,
+								})
+							}
+							onRestore={() => runBulkAction("restore")}
 							onDelete={() =>
 								runBulkAction("delete", {
-									confirm: `Delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? This cannot be undone.`,
+									confirm: `Permanently delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? This cannot be undone.`,
 								})
 							}
 							onClear={clear}
@@ -441,6 +504,20 @@ export default function EmailListRoute() {
 									<span className="text-sm text-kumo-subtle mr-2 hidden sm:inline">
 										{totalCount} conversation{totalCount !== 1 ? "s" : ""}
 									</span>
+								)}
+								{isTrashFolder && (
+									<Tooltip content="Empty trash" side="bottom" asChild>
+										<Button
+											variant="ghost"
+											size="sm"
+											icon={<TrashIcon size={16} />}
+											onClick={handleEmptyTrash}
+											disabled={emptyTrash.isPending}
+											aria-label="Empty trash"
+										>
+											Empty trash
+										</Button>
+									</Tooltip>
 								)}
 								<Tooltip
 									content={isRefreshing ? "Refreshing..." : "Refresh"}
@@ -602,16 +679,19 @@ export default function EmailListRoute() {
 													aria-label={email.read ? "Mark unread" : "Mark read"}
 												/>
 											</Tooltip>
-											<Tooltip content="Delete" asChild>
-												<Button
-													variant="ghost"
-													shape="square"
-													size="sm"
-													icon={<TrashIcon size={14} />}
-													onClick={(e) => handleDelete(e, email.id)}
-													aria-label="Delete"
-												/>
-											</Tooltip>
+											<Tooltip
+												content={isTrashFolder ? "Delete forever" : "Move to Trash"}
+												asChild
+										>
+											<Button
+												variant="ghost"
+												shape="square"
+												size="sm"
+												icon={<TrashIcon size={14} />}
+												onClick={(e) => handleDelete(e, email.id)}
+												aria-label={isTrashFolder ? "Delete forever" : "Move to Trash"}
+											/>
+										</Tooltip>
 										</div>
 									</div>
 								);
