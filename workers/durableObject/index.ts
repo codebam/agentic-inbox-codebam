@@ -45,6 +45,7 @@ import {
 	type SenderPolicy,
 	type SenderPolicyEntry,
 } from "../lib/sender-policy";
+import type { StorageUsage } from "../lib/quota";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { findDuplicateEmailId, type CreateEmailResult } from "./dedupe";
@@ -3825,6 +3826,31 @@ export class MailboxDO extends DurableObject<Env> {
 			conditions.push(gte(schema.extractedItems.due_at, endIso));
 		}
 		return conditions;
+	}
+
+
+	/**
+	 * The mailbox's storage footprint as the storage route reports it:
+	 * SQLite database bytes, the attachments table's byte total and row
+	 * count, and the email row count. Byte accounting only — the R2
+	 * settings JSON is measured by the route itself (this object cannot
+	 * see R2) and no limit is enforced anywhere.
+	 */
+	getStorageUsage(): Omit<StorageUsage, "mailbox_json_bytes"> {
+		const attachmentRow = [
+			...this.ctx.storage.sql.exec(
+				"SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count FROM attachments",
+			),
+		][0] as { bytes: number; count: number };
+		const emailRow = [
+			...this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM emails"),
+		][0] as { count: number };
+		return {
+			database_bytes: this.ctx.storage.sql.databaseSize,
+			attachment_bytes: attachmentRow.bytes,
+			attachment_count: attachmentRow.count,
+			email_count: emailRow.count,
+		};
 	}
 
 
