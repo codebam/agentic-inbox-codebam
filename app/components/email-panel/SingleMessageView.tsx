@@ -44,6 +44,19 @@ export default function SingleMessageView({
 							{email.envelope_recipient && email.envelope_recipient !== email.recipient && (
 								<div className="text-xs text-kumo-subtle">Delivered to: {email.envelope_recipient}</div>
 							)}
+							{email.delivery_status && (
+								<div
+									className={`truncate text-xs ${
+										email.delivery_status === "failed"
+											? "text-kumo-danger"
+											: "text-kumo-subtle"
+									}`}
+									title={email.delivery_detail ?? undefined}
+								>
+									Delivery: {email.delivery_status}
+									{email.delivery_detail ? ` — ${email.delivery_detail}` : ""}
+								</div>
+							)}
 						</div>
 					</div>
 					<span className="text-xs text-kumo-subtle shrink-0">
