@@ -1686,6 +1686,22 @@ app.get("/api/v1/mailboxes/:mailboxId/digest", async (c: AppContext) => {
 	return c.json({ digest: await c.var.mailboxStub.buildDigest(digestWindow(new Date())) });
 });
 
+// -- Storage usage --------------------------------------------------
+
+/**
+ * The mailbox's storage footprint: SQLite database bytes, attachment
+ * bytes/count, stored message count and the size of the mailbox's settings
+ * JSON in R2. Read-only — nothing is cached and no limit is enforced.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/storage", async (c: AppContext) => {
+	const mailboxId = decodeURIComponent(c.req.param("mailboxId")!);
+	const usage = await c.var.mailboxStub.getStorageUsage();
+	const settingsObject = await c.env.BUCKET.head(`mailboxes/${mailboxId}.json`);
+	return c.json({
+		storage: { ...usage, mailbox_json_bytes: settingsObject?.size ?? 0 },
+	});
+});
+
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
