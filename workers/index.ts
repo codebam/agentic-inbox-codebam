@@ -2270,18 +2270,18 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// so a redelivered DSN never re-applies. The DSN itself is stored as
 	// ordinary mail either way: the apply step is in addition to storage, and
 	// no fetch, send or body read happens here.
-	const deliveryReport = extractDeliveryReport(parsedEmail, extractMsgId);
-	if (deliveryReport) {
-		try {
+	try {
+		const deliveryReport = extractDeliveryReport(parsedEmail, extractMsgId);
+		if (deliveryReport) {
 			const applied = await stub.applyDeliveryReport(deliveryReport);
 			console.log(
 				applied
 					? `Delivery report recorded for ${mailboxId}: ${deliveryReport.status} for ${deliveryReport.finalRecipient ?? "unknown recipient"} (message_id ${deliveryReport.originalMessageId})`
 					: `Delivery report matched no Sent copy for ${mailboxId}: message_id ${deliveryReport.originalMessageId ?? "missing"}`,
 			);
-		} catch (e) {
-			console.error("Delivery report apply failed:", (e as Error).message);
 		}
+	} catch (e) {
+		console.error("Delivery report handling failed:", (e as Error).message);
 	}
 
 
