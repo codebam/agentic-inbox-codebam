@@ -1785,6 +1785,169 @@ export interface InboundEmailEvent {
 	readonly to?: string;
 }
 
+/** The delivery outcome a bounce/DSN reports for one of the mailbox's Sent copies. */
+interface DeliveryReport {
+	originalMessageId: string | null;
+	status: "failed" | "delayed" | "delivered";
+	detail: string | null;
+	/** The Final-Recipient field, logged only — the schema stores no recipient column. */
+	finalRecipient: string | null;
+}
+
+/** The shape `new PostalMime().parse(...)` resolves to in receiveEmail. */
+type ParsedMail = Awaited<ReturnType<typeof PostalMime.parse>>;
+
+/** The delivery-status part's mime type, and the parts that can carry the original. */
+const DELIVERY_STATUS_MIME_TYPE = "message/delivery-status";
+const DELIVERY_ORIGINAL_MIME_TYPES = new Set(["message/rfc822", "text/rfc822-headers"]);
+/** Hard bound on the stored detail; delivery_detail is operator-facing text. */
+const MAX_DELIVERY_DETAIL_LENGTH = 500;
+
+/** Decode a postal-mime attachment body — measured as an ArrayBuffer for report parts. */
+function deliveryPartText(content: ArrayBuffer | Uint8Array | string): string {
+	if (typeof content === "string") return content;
+	return new TextDecoder().decode(content);
+}
+
+/**
+ * The `Field-Name: value` pairs of one delivery-status section (RFC 3464),
+ * keys lowercased, folded continuation lines joined into their value.
+ */
+function deliveryStatusFields(section: string): Map<string, string> {
+	const fields = new Map<string, string>();
+	let lastKey: string | null = null;
+	for (const line of section.split(/\r?\n/)) {
+		if (/^[ \t]/.test(line)) {
+			if (lastKey) fields.set(lastKey, `${fields.get(lastKey) ?? ""} ${line.trim()}`.trim());
+			continue;
+		}
+		const colon = line.indexOf(":");
+		if (colon <= 0) {
+			lastKey = null;
+			continue;
+		}
+		lastKey = line.slice(0, colon).trim().toLowerCase();
+		if (!lastKey) continue;
+		if (!fields.has(lastKey)) fields.set(lastKey, line.slice(colon + 1).trim());
+	}
+	return fields;
+}
+
+/**
+ * The recipient fields of a delivery-status part: the first blank-line
+ * separated section naming an outcome. The leading section carries the
+ * per-message fields (Reporting-MTA, Arrival-Date), not the outcome.
+ */
+function deliveryStatusOutcomeFields(text: string): Map<string, string> {
+	const sections = text.split(/\r?\n\r?\n+/).map(deliveryStatusFields);
+	return sections.find((fields) => fields.has("action") || fields.has("status")) ?? new Map<string, string>();
+}
+
+/**
+ * Map a report onto the three recorded outcomes. The Action field decides
+ * first; the enhanced status code's first digit is the fallback (5.x.x is a
+ * permanent failure, 4.x.x a delay). Null — mail that names no outcome at
+ * all is not a delivery report and stays plain mail.
+ */
+function deliveryOutcome(fields: Map<string, string>): DeliveryReport["status"] | null {
+	const action = (fields.get("action") ?? "").trim().toLowerCase();
+	const status = (fields.get("status") ?? "").trim();
+	if (action === "failed" || status.startsWith("5")) return "failed";
+	if (action === "delayed" || status.startsWith("4")) return "delayed";
+	if (action === "delivered" || action === "relayed") return "delivered";
+	return null;
+}
+
+/**
+ * The operator-facing detail: the Diagnostic-Code with its reporting type
+ * (`smtp;`) stripped, else the Status field — whitespace-normalized and
+ * hard-bounded, shaped like `550 5.1.1 Mailbox unavailable`.
+ */
+function deliveryDetail(fields: Map<string, string>): string | null {
+	const diagnostic = (fields.get("diagnostic-code") ?? "").trim();
+	const status = (fields.get("status") ?? "").trim();
+	const withoutType = diagnostic.replace(/^[A-Za-z][A-Za-z0-9-]*\s*;\s*/, "");
+	const text = (withoutType || status).replace(/\s+/g, " ").trim();
+	return text.length > 0 ? text.slice(0, MAX_DELIVERY_DETAIL_LENGTH) : null;
+}
+
+/**
+ * One header value out of a raw header block, folded lines unfolded. The
+ * embedded `message/rfc822` / `text/rfc822-headers` part arrives verbatim
+ * (measured: ArrayBuffer content, its headers included), so the Message-ID
+ * it names is read from that text rather than re-parsed.
+ */
+function rawHeaderValue(raw: string, name: string): string | null {
+	const target = name.toLowerCase();
+	const block = raw.split(/\r?\n\r?\n/, 1)[0] ?? "";
+	let value: string | null = null;
+	for (const line of block.split(/\r?\n/)) {
+		if (/^[ \t]/.test(line)) {
+			if (value !== null) value += ` ${line.trim()}`;
+			continue;
+		}
+		if (value !== null) break;
+		const colon = line.indexOf(":");
+		if (colon <= 0) continue;
+		if (line.slice(0, colon).trim().toLowerCase() !== target) continue;
+		value = line.slice(colon + 1).trim();
+	}
+	return value && value.length > 0 ? value.replace(/\s+/g, " ") : null;
+}
+
+/**
+ * Read a delivery-status notification (RFC 3464) out of a parsed message.
+ *
+ * Detection: the top-level Content-Type names `multipart/report` (postal-mime
+ * lowercases header keys) or a part carries the `message/delivery-status`
+ * mime type. Measured postal-mime output: the delivery-status and
+ * embedded-message parts both surface as attachments with a null filename,
+ * a null disposition and an ArrayBuffer body.
+ *
+ * The original message is identified from the embedded `message/rfc822` /
+ * `text/rfc822-headers` part's Message-ID first, then the report's own
+ * In-Reply-To, then its first References entry — every candidate goes
+ * through the shared extractMsgId helper, so brackets are stripped once.
+ *
+ * Null for mail that is not a report, or that names no mapped outcome (a
+ * multipart/report read receipt, say): the caller leaves it as plain mail.
+ */
+function extractDeliveryReport(
+	parsed: ParsedMail,
+	extractMsgId: (value: string) => string | undefined,
+): DeliveryReport | null {
+	const contentTypes = parsed.headers
+		.filter((header) => header.key.toLowerCase() === "content-type")
+		.map((header) => header.value.toLowerCase())
+		.join(" ");
+	const statusPart = parsed.attachments.find(
+		(att) => att.mimeType.trim().toLowerCase() === DELIVERY_STATUS_MIME_TYPE,
+	);
+	if (!contentTypes.includes("multipart/report") && !statusPart) return null;
+	if (!statusPart) return null;
+
+	const fields = deliveryStatusOutcomeFields(deliveryPartText(statusPart.content));
+	const status = deliveryOutcome(fields);
+	if (!status) return null;
+
+	const originalPart = parsed.attachments.find((att) =>
+		DELIVERY_ORIGINAL_MIME_TYPES.has(att.mimeType.trim().toLowerCase()),
+	);
+	const candidates = [
+		originalPart ? rawHeaderValue(deliveryPartText(originalPart.content), "message-id") : null,
+		parsed.inReplyTo ?? null,
+		(parsed.references ?? "").split(/\s+/).filter(Boolean)[0] ?? null,
+	];
+	const original = candidates.find((value) => value !== null && value.trim().length > 0) ?? null;
+
+	return {
+		originalMessageId: original === null ? null : (extractMsgId(original) ?? null),
+		status,
+		detail: deliveryDetail(fields),
+		finalRecipient: fields.get("final-recipient")?.trim() || null,
+	};
+}
+
 async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	const parsedEmail = await new PostalMime().parse(rawEmail);
@@ -2099,6 +2262,26 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			`Skipping duplicate inbound email for ${mailboxId}: message_id ${originalMessageId} already stored as ${createResult.id}`,
 		);
 		return;
+	}
+
+	// Bounce/DSN bookkeeping: a delivery-status notification for one of this
+	// mailbox's Sent messages records its outcome on that copy. Best-effort —
+	// a failure only logs — and deliberately AFTER the duplicate check above,
+	// so a redelivered DSN never re-applies. The DSN itself is stored as
+	// ordinary mail either way: the apply step is in addition to storage, and
+	// no fetch, send or body read happens here.
+	try {
+		const deliveryReport = extractDeliveryReport(parsedEmail, extractMsgId);
+		if (deliveryReport) {
+			const applied = await stub.applyDeliveryReport(deliveryReport);
+			console.log(
+				applied
+					? `Delivery report recorded for ${mailboxId}: ${deliveryReport.status} for ${deliveryReport.finalRecipient ?? "unknown recipient"} (message_id ${deliveryReport.originalMessageId})`
+					: `Delivery report matched no Sent copy for ${mailboxId}: message_id ${deliveryReport.originalMessageId ?? "missing"}`,
+			);
+		}
+	} catch (e) {
+		console.error("Delivery report handling failed:", (e as Error).message);
 	}
 
 

@@ -524,4 +524,18 @@ export const mailboxMigrations: Migration[] = [
                 ON extracted_items(email_id);
         `),
 	},
+	{
+		// Bounce/DSN outcomes (workers/index.ts receiveEmail): the delivery
+		// status a delivery-status notification reported for one of this
+		// mailbox's Sent messages, the bounded operator-facing detail, and
+		// when it was recorded. All three stay NULL until a report matches;
+		// a report that matches nothing writes nothing. Bookkeeping only —
+		// never message content.
+		name: "27_add_delivery_status",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN delivery_status TEXT;
+            ALTER TABLE emails ADD COLUMN delivery_detail TEXT;
+            ALTER TABLE emails ADD COLUMN delivery_updated_at TEXT;
+        `),
+	},
 ];

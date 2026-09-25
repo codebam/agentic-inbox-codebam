@@ -959,6 +959,45 @@ export class MailboxDO extends DurableObject<Env> {
 		return emailAttachments;
 	}
 
+	/**
+	 * Bounce/DSN bookkeeping (workers/index.ts receiveEmail): record the
+	 * delivery outcome a delivery-status notification reports for one of
+	 * this mailbox's Sent messages. Matches `message_id` among Sent copies
+	 * only — the folders table stores display names, so the lookup uses the
+	 * name-or-id fallback — and updates the newest matching row. A report
+	 * with no original id, or one that matches nothing, is a silent no-op
+	 * (false): the DSN itself is stored as ordinary mail either way.
+	 */
+	applyDeliveryReport(report: {
+		originalMessageId: string | null;
+		status: "failed" | "delayed" | "delivered";
+		detail: string | null;
+	}): boolean {
+		const originalMessageId = report.originalMessageId?.trim();
+		if (!originalMessageId) return false;
+
+		const match = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id FROM emails
+				 WHERE message_id = ?
+				   AND folder_id = (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
+				 ORDER BY date DESC, id DESC
+				 LIMIT 1`,
+				originalMessageId,
+			),
+		][0] as { id: string } | undefined;
+		if (!match) return false;
+
+		this.ctx.storage.sql.exec(
+			`UPDATE emails SET delivery_status = ?, delivery_detail = ?, delivery_updated_at = ? WHERE id = ?`,
+			report.status,
+			report.detail,
+			new Date().toISOString(),
+			match.id,
+		);
+		return true;
+	}
+
 	getAttachment(id: string) {
 		return (
 			this.db

@@ -114,6 +114,12 @@ export interface Email {
 	list_unsubscribe_post?: string | null;
 	/** ISO 8601 time the user unsubscribed through the message panel. */
 	unsubscribed_at?: string | null;
+	/** Delivery outcome a bounce/DSN reported for this Sent copy; NULL until one arrives. */
+	delivery_status?: string | null;
+	/** Bounded, whitespace-normalized detail of that report, e.g. "550 5.1.1 Mailbox unavailable". */
+	delivery_detail?: string | null;
+	/** ISO 8601 time the delivery outcome was recorded. */
+	delivery_updated_at?: string | null;
 	// Present in the aggregated All Accounts list so each row knows which
 	// mailbox it belongs to.
 	mailboxId?: string;
