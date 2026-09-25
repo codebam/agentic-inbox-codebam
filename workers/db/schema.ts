@@ -55,6 +55,12 @@ export const emails = sqliteTable("emails", {
 	list_unsubscribe_post: text("list_unsubscribe_post"),
 	/** When this mailbox completed a one-click unsubscribe for this message; NULL until then. */
 	unsubscribed_at: text("unsubscribed_at"),
+	/** Delivery outcome a bounce/DSN reported for this Sent copy (migration 27); NULL until one arrives. */
+	delivery_status: text("delivery_status"),
+	/** Bounded, whitespace-normalized detail of that report (status code plus diagnostic text). */
+	delivery_detail: text("delivery_detail"),
+	/** ISO 8601 time the delivery outcome was recorded. */
+	delivery_updated_at: text("delivery_updated_at"),
 });
 
 
