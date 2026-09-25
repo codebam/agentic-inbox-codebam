@@ -1840,7 +1840,7 @@ function deliveryStatusFields(section: string): Map<string, string> {
  */
 function deliveryStatusOutcomeFields(text: string): Map<string, string> {
 	const sections = text.split(/\r?\n\r?\n+/).map(deliveryStatusFields);
-	return sections.find((fields) => fields.has("action") || fields.has("status")) ?? new Map();
+	return sections.find((fields) => fields.has("action") || fields.has("status")) ?? new Map<string, string>();
 }
 
 /**
