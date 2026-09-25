@@ -424,12 +424,19 @@ type CountEmailsOptions = NonNullable<Parameters<MailboxDO["countEmails"]>[0]>;
 /** Columns MailboxDO.getEmails can order by. */
 type SortColumn = NonNullable<GetEmailsOptions["sortColumn"]>;
 
+/** The stream names a folder list can be split by, as the Durable Object declares them. */
+type EmailStream = NonNullable<GetEmailsOptions["stream"]>;
+
+/** Priority/other conversation counts, as MailboxDO.countThreadedStreams returns them. */
+type StreamCounts = Awaited<ReturnType<MailboxDO["countThreadedStreams"]>>;
+
 /** The list RPCs the email routes call. */
 type MailboxEmailsStub = {
 	getEmails: (options: GetEmailsOptions) => Promise<MailboxEmailRow[]>;
 	countEmails: (options: CountEmailsOptions) => Promise<number>;
 	getThreadedEmails: (options: GetEmailsOptions) => Promise<MailboxEmailRow[]>;
-	countThreadedEmails: (folder: string, category?: string) => Promise<number>;
+	countThreadedEmails: (folder: string, category?: string, stream?: EmailStream) => Promise<number>;
+	countThreadedStreams: (folder: string, category?: string) => Promise<StreamCounts>;
 };
 
 /** One email of a thread: the row MailboxDO.getEmail returns. */
@@ -622,13 +629,22 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	// own allowlist and falls back to "date".
 	const sortColumn = (c.req.query("sortColumn") ?? "date") as SortColumn;
 	const sortDirection = c.req.query("sortDirection") as "ASC" | "DESC" | undefined;
+	// Validated against the two stream names; anything else — including no
+	// param at all — means "no stream", the whole folder list.
+	const streamQuery = c.req.query("stream");
+	const stream =
+		streamQuery === "priority" || streamQuery === "other"
+			? streamQuery
+			: undefined;
 	const stub = c.var.mailboxStub as unknown as MailboxEmailsStub;
 
 	if (threaded && folder) {
-		const emails = await stub.getThreadedEmails({ folder, category, page, limit });
-		const totalCount = await stub.countThreadedEmails(folder, category);
-		return c.json({ emails, totalCount });
+		const emails = await stub.getThreadedEmails({ folder, category, page, limit, stream });
+		const totalCount = await stub.countThreadedEmails(folder, category, stream);
+		const streamCounts = await stub.countThreadedStreams(folder, category);
+		return c.json({ emails, totalCount, streamCounts });
 	}
+
 	const emails = await stub.getEmails({ folder, thread_id, category, page, limit, sortColumn, sortDirection });
 	if (folder) {
 		const totalCount = await stub.countEmails({ folder, thread_id, category });

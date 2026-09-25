@@ -11,9 +11,20 @@ import { queryKeys } from "./keys";
 
 // ---------- Types ----------
 
+/** The priority streams a folder list can be split into. */
+export type EmailStream = "priority" | "other";
+
+/** Priority/other conversation counts for a threaded folder list. */
+export interface StreamCounts {
+	priority: number;
+	other: number;
+}
+
 interface EmailListResponse {
 	emails: Email[];
 	totalCount: number;
+	/** Present on threaded folder lists; absent from aggregate/detail queries. */
+	streamCounts?: StreamCounts;
 }
 
 /**
@@ -46,9 +57,13 @@ export function useEmails(
 		queryFn: async () => {
 			const data = await api.listEmails(mailboxId!, queryParams);
 			if (data && typeof data === "object" && "emails" in data) {
+				// The service's response type predates streamCounts; the list
+				// route adds it for threaded folder queries.
+				const response = data as EmailListResponse;
 				return {
-					emails: data.emails ?? [],
-					totalCount: data.totalCount ?? 0,
+					emails: response.emails ?? [],
+					totalCount: response.totalCount ?? 0,
+					...(response.streamCounts ? { streamCounts: response.streamCounts } : {}),
 				};
 			}
 			const arr = Array.isArray(data) ? data : [];

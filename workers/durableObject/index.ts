@@ -321,12 +321,16 @@ interface SearchFilterOptions {
 	has_attachment?: boolean;
 }
 
+/** The priority streams a folder list can be split into. */
+type EmailStream = "priority" | "other";
+
 interface GetEmailsOptions {
 	folder?: string | undefined;
 	thread_id?: string | undefined;
 	category?: string | undefined;
 	page?: number | undefined;
 	limit?: number | undefined;
+	stream?: EmailStream | undefined;
 	sortColumn?: SortColumn;
 	sortDirection?: "ASC" | "DESC" | undefined;
 }
@@ -419,6 +423,112 @@ interface AgentActionState {
 	read?: unknown;
 	starred?: unknown;
 	folder_id?: unknown;
+}
+
+/**
+ * The threaded list's needs-reply expression, kept in one place: the
+ * conversation's newest message anywhere is not in Sent or Draft and the
+ * conversation holds at least one read message. The row's own `needs_reply`
+ * field and the priority stream membership both read this fragment, so the
+ * two can never drift.
+ */
+const NEEDS_REPLY_SQL = `CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
+	AND lmc.folder_id != (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1)
+	AND cs.thread_read_count > 0
+	THEN 1 ELSE 0 END`;
+
+/**
+ * Priority stream membership, over a relation that carries the newest
+ * in-folder message's `read`/`starred` flags and its computed `needs_reply`:
+ * unread, starred, or awaiting a reply. `other` is its complement. The list
+ * filter and the stream counts share this fragment.
+ */
+const PRIORITY_STREAM_SQL = "(read = 0 OR starred = 1 OR needs_reply = 1)";
+
+/**
+ * The WHERE fragment that narrows a streamed relation to one stream, or ""
+ * when no stream was asked for. `indent` is the tab depth of the caller's
+ * SQL block, so the fragment lands on its own line.
+ */
+function streamFilterSql(stream: EmailStream | undefined, indent: string): string {
+	if (stream === "priority") return `\n${indent}WHERE ${PRIORITY_STREAM_SQL}`;
+	if (stream === "other") return `\n${indent}WHERE NOT ${PRIORITY_STREAM_SQL}`;
+	return "";
+}
+
+/**
+ * The conversation derivation the threaded list and the stream counts share:
+ * `latest_in_folder` holds the folder's newest message per conversation,
+ * `conversation_stats` the per-conversation aggregates (`thread_read_count`,
+ * `has_draft`) and `latest_message_per_conversation` the newest message of
+ * each conversation anywhere in the mailbox. One row per conversation once
+ * `rn = 1` is applied. Bindings: ?1 is the folder (name or id); whatever
+ * `categoryClause` adds follows the caller's numbering.
+ */
+function threadedConversationCtes(categoryClause: string): string {
+	return `WITH
+	folder_emails AS (
+		SELECT *,
+			COALESCE(thread_id, id) as raw_thread_id,
+			${NORMALIZED_SUBJECT_SQL} as normalized_subject
+		FROM emails
+		WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+		${categoryClause}
+	),
+	thread_to_conversation AS (
+		SELECT
+			raw_thread_id,
+			normalized_subject,
+			CASE
+				WHEN thread_id IS NOT NULL THEN raw_thread_id
+				ELSE MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
+			END as conversation_id
+		FROM folder_emails
+		GROUP BY raw_thread_id, normalized_subject, thread_id
+	),
+	all_emails_with_conversation AS (
+		SELECT
+			e.*,
+			COALESCE(tc.conversation_id, COALESCE(e.thread_id, e.id)) as conversation_id
+		FROM emails e
+		LEFT JOIN thread_to_conversation tc
+			ON COALESCE(e.thread_id, e.id) = tc.raw_thread_id
+	),
+	conversation_stats AS (
+		SELECT
+			conversation_id,
+			COUNT(*) as thread_count,
+			SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
+			SUM(CASE WHEN read = 1 THEN 1 ELSE 0 END) as thread_read_count,
+			GROUP_CONCAT(DISTINCT sender) as participants,
+			SUM(CASE WHEN folder_id = (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1) THEN 1 ELSE 0 END) as has_draft
+		FROM all_emails_with_conversation
+		WHERE conversation_id IN (
+			SELECT DISTINCT conversation_id FROM all_emails_with_conversation
+			WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+		)
+		GROUP BY conversation_id
+	),
+	latest_message_per_conversation AS (
+		SELECT
+			conversation_id,
+			folder_id,
+			ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY date DESC) as rn
+		FROM all_emails_with_conversation
+	),
+	latest_in_folder AS (
+		SELECT
+			fe.*,
+			COALESCE(tc.conversation_id, fe.raw_thread_id) as conversation_id,
+			ROW_NUMBER() OVER (
+				PARTITION BY COALESCE(tc.conversation_id, fe.raw_thread_id)
+				ORDER BY fe.date DESC
+			) as rn
+		FROM folder_emails fe
+		LEFT JOIN thread_to_conversation tc
+			ON fe.raw_thread_id = tc.raw_thread_id
+	)
+	`;
 }
 
 export class MailboxDO extends DurableObject<Env> {
@@ -599,6 +709,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const {
 			folder,
 			category,
+			stream,
 			page = 1,
 			limit: rawLimit = 25,
 		} = options;
@@ -621,6 +732,9 @@ export class MailboxDO extends DurableObject<Env> {
 		//   2. Fallback: group by normalized subject (strips Re:/Fwd:/FW: prefixes)
 		//      for legacy emails that lack threading headers (thread_id IS NULL).
 		const isDraftFolder = folder === Folders.DRAFT;
+		// Draft groups are keyed by the draft they reply to rather than by
+		// conversation and carry no conversation stats, so `stream` does not
+		// apply to them: the draft list is always the whole list.
 		const categoryClause = category ? "AND category = ?4" : "";
 		const categoryArgs: (string | number)[] = category
 			? [folder, limit, offset, category]
@@ -681,87 +795,27 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 
 		// Non-draft folders: full threading logic
+		const streamFilter = streamFilterSql(stream, "\t\t\t");
 		const result = this.ctx.storage.sql.exec(
-			`WITH
-			folder_emails AS (
-				SELECT *,
-					COALESCE(thread_id, id) as raw_thread_id,
-					${NORMALIZED_SUBJECT_SQL} as normalized_subject
-				FROM emails
-				WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-				${categoryClause}
-			),
-			thread_to_conversation AS (
+			`${threadedConversationCtes(categoryClause)},
+			threaded AS (
 				SELECT
-					raw_thread_id,
-					normalized_subject,
-					CASE
-						WHEN thread_id IS NOT NULL THEN raw_thread_id
-						ELSE MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
-					END as conversation_id
-				FROM folder_emails
-				GROUP BY raw_thread_id, normalized_subject, thread_id
-			),
-			all_emails_with_conversation AS (
-				SELECT
-					e.*,
-					COALESCE(tc.conversation_id, COALESCE(e.thread_id, e.id)) as conversation_id
-				FROM emails e
-				LEFT JOIN thread_to_conversation tc
-					ON COALESCE(e.thread_id, e.id) = tc.raw_thread_id
-			),
-			conversation_stats AS (
-				SELECT
-					conversation_id,
-					COUNT(*) as thread_count,
-					SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
-					SUM(CASE WHEN read = 1 THEN 1 ELSE 0 END) as thread_read_count,
-					GROUP_CONCAT(DISTINCT sender) as participants,
-					SUM(CASE WHEN folder_id = (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1) THEN 1 ELSE 0 END) as has_draft
-				FROM all_emails_with_conversation
-				WHERE conversation_id IN (
-					SELECT DISTINCT conversation_id FROM all_emails_with_conversation
-					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-				)
-				GROUP BY conversation_id
-			),
-			latest_message_per_conversation AS (
-				SELECT
-					conversation_id,
-					folder_id,
-					ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY date DESC) as rn
-				FROM all_emails_with_conversation
-			),
-			latest_in_folder AS (
-				SELECT
-					fe.*,
-					COALESCE(tc.conversation_id, fe.raw_thread_id) as conversation_id,
-					ROW_NUMBER() OVER (
-						PARTITION BY COALESCE(tc.conversation_id, fe.raw_thread_id)
-						ORDER BY fe.date DESC
-					) as rn
-				FROM folder_emails fe
-				LEFT JOIN thread_to_conversation tc
-					ON fe.raw_thread_id = tc.raw_thread_id
+					lif.id, lif.subject, lif.sender, lif.recipient, lif.envelope_recipient, lif.date,
+					lif.read, lif.starred, lif.thread_id, lif.folder_id,
+					lif.in_reply_to, lif.email_references,
+					lif.category, lif.category_confidence,
+					SUBSTR(lif.body, 1, 300) as snippet,
+					cs.thread_count, cs.thread_unread_count, cs.participants,
+					${NEEDS_REPLY_SQL} as needs_reply,
+					CASE WHEN cs.has_draft > 0 THEN 1 ELSE 0 END as has_draft
+				FROM latest_in_folder lif
+				JOIN conversation_stats cs ON lif.conversation_id = cs.conversation_id
+				LEFT JOIN latest_message_per_conversation lmc
+					ON lmc.conversation_id = lif.conversation_id AND lmc.rn = 1
+				WHERE lif.rn = 1
 			)
-			SELECT
-				lif.id, lif.subject, lif.sender, lif.recipient, lif.envelope_recipient, lif.date,
-				lif.read, lif.starred, lif.thread_id, lif.folder_id,
-				lif.in_reply_to, lif.email_references,
-				lif.category, lif.category_confidence,
-				SUBSTR(lif.body, 1, 300) as snippet,
-				cs.thread_count, cs.thread_unread_count, cs.participants,
-				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
-					AND lmc.folder_id != (SELECT id FROM folders WHERE name = 'draft' OR id = 'draft' LIMIT 1)
-					AND cs.thread_read_count > 0
-					THEN 1 ELSE 0 END as needs_reply,
-				CASE WHEN cs.has_draft > 0 THEN 1 ELSE 0 END as has_draft
-			FROM latest_in_folder lif
-			JOIN conversation_stats cs ON lif.conversation_id = cs.conversation_id
-			LEFT JOIN latest_message_per_conversation lmc
-				ON lmc.conversation_id = lif.conversation_id AND lmc.rn = 1
-			WHERE lif.rn = 1
-			ORDER BY lif.date DESC
+			SELECT * FROM threaded${streamFilter}
+			ORDER BY date DESC
 			LIMIT ?2 OFFSET ?3`,
 			...categoryArgs
 		);
@@ -781,9 +835,11 @@ export class MailboxDO extends DurableObject<Env> {
 
 	/**
 	 * Count threaded conversations in a folder (for pagination).
-	 * Returns the number of conversation groups, not individual emails.
+	 * Returns the number of conversation groups, not individual emails. With
+	 * a `stream`, counts the conversations that stream holds — the same rows
+	 * getThreadedEmails returns for it.
 	 */
-	countThreadedEmails(folder: string, category?: string) {
+	countThreadedEmails(folder: string, category?: string, stream?: EmailStream) {
 		const isDraftFolder = folder === Folders.DRAFT;
 		const categoryClause = category ? "AND category = ?2" : "";
 		const countArgs: (string | number)[] = category
@@ -791,6 +847,9 @@ export class MailboxDO extends DurableObject<Env> {
 			: [folder];
 
 		if (isDraftFolder) {
+			// Draft groups are keyed by the draft they reply to rather than by
+			// conversation and carry no conversation stats, so a stream does
+			// not apply: the count is always the whole draft list.
 			const row = [
 				...this.ctx.storage.sql.exec(
 					`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
@@ -803,35 +862,68 @@ export class MailboxDO extends DurableObject<Env> {
 			return row?.total ?? 0;
 		}
 
+		const streamFilter = streamFilterSql(stream, "\t\t\t\t");
 		const row = [
 			...this.ctx.storage.sql.exec(
-				`WITH
-				folder_emails AS (
+				`${threadedConversationCtes(categoryClause)},
+				conversation_rows AS (
 					SELECT
-						COALESCE(thread_id, id) as raw_thread_id,
-						thread_id,
-					${NORMALIZED_SUBJECT_SQL} as normalized_subject
-					FROM emails
-					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-					${categoryClause}
-				),
-				thread_to_conversation AS (
-					SELECT
-						raw_thread_id,
-						CASE
-							WHEN thread_id IS NOT NULL THEN raw_thread_id
-							WHEN normalized_subject != '' THEN MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
-							ELSE raw_thread_id
-						END as conversation_id
-					FROM folder_emails
-					GROUP BY raw_thread_id, normalized_subject, thread_id
+						lif.read, lif.starred,
+						${NEEDS_REPLY_SQL} as needs_reply
+					FROM latest_in_folder lif
+					JOIN conversation_stats cs ON lif.conversation_id = cs.conversation_id
+					LEFT JOIN latest_message_per_conversation lmc
+						ON lmc.conversation_id = lif.conversation_id AND lmc.rn = 1
+					WHERE lif.rn = 1
 				)
-				SELECT COUNT(DISTINCT conversation_id) as total
-				FROM thread_to_conversation`,
+				SELECT COUNT(*) as total FROM conversation_rows${streamFilter}`,
 				...countArgs,
 			),
 		][0] as { total: number } | undefined;
 		return row?.total ?? 0;
+	}
+
+	/**
+	 * Priority/other conversation counts for a folder in one query. The two
+	 * sum to countThreadedEmails(folder, category): both derive the same
+	 * conversations and read the same priority predicate.
+	 */
+	countThreadedStreams(folder: string, category?: string): { priority: number; other: number } {
+		const isDraftFolder = folder === Folders.DRAFT;
+		const categoryClause = category ? "AND category = ?2" : "";
+		const countArgs: (string | number)[] = category
+			? [folder, category]
+			: [folder];
+
+		if (isDraftFolder) {
+			// Streams do not apply to draft groups (see countThreadedEmails).
+			return {
+				priority: 0,
+				other: this.countThreadedEmails(folder, category),
+			};
+		}
+
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`${threadedConversationCtes(categoryClause)},
+				conversation_rows AS (
+					SELECT
+						lif.read, lif.starred,
+						${NEEDS_REPLY_SQL} as needs_reply
+					FROM latest_in_folder lif
+					JOIN conversation_stats cs ON lif.conversation_id = cs.conversation_id
+					LEFT JOIN latest_message_per_conversation lmc
+						ON lmc.conversation_id = lif.conversation_id AND lmc.rn = 1
+					WHERE lif.rn = 1
+				)
+				SELECT
+					SUM(CASE WHEN ${PRIORITY_STREAM_SQL} THEN 1 ELSE 0 END) as priority,
+					SUM(CASE WHEN NOT ${PRIORITY_STREAM_SQL} THEN 1 ELSE 0 END) as other
+				FROM conversation_rows`,
+				...countArgs,
+			),
+		][0] as { priority: number | null; other: number | null } | undefined;
+		return { priority: row?.priority ?? 0, other: row?.other ?? 0 };
 	}
 
 	// ── Single email operations (Drizzle) ──────────────────────────
