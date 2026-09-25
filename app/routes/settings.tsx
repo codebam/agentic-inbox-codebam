@@ -18,6 +18,7 @@ import ItemsCard from "~/components/ItemsCard";
 import WebhookCard from "~/components/WebhookCard";
 import SenderPolicyCard from "~/components/SenderPolicyCard";
 import DigestCard from "~/components/DigestCard";
+import StorageCard from "~/components/StorageCard";
 import { normalizeAutoDraft } from "shared/auto-draft";
 import {
 	defaultCategorizationSettings,
@@ -372,6 +373,7 @@ export default function SettingsRoute() {
 					onChange={setWebhook}
 				/>
 				<DigestCard mailboxId={mailboxId} />
+				<StorageCard mailboxId={mailboxId} />
 
 
 				{/* Save */}
