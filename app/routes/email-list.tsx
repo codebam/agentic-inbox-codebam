@@ -21,7 +21,7 @@ import {
 } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { mergeCategorizationCategories } from "shared/categories";
 import { formatListDate } from "shared/dates";
@@ -43,6 +43,7 @@ import {
 	useUnsnoozeEmail,
 	useUpdateEmail,
 } from "~/queries/emails";
+import type { EmailStream, StreamCounts } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
@@ -173,6 +174,57 @@ function FolderEmptyState({
 	);
 }
 
+/** The stream tabs a folder list offers, in display order. */
+const STREAM_TABS = [
+	{ value: "all", label: "All" },
+	{ value: "priority", label: "Priority" },
+	{ value: "other", label: "Other" },
+] as const;
+
+/**
+ * All / Priority / Other switch for a folder list, built from the same kumo
+ * Buttons as the app's other segmented control (EmailViewToggle). The counts
+ * come from the server's streamCounts — never from the loaded page.
+ */
+function StreamTabs({
+	value,
+	counts,
+	onChange,
+}: {
+	value: EmailStream | undefined;
+	counts?: StreamCounts | undefined;
+	onChange: (stream: EmailStream | undefined) => void;
+}) {
+	return (
+		<div
+			role="group"
+			aria-label="Filter conversations by priority"
+			className="inline-flex items-center gap-0.5 rounded-md border border-kumo-line p-0.5"
+		>
+			{STREAM_TABS.map((tab) => {
+				const active = tab.value === (value ?? "all");
+				const count =
+					tab.value === "priority"
+						? counts?.priority
+						: tab.value === "other"
+							? counts?.other
+							: undefined;
+				return (
+					<Button
+						key={tab.value}
+						variant={active ? "secondary" : "ghost"}
+						size="xs"
+						aria-pressed={active}
+						onClick={() => onChange(tab.value === "all" ? undefined : tab.value)}
+					>
+						{count !== undefined ? `${tab.label} (${count})` : tab.label}
+					</Button>
+				);
+			})}
+		</div>
+	);
+}
+
 export default function EmailListRoute() {
 	const { mailboxId, folder } = useParams<{
 		mailboxId: string;
@@ -191,6 +243,25 @@ export default function EmailListRoute() {
 	} = useUIStore();
 	const [page, setPage] = useState(1);
 	const [categoryFilter, setCategoryFilter] = useState("");
+	const [searchParams, setSearchParams] = useSearchParams();
+	// Streams split a folder's conversations into priority and other. Offered
+	// on the Inbox and on user-created folders only: the Snoozed view lists
+	// from a dedicated endpoint, Trash is destructive, and the remaining
+	// system folders (Sent, Drafts, Archive, Spam) are not split.
+	const isSystemFolder =
+		!!folder && (SYSTEM_FOLDER_IDS as readonly string[]).includes(folder);
+	const showStreamTabs =
+		!isSnoozedFolder &&
+		!isTrashFolder &&
+		(folder === Folders.INBOX || !isSystemFolder);
+	const requestedStream = searchParams.get("stream");
+	const stream: EmailStream | undefined =
+		requestedStream === "priority" || requestedStream === "other"
+			? requestedStream
+			: undefined;
+	// The tab bar is the only way to set a stream, so a param for a folder
+	// that hides it must not filter the list invisibly.
+	const activeStream = showStreamTabs ? stream : undefined;
 
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
@@ -222,8 +293,9 @@ export default function EmailListRoute() {
 			page: String(page),
 			limit: String(PAGE_SIZE),
 			...(categoryFilter ? { category: categoryFilter } : {}),
+			...(activeStream ? { stream: activeStream } : {}),
 		}),
-		[folder, page, categoryFilter],
+		[folder, page, categoryFilter, activeStream],
 	);
 
 	const {
@@ -248,6 +320,9 @@ export default function EmailListRoute() {
 	const totalCount = isSnoozedFolder
 		? snoozedData?.totalCount ?? 0
 		: emailData?.totalCount ?? 0;
+	// Server-side priority/other counts for the tab labels; only threaded
+	// folder lists carry them.
+	const streamCounts = isSnoozedFolder ? undefined : emailData?.streamCounts;
 
 	const { data: folders = [] } = useFolders(mailboxId);
 
@@ -440,6 +515,17 @@ export default function EmailListRoute() {
 		}
 	};
 
+	const handleStreamChange = (next: EmailStream | undefined) => {
+		setSearchParams((prev) => {
+			const nextParams = new URLSearchParams(prev);
+			if (next) nextParams.set("stream", next);
+			else nextParams.delete("stream");
+			return nextParams;
+		});
+		setPage(1);
+		clear();
+	};
+
 	// Thread-aware helpers
 	const hasUnread = (email: Email): boolean => {
 		if (email.thread_unread_count !== undefined) {
@@ -604,6 +690,16 @@ export default function EmailListRoute() {
 						</>
 					)}
 				</div>
+
+				{showStreamTabs && (
+					<div className="flex items-center px-4 py-2 border-b border-kumo-line shrink-0 md:px-5">
+						<StreamTabs
+							value={activeStream}
+							counts={streamCounts}
+							onChange={handleStreamChange}
+						/>
+					</div>
+				)}
 
 				{/* Email rows */}
 				<div className="flex-1 overflow-y-auto">
@@ -786,6 +882,19 @@ export default function EmailListRoute() {
 									</div>
 								);
 							})}
+						</div>
+					) : activeStream ? (
+						<div className="flex flex-col items-center justify-center py-24 px-6 text-center">
+							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
+								{activeStream === "priority"
+									? "No priority conversations"
+									: "No other conversations"}
+							</h3>
+							<p className="text-sm text-kumo-subtle max-w-xs">
+								{activeStream === "priority"
+									? "Unread, starred, and awaiting-reply conversations show up here."
+									: "Conversations that don't need attention land here."}
+							</p>
 						</div>
 					) : (
 						<FolderEmptyState
