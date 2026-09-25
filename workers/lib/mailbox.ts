@@ -22,9 +22,7 @@ import type { Env } from "../types";
 export function defaultMailboxSettings(name: string) {
 	return {
 		fromName: name,
-		forwarding: { enabled: false, email: "" },
 		signature: { enabled: false, text: "" },
-		autoReply: { enabled: false, subject: "", message: "" },
 		categorization: defaultCategorizationSettings(),
 		// Explicit "inherit the app-wide default"; a mailbox can pin html/text.
 		defaultEmailView: null,
