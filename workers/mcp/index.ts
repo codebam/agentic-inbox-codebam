@@ -9,6 +9,7 @@ import {
 	toolListMailboxes,
 	toolListEmails,
 	toolGetEmail,
+	toolGetAttachment,
 	toolGetThread,
 	toolSearchEmails,
 	toolSearchAllMailboxes,
@@ -255,6 +256,28 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					};
 				}
 				return mcpText(result);
+			},
+		);
+
+		// ── get_attachment ─────────────────────────────────────────
+		this.server.tool(
+			"get_attachment",
+			"Read one attachment's metadata and, for text-ish files (text/*, application/json, application/xml, application/javascript, application/x-ndjson, message/rfc822), its text content, decoded as UTF-8 and capped at 200000 characters. Read-only and bounded: binary attachments, files over 1 MiB, and blobs missing from storage come back as metadata plus an omission reason — never as raw bytes.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				attachmentId: z
+					.string()
+					.describe(
+						"The attachment ID from an email's attachments list (get_email)",
+					),
+			},
+			async ({ mailboxId, attachmentId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolGetAttachment(env, mailboxId, {
+					attachmentId,
+				});
+				return mcpResult(result);
 			},
 		);
 
