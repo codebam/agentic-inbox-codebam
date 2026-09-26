@@ -38,10 +38,12 @@ export default function ComposeEmail() {
 		error,
 		isSavingDraft,
 		isScheduling,
+		isSending,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
 		handleSendLater,
+		sendBlockReason,
 		scheduleBlockReason,
 		attachments,
 		attachmentErrors,
@@ -140,8 +142,8 @@ export default function ComposeEmail() {
 						</Suspense>
 					</div>
 					</AttachmentPicker>
-					{scheduleBlockReason && (
-						<p className="pt-2 text-xs text-kumo-subtle">{scheduleBlockReason}</p>
+					{(sendBlockReason ?? scheduleBlockReason) && (
+						<p className="pt-2 text-xs text-kumo-subtle">{sendBlockReason ?? scheduleBlockReason}</p>
 					)}
 					<div className="flex justify-between items-center gap-3 pt-2">
 						<div className="flex items-center gap-3 min-w-0">
@@ -199,16 +201,16 @@ export default function ComposeEmail() {
 								type="submit"
 								variant="primary"
 								size="sm"
-								loading={isScheduling}
+								loading={isScheduling || isSending}
 								disabled={
 									isSavingDraft ||
 									isScheduling ||
 									isEncodingAttachments ||
-									scheduleBlockReason !== null
+									sendBlockReason !== null
 								}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
-								{isScheduling ? "Scheduling..." : "Send"}
+								{isSending ? "Sending..." : isScheduling ? "Scheduling..." : "Send"}
 							</Button>
 						</div>
 					</div>

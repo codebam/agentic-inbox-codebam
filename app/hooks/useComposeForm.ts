@@ -29,7 +29,7 @@ import {
 	validateLinkedAttachmentSelection,
 	type PendingAttachment,
 } from "~/lib/attachments";
-import { useSaveDraft } from "~/queries/emails";
+import { useDeleteEmail, useSaveDraft, useSendEmail } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
 import { invalidateScheduledSends, useScheduleSend } from "~/queries/scheduled-sends";
 import { useCreateTemplate } from "~/queries/templates";
@@ -220,6 +220,8 @@ export function useComposeForm(mailboxId?: string) {
 	const { data: currentMailbox } = useMailbox(mailboxId);
 	const saveDraftMutation = useSaveDraft();
 	const scheduleSendMutation = useScheduleSend();
+	const sendEmailMutation = useSendEmail();
+	const deleteEmailMutation = useDeleteEmail();
 	const createTemplateMutation = useCreateTemplate();
 	const queryClient = useQueryClient();
 
@@ -232,6 +234,7 @@ export function useComposeForm(mailboxId?: string) {
 	const [error, setError] = useState<string | null>(null);
 	const [isSavingDraft, setIsSavingDraft] = useState(false);
 	const [isScheduling, setIsScheduling] = useState(false);
+	const [isSending, setIsSending] = useState(false);
 	const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
 	const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
 	const [linkedAttachments, setLinkedAttachments] = useState<PendingAttachment[]>([]);
@@ -256,6 +259,20 @@ export function useComposeForm(mailboxId?: string) {
 	const sigBlock = useMemo(() => getSignatureBlock(currentMailbox?.settings), [currentMailbox]);
 
 	/**
+	 * Why the Send action is unavailable, or null when it can go ahead: a
+	 * recipient and a subject are required. Files are not a blocker — a
+	 * message carrying files is posted straight to the send route, because
+	 * the queue's stored payload cannot carry file bytes.
+	 */
+	const sendBlockReason = useMemo(() => {
+		const missing: string[] = [];
+		if (splitEmailList(to).length === 0) missing.push("a recipient");
+		if (!subject.trim()) missing.push("a subject");
+		if (missing.length === 0) return null;
+		return `Add ${missing.join(" and ")} to send this message.`;
+	}, [to, subject]);
+
+	/**
 	 * Why the scheduling affordances are unavailable, or null when they are
 	 * usable. Rendered next to the buttons so the reason stays visible —
 	 * queued sends never carry attachments, and a recipient and subject are
@@ -263,7 +280,7 @@ export function useComposeForm(mailboxId?: string) {
 	 */
 	const scheduleBlockReason = useMemo(() => {
 		if (attachments.length > 0 || linkedAttachments.length > 0) {
-			return "Scheduled sends don't support attachments — remove them to schedule this message.";
+			return "Send later can't carry attachments — send it now, or remove them.";
 		}
 		const missing: string[] = [];
 		if (splitEmailList(to).length === 0) missing.push("a recipient");
@@ -583,9 +600,10 @@ export function useComposeForm(mailboxId?: string) {
 		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (attachments.length > 0 || linkedAttachments.length > 0) {
-			// Belt and braces: both affordances are already disabled, with a
-			// visible reason, while the composer holds files.
-			setError("Scheduled sends don't support attachments — remove them first.");
+			// Belt and braces: the scheduling affordances are already
+			// disabled, with a visible reason, while the composer holds
+			// files — the queue's stored payload cannot carry file bytes.
+			setError("Send later can't carry attachments — send it now, or remove them.");
 			return;
 		}
 		setIsScheduling(true);
@@ -634,15 +652,49 @@ export function useComposeForm(mailboxId?: string) {
 	};
 
 	/**
-	 * The form's Send action. It no longer sends: the message is queued for
-	 * ten seconds ahead, and the toast's Undo cancels it before it goes out.
+	 * The direct send path, used when the message carries files. The queue's
+	 * stored payload cannot carry file bytes, so a message with attachments
+	 * (or a linked large file) is posted straight to the send route instead:
+	 * there is no undo window on this path.
+	 */
+	const sendWithFiles = async (onClose: () => void) => {
+		if (isSending) return;
+		setError(null);
+		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
+		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
+		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
+		setIsSending(true);
+		toastManager.add({ title: "Sending email..." });
+		try {
+			await sendEmailMutation.mutateAsync({ mailboxId, email: buildOutgoingPayload() });
+			// The sent draft is removed for good, not parked in Trash.
+			const draftId = composeOptions.draftEmail?.id;
+			if (draftId) deleteEmailMutation.mutate({ mailboxId, id: draftId, permanent: true });
+			toastManager.add({ title: "Email sent!" });
+			onClose();
+		} catch (err: unknown) {
+			const message = (err instanceof Error ? err.message : null) || "Failed to send email.";
+			setError(message);
+			toastManager.add({ title: message, variant: "error" });
+		}
+		finally { setIsSending(false); }
+	};
+
+	/**
+	 * The form's Send action. A message with no files is queued for ten
+	 * seconds ahead and the toast's Undo cancels it before it goes out; a
+	 * message carrying files cannot ride the queue, so it is sent directly.
 	 */
 	const handleSend = async (e: FormEvent, onClose: () => void) => {
 		e.preventDefault();
-		if (isScheduling) return;
+		if (isScheduling || isSending) return;
 		setError(null);
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
+		if (attachments.length > 0 || linkedAttachments.length > 0) {
+			await sendWithFiles(onClose);
+			return;
+		}
 		const sendAt = new Date(Date.now() + SEND_QUEUE_DELAY_MS).toISOString();
 		// The toast lives exactly as long as the undo window: once the queue
 		// fires the send there is nothing left to cancel.
@@ -666,8 +718,8 @@ export function useComposeForm(mailboxId?: string) {
 
 	return {
 		to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody,
-		error, setError, isSavingDraft, isScheduling, formTitle, handleSaveDraft, handleSend, handleSendLater,
-		scheduleBlockReason, closeCompose, closePanel,
+		error, setError, isSavingDraft, isScheduling, isSending, formTitle, handleSaveDraft, handleSend, handleSendLater,
+		sendBlockReason, scheduleBlockReason, closeCompose, closePanel,
 		attachments, attachmentErrors, attachmentSummary: describeAttachmentSummary(attachments),
 		linkedAttachments, linkedAttachmentErrors,
 		linkedAttachmentSummary: describeLinkedAttachmentSummary(linkedAttachments),

@@ -39,10 +39,12 @@ export default function ComposePanel({
 		error,
 		isSavingDraft,
 		isScheduling,
+		isSending,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
 		handleSendLater,
+		sendBlockReason,
 		scheduleBlockReason,
 		closeCompose,
 		closePanel,
@@ -197,8 +199,8 @@ export default function ComposePanel({
 
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
-					{scheduleBlockReason && (
-						<p className="pb-2 text-xs text-kumo-subtle">{scheduleBlockReason}</p>
+					{(sendBlockReason ?? scheduleBlockReason) && (
+						<p className="pb-2 text-xs text-kumo-subtle">{sendBlockReason ?? scheduleBlockReason}</p>
 					)}
 					<div className="flex items-center justify-between gap-3">
 						<div className="flex items-center gap-3 min-w-0">
@@ -250,16 +252,16 @@ export default function ComposePanel({
 								type="submit"
 								variant="primary"
 								size="sm"
-								loading={isScheduling}
+								loading={isScheduling || isSending}
 								disabled={
 									isSavingDraft ||
 									isScheduling ||
 									isEncodingAttachments ||
-									scheduleBlockReason !== null
+									sendBlockReason !== null
 								}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
-								{isScheduling ? "Scheduling..." : "Send"}
+								{isSending ? "Sending..." : isScheduling ? "Scheduling..." : "Send"}
 							</Button>
 						</div>
 					</div>
