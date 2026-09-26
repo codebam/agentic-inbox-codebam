@@ -89,6 +89,11 @@ import {
 	generateMessageId,
 	validateSender,
 } from "../lib/email-helpers";
+import type {
+	CalendarInviteFields,
+	CalendarInviteRow,
+	CalendarResponse,
+} from "../lib/calendar";
 import { verifyDraft } from "../lib/ai";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import {
@@ -1093,6 +1098,81 @@ export class MailboxDO extends DurableObject<Env> {
 			match.id,
 		);
 		return true;
+	}
+
+	/**
+	 * Calendar invite bookkeeping (workers/index.ts receiveEmail): store the
+	 * iMIP metadata one inbound message carried, one row per email — the
+	 * email_id index is unique, so a second ingest for the same email
+	 * rewrites the metadata in place and keeps the row's id, its created_at
+	 * and the operator's recorded response. Every field is already bounded
+	 * by the parser (workers/lib/calendar.ts), and the message itself is
+	 * stored as ordinary mail either way.
+	 */
+	recordCalendarInvite(
+		invite: CalendarInviteFields & { email_id: string },
+	): CalendarInviteRow | null {
+		this.ctx.storage.sql.exec(
+			`INSERT INTO calendar_invites
+				(id, email_id, uid, method, summary, organizer, location, start_at, end_at, attendee, response, created_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)
+			 ON CONFLICT(email_id) DO UPDATE SET
+				uid = excluded.uid,
+				method = excluded.method,
+				summary = excluded.summary,
+				organizer = excluded.organizer,
+				location = excluded.location,
+				start_at = excluded.start_at,
+				end_at = excluded.end_at,
+				attendee = excluded.attendee`,
+			crypto.randomUUID(),
+			invite.email_id,
+			invite.uid,
+			invite.method,
+			invite.summary,
+			invite.organizer,
+			invite.location,
+			invite.start_at,
+			invite.end_at,
+			invite.attendee,
+			new Date().toISOString(),
+		);
+		return this.getCalendarInvite(invite.email_id);
+	}
+
+
+	/**
+	 * The invite stored for one message, or null when that message carried
+	 * no calendar part. Metadata only, at most one row per email.
+	 */
+	getCalendarInvite(emailId: string): CalendarInviteRow | null {
+		return (
+			this.db
+				.select()
+				.from(schema.calendarInvites)
+				.where(eq(schema.calendarInvites.email_id, emailId))
+				.get() ?? null
+		);
+	}
+
+
+	/**
+	 * Record the operator's answer to an invite (the respond route in
+	 * workers/index.ts) and return the updated row — null when the message
+	 * has no invite at all. The route only reaches this for a REQUEST invite
+	 * whose iMIP reply was built, so the row's `response` is what the panel
+	 * shows next to the invitation.
+	 */
+	setCalendarInviteResponse(
+		emailId: string,
+		response: CalendarResponse,
+	): CalendarInviteRow | null {
+		this.ctx.storage.sql.exec(
+			`UPDATE calendar_invites SET response = ? WHERE email_id = ?`,
+			response,
+			emailId,
+		);
+		return this.getCalendarInvite(emailId);
 	}
 
 	getAttachment(id: string) {

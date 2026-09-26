@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { EmailViewMode } from "shared/email-view";
+import CalendarInviteCard from "~/components/CalendarInviteCard";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import ItemsCard from "~/components/email-panel/ItemsCard";
 import MessageBody from "~/components/MessageBody";
@@ -66,6 +67,8 @@ export default function SingleMessageView({
 			</div>
 
 			<ItemsCard email={email} mailboxId={mailboxId} />
+
+			<CalendarInviteCard emailId={email.id} mailboxId={mailboxId} />
 
 			<div className="flex-1 min-h-0">
 				<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} allowRemoteImages={allowRemoteImages} />

@@ -4,6 +4,7 @@
 
 import { sql } from "drizzle-orm";
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import type { CalendarResponse } from "../lib/calendar";
 
 export const folders = sqliteTable("folders", {
 	id: text("id").primaryKey(),
@@ -255,4 +256,30 @@ export const extractedItems = sqliteTable("extracted_items", {
 	status: text("status").notNull().default("open"),
 	created_at: text("created_at").notNull(),
 	updated_at: text("updated_at").notNull(),
+});
+
+/**
+ * Calendar invites (migration 29_add_calendar_invites): the metadata of the
+ * iMIP text/calendar part one inbound message carried, parsed at ingest by
+ * workers/lib/calendar.ts and read by the message panel's invite card. One
+ * row per email — the email_id index is unique, so a second ingest for the
+ * same email rewrites the metadata in place. Metadata only: every text
+ * column is bounded by the parser, no ICS body is stored, and `response`
+ * (accepted | declined | tentative) stays null until the operator answers
+ * through the respond route — the only path that sends an iMIP REPLY, since
+ * the agent and MCP surfaces expose no way to fire one.
+ */
+export const calendarInvites = sqliteTable("calendar_invites", {
+	id: text("id").primaryKey(),
+	email_id: text("email_id").notNull(),
+	uid: text("uid"),
+	method: text("method"),
+	summary: text("summary"),
+	organizer: text("organizer"),
+	location: text("location"),
+	start_at: text("start_at"),
+	end_at: text("end_at"),
+	attendee: text("attendee"),
+	response: text("response").$type<CalendarResponse>(),
+	created_at: text("created_at").notNull(),
 });
