@@ -773,7 +773,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const rawBody = (await c.req.json()) as Record<string, unknown>;
+	const rawBody: Record<string, unknown> = await c.req.json();
 	// Linked attachments are only offered for new messages: a draft can be
 	// edited into a reply or a forward, where links are refused, and the
 	// composer never sends the field here. Refuse rather than drop it.
