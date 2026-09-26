@@ -20,9 +20,13 @@ import {
 	blobToBase64,
 	createPendingAttachment,
 	describeAttachmentSummary,
+	describeLinkedAttachmentSummary,
+	isLinkableAttachment,
 	pendingAttachmentFromStored,
 	toAttachmentPayloads,
+	toLinkedAttachmentPayloads,
 	validateAttachmentSelection,
+	validateLinkedAttachmentSelection,
 	type PendingAttachment,
 } from "~/lib/attachments";
 import { useSaveDraft } from "~/queries/emails";
@@ -230,12 +234,19 @@ export function useComposeForm(mailboxId?: string) {
 	const [isScheduling, setIsScheduling] = useState(false);
 	const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
 	const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
+	const [linkedAttachments, setLinkedAttachments] = useState<PendingAttachment[]>([]);
+	const [linkedAttachmentErrors, setLinkedAttachmentErrors] = useState<string[]>([]);
 	const [isEncodingAttachments, setIsEncodingAttachments] = useState(false);
 	const lastInitializedOptionsRef = useRef<typeof composeOptions | null>(null);
 	// Id of the message whose stored attachments are already in `attachments`.
 	// Guards the reload below so saving a draft does not re-download its files.
 	const loadedAttachmentsForRef = useRef<string | null>(null);
 	const isDraftEdit = !!composeOptions.draftEmail;
+	// Files at or above LINK_THRESHOLD_BYTES are shared as download links —
+	// only in a new message: the reply, forward and draft routes refuse
+	// linked_attachments (workers/index.ts), so those surfaces keep every
+	// file inside the message or refuse it.
+	const canLinkAttachments = composeOptions.mode === "new" && !isDraftEdit;
 
 	const formTitle = useMemo(() => {
 		if (isDraftEdit) return "Edit Draft";
@@ -251,7 +262,7 @@ export function useComposeForm(mailboxId?: string) {
 	 * required.
 	 */
 	const scheduleBlockReason = useMemo(() => {
-		if (attachments.length > 0) {
+		if (attachments.length > 0 || linkedAttachments.length > 0) {
 			return "Scheduled sends don't support attachments — remove them to schedule this message.";
 		}
 		const missing: string[] = [];
@@ -259,7 +270,7 @@ export function useComposeForm(mailboxId?: string) {
 		if (!subject.trim()) missing.push("a subject");
 		if (missing.length === 0) return null;
 		return `Add ${missing.join(" and ")} to schedule this send.`;
-	}, [attachments, to, subject]);
+	}, [attachments, linkedAttachments, to, subject]);
 
 	useEffect(() => {
 		if (lastInitializedOptionsRef.current === composeOptions) return;
@@ -341,25 +352,50 @@ export function useComposeForm(mailboxId?: string) {
 				size: file.size,
 			},
 		}));
+		// Files at or above the threshold cannot travel in the message, so in a
+		// new message they go to the linked list (stored in R2, shared as a
+		// public download link). In a reply, a forward or a draft edit the
+		// server refuses the field, so such a file is refused here — with the
+		// usual over-the-cap message — rather than silently dropped.
+		const linkable = canLinkAttachments
+			? picked.filter((entry) => isLinkableAttachment(entry.candidate))
+			: [];
+		const inlinePicked = picked.filter((entry) => !linkable.includes(entry));
 		const { accepted, errors } = validateAttachmentSelection(
-			picked.map((entry) => entry.candidate),
+			inlinePicked.map((entry) => entry.candidate),
 			attachments,
 		);
+		const linkedResult = validateLinkedAttachmentSelection(
+			linkable.map((entry) => entry.candidate),
+			linkedAttachments,
+		);
 		setAttachmentErrors(errors);
-		if (accepted.length === 0) return;
+		setLinkedAttachmentErrors(linkedResult.errors);
+		if (accepted.length === 0 && linkedResult.accepted.length === 0) return;
 
 
 		setIsEncodingAttachments(true);
 		try {
 			const encoded: PendingAttachment[] = [];
+			const linkedEncoded: PendingAttachment[] = [];
 			for (const entry of picked) {
-				if (!accepted.includes(entry.candidate)) continue;
+				const isLinked = linkedResult.accepted.includes(entry.candidate);
+				if (!accepted.includes(entry.candidate) && !isLinked) continue;
 				const content = await blobToBase64(entry.file);
-				encoded.push(
-					createPendingAttachment(entry.candidate, content, crypto.randomUUID()),
+				const pending = createPendingAttachment(
+					entry.candidate,
+					content,
+					crypto.randomUUID(),
 				);
+				if (isLinked) linkedEncoded.push(pending);
+				else encoded.push(pending);
 			}
-			setAttachments((previous) => [...previous, ...encoded]);
+			if (encoded.length > 0) {
+				setAttachments((previous) => [...previous, ...encoded]);
+			}
+			if (linkedEncoded.length > 0) {
+				setLinkedAttachments((previous) => [...previous, ...linkedEncoded]);
+			}
 		} catch (err: unknown) {
 			const message = (err instanceof Error ? err.message : null) || "Could not read the selected file.";
 			setAttachmentErrors((previous) => [...previous, message]);
@@ -371,6 +407,11 @@ export function useComposeForm(mailboxId?: string) {
 
 	const handleRemoveAttachment = (id: string) => {
 		setAttachments((previous) => previous.filter((attachment) => attachment.id !== id));
+	};
+
+
+	const handleRemoveLinkedAttachment = (id: string) => {
+		setLinkedAttachments((previous) => previous.filter((attachment) => attachment.id !== id));
 	};
 
 	/**
@@ -416,7 +457,15 @@ export function useComposeForm(mailboxId?: string) {
 
 
 	const handleSaveDraft = async () => {
-		if (!mailboxId || isScheduling || isEncodingAttachments) return; setIsSavingDraft(true); setError(null);
+		if (!mailboxId || isScheduling || isEncodingAttachments) return;
+		if (linkedAttachments.length > 0) {
+			// Drafts refuse linked_attachments — a draft can be edited into a
+			// reply or a forward, where links are not offered — so a draft save
+			// would silently lose the links. Say so instead.
+			setError("Linked files can't be saved in a draft — send this message instead.");
+			return;
+		}
+		setIsSavingDraft(true); setError(null);
 		try {
 			const inReplyTo =
 				composeOptions.originalEmail?.id ||
@@ -483,6 +532,7 @@ export function useComposeForm(mailboxId?: string) {
 				? { email: currentMailbox?.email, name: fromName }
 				: currentMailbox?.email;
 		const attachmentPayloads = toAttachmentPayloads(attachments);
+		const linkedAttachmentPayloads = toLinkedAttachmentPayloads(linkedAttachments);
 		const inReplyTo =
 			composeOptions.originalEmail?.id ||
 			composeOptions.draftEmail?.in_reply_to ||
@@ -500,6 +550,11 @@ export function useComposeForm(mailboxId?: string) {
 			html: body,
 			text: htmlToPlainText(body),
 			...(attachmentPayloads.length > 0 ? { attachments: attachmentPayloads } : {}),
+			// The linked bytes never travel in the message: the server stores
+			// them in R2 and appends the download links to the body.
+			...(linkedAttachmentPayloads.length > 0
+				? { linked_attachments: linkedAttachmentPayloads }
+				: {}),
 			// The queue owns the draft from here on, so its id travels with
 			// the payload instead of the draft being deleted on send.
 			...(composeOptions.draftEmail ? { draft_id: composeOptions.draftEmail.id } : {}),
@@ -527,9 +582,9 @@ export function useComposeForm(mailboxId?: string) {
 		setError(null);
 		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
-		if (attachments.length > 0) {
+		if (attachments.length > 0 || linkedAttachments.length > 0) {
 			// Belt and braces: both affordances are already disabled, with a
-			// visible reason, while the composer holds attachments.
+			// visible reason, while the composer holds files.
 			setError("Scheduled sends don't support attachments — remove them first.");
 			return;
 		}
@@ -614,6 +669,9 @@ export function useComposeForm(mailboxId?: string) {
 		error, setError, isSavingDraft, isScheduling, formTitle, handleSaveDraft, handleSend, handleSendLater,
 		scheduleBlockReason, closeCompose, closePanel,
 		attachments, attachmentErrors, attachmentSummary: describeAttachmentSummary(attachments),
+		linkedAttachments, linkedAttachmentErrors,
+		linkedAttachmentSummary: describeLinkedAttachmentSummary(linkedAttachments),
+		canLinkAttachments, handleRemoveLinkedAttachment,
 		isEncodingAttachments, handleAddAttachments, handleRemoveAttachment,
 		handleInsertTemplate, handleSaveTemplate, canSaveTemplate,
 		isSavingTemplate: createTemplateMutation.isPending,
