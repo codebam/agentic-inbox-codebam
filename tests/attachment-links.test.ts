@@ -330,6 +330,22 @@ describe("send with linked attachments", () => {
 		expect(sent?.attachments[0]?.mimetype).toBe("application/pdf");
 	});
 
+	it("escapes a hostile filename in the download section", async () => {
+		const mailbox = "attach-links-escape@example.com";
+		await registerMailbox(mailbox);
+
+		const response = await sendEmail(mailbox, {
+			linked_attachments: [linkedAttachment("Tom & Jerry's plan.bin")],
+		});
+		expect(response.status).toBe(202);
+
+		const sent = await sentCopy(stubFor(mailbox));
+		// The filename is escaped in the HTML section, never raw markup:
+		// `&` and `'` survive the R2 key sanitizer, so they reach the body.
+		expect(sent?.body).toContain("Tom &amp; Jerry&#39;s plan.bin");
+		expect(sent?.body).not.toContain("Tom & Jerry's plan.bin");
+	});
+
 	it("rejects a file over the per-file cap with 400 and stores nothing", async () => {
 		const mailbox = "attach-links-over-cap@example.com";
 		await registerMailbox(mailbox);
