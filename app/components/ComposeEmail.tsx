@@ -45,6 +45,7 @@ export default function ComposeEmail() {
 		handleSendLater,
 		sendBlockReason,
 		scheduleBlockReason,
+	emptyBodyWarning,
 		attachments,
 		attachmentErrors,
 		attachmentSummary,
@@ -142,6 +143,9 @@ export default function ComposeEmail() {
 						</Suspense>
 					</div>
 					</AttachmentPicker>
+					{emptyBodyWarning && (
+						<p className="text-xs text-kumo-warning">{emptyBodyWarning}</p>
+					)}
 					{(sendBlockReason ?? scheduleBlockReason) && (
 						<p className="pt-2 text-xs text-kumo-subtle">{sendBlockReason ?? scheduleBlockReason}</p>
 					)}

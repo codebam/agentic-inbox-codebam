@@ -260,6 +260,26 @@ export function useComposeForm(mailboxId?: string) {
 	const sigBlock = useMemo(() => getSignatureBlock(currentMailbox?.settings), [currentMailbox]);
 
 	/**
+	 * Whether the message body carries any text. The send API requires a body
+	 * (the Email Service binding builds the message from html/text), and an
+	 * empty one is legitimate but rarely intended — so the first Send of an
+	 * empty message warns and the second goes through.
+	 */
+	const bodyHasContent = useMemo(() => htmlToPlainText(body).trim().length > 0, [body]);
+
+	/**
+	 * The body the warning was shown for, or null. Comparing it against the
+	 * live body is what clears the warning — writing a body is a different
+	 * string — so no effect has to reset it.
+	 */
+	const [warnedBody, setWarnedBody] = useState<string | null>(null);
+
+	/** The warning shown under the composer, or null when there is nothing to say. */
+	const emptyBodyWarning = warnedBody !== null && warnedBody === body
+		? "This message has no body — send it again to send it anyway."
+		: null;
+
+	/**
 	 * Why the Send action is unavailable, or null when it can go ahead: a
 	 * recipient and a subject are required. Files are not a blocker — a
 	 * message carrying files is posted straight to the send route, because
@@ -300,6 +320,7 @@ export function useComposeForm(mailboxId?: string) {
 			sigBlock,
 		);
 		setError(null);
+		setWarnedBody(null);
 		setTo(initialFields.to);
 		setCc(initialFields.cc);
 		setBcc(initialFields.bcc);
@@ -691,6 +712,7 @@ export function useComposeForm(mailboxId?: string) {
 		setError(null);
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
+		if (!bodyHasContent && warnedBody !== body) { setWarnedBody(body); return; }
 		if (attachments.length > 0 || linkedAttachments.length > 0) {
 			await sendWithFiles(onClose);
 			return;
@@ -713,13 +735,14 @@ export function useComposeForm(mailboxId?: string) {
 		if (isPastOrInvalid(iso)) { setError("Pick a time in the future."); return; }
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
+		if (!bodyHasContent && warnedBody !== body) { setWarnedBody(body); return; }
 		await queueMessage(iso, onClose, `Scheduled for ${formatSnoozeTime(iso)} — Undo cancels it.`);
 	};
 
 	return {
 		to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody,
 		error, setError, isSavingDraft, isScheduling, isSending, formTitle, handleSaveDraft, handleSend, handleSendLater,
-		sendBlockReason, scheduleBlockReason, closeCompose, closePanel,
+		sendBlockReason, scheduleBlockReason, emptyBodyWarning, closeCompose, closePanel,
 		attachments, attachmentErrors, attachmentSummary: describeAttachmentSummary(attachments),
 		linkedAttachments, linkedAttachmentErrors,
 		linkedAttachmentSummary: describeLinkedAttachmentSummary(linkedAttachments),

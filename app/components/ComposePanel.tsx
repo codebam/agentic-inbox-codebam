@@ -46,6 +46,7 @@ export default function ComposePanel({
 		handleSendLater,
 		sendBlockReason,
 		scheduleBlockReason,
+	emptyBodyWarning,
 		closeCompose,
 		closePanel,
 		attachments,
@@ -199,6 +200,9 @@ export default function ComposePanel({
 
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
+					{emptyBodyWarning && (
+						<p className="text-xs text-kumo-warning">{emptyBodyWarning}</p>
+					)}
 					{(sendBlockReason ?? scheduleBlockReason) && (
 						<p className="pb-2 text-xs text-kumo-subtle">{sendBlockReason ?? scheduleBlockReason}</p>
 					)}
