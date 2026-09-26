@@ -113,6 +113,13 @@ import {
 } from "./lib/sender-policy";
 import { isTemplateValidationError } from "./lib/templates";
 import { insertExtractedItems, isItemDueFilter, isItemStatus, ITEM_LIST_LIMIT_DEFAULT, ITEM_LIST_LIMIT_MAX } from "./lib/items";
+import {
+	buildImipReply,
+	calendarAddress,
+	extractCalendarInvite,
+	isCalendarResponse,
+	responseSubject,
+} from "./lib/calendar";
 import { handleInboundRuleOutbound } from "./lib/rule-outbound";
 import {
 	extractUnsubscribeHeaders,
@@ -1089,6 +1096,140 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe", async (c: AppCon
 	const updated = await stub.setUnsubscribed(id, new Date().toISOString());
 	if (!updated) return c.json({ error: "Email not found" }, 404);
 	return c.json({ status: "unsubscribed", email: updated });
+});
+
+// -- Calendar invites (iMIP) ----------------------------------------
+
+/**
+ * Base64 for a small UTF-8 body — the iMIP reply part. btoa takes a binary
+ * string, so the bytes are mapped one at a time (an ICS is a few kilobytes).
+ */
+function base64Utf8(text: string): string {
+	let binary = "";
+	for (const byte of new TextEncoder().encode(text)) {
+		binary += String.fromCharCode(byte);
+	}
+	return btoa(binary);
+}
+
+/**
+ * The invite one message carried, or null when it carried none. Read-only,
+ * and deliberately not a 404 for a message with no invite: the panel only
+ * needs to know whether there is something to show.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite", async (c: AppContext) => {
+	const invite = await c.var.mailboxStub.getCalendarInvite(c.req.param("emailId")!);
+	return c.json({ invite });
+});
+
+/**
+ * Answer one invitation: ACCEPTED, DECLINED or TENTATIVE as an iMIP REPLY
+ * (RFC 6047) to the organizer, from the mailbox address.
+ *
+ * Operator-initiated only: this route is the one path that sends such a
+ * reply, and the agent/MCP surfaces deliberately expose no tool for it. The
+ * message must exist (404 otherwise) and carry a REQUEST invite (400
+ * otherwise); the reply carries the ICS as a text/calendar attachment plus a
+ * short plain-text body, with the answer as the subject prefix. The Sent
+ * copy is stored best-effort — a storage failure must not fail the answer —
+ * and delivery is deferred exactly like every other send path, so a failed
+ * send only logs. The recorded response is written after the copy, so the
+ * panel's state matches what went out.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite-response", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId") ?? "";
+	const emailId = c.req.param("emailId")!;
+	const body = (await c.req.json().catch(() => null)) as { response?: unknown } | null;
+	const response = body?.response;
+	if (!isCalendarResponse(response)) {
+		return c.json({ error: "response must be one of accepted, declined, tentative" }, 400);
+	}
+
+	const stub = c.var.mailboxStub;
+	const email = await stub.getEmail(emailId);
+	if (!email) return c.json({ error: "Email not found" }, 404);
+
+	const invite = await stub.getCalendarInvite(emailId);
+	if (!invite) return c.json({ error: "This message carries no calendar invite" }, 400);
+	if (invite.method !== "REQUEST") {
+		return c.json(
+			{ error: `This invite is a ${invite.method ?? "unknown method"} and cannot be answered` },
+			400,
+		);
+	}
+	const organizer = calendarAddress(invite.organizer);
+	if (!organizer) {
+		return c.json({ error: "This invite names no organizer to answer" }, 400);
+	}
+
+	const from = mailboxId.trim().toLowerCase();
+	const now = new Date().toISOString();
+	const subject = responseSubject(response, invite.summary);
+	const ics = buildImipReply({
+		uid: invite.uid ?? crypto.randomUUID(),
+		summary: invite.summary,
+		organizer,
+		attendee: from,
+		response,
+		dtstamp: now,
+	});
+	const text =
+		`${subject}\n\n` +
+		`This is a calendar response from ${from}` +
+		`${invite.start_at ? ` for ${invite.start_at}` : ""}.`;
+	const { messageId, outgoingMessageId } = generateMessageId(emailDomain(from) ?? "");
+
+	// The Sent copy goes in first, exactly like the reply/forward paths, so
+	// the mailbox shows what went out even when the deferred send fails.
+	try {
+		await stub.createEmail(
+			Folders.SENT,
+			{
+				id: messageId,
+				subject,
+				sender: from,
+				recipient: organizer,
+				date: now,
+				body: text,
+				in_reply_to: email.message_id ?? null,
+				email_references: null,
+				thread_id: email.thread_id ?? messageId,
+				message_id: outgoingMessageId,
+				raw_headers: JSON.stringify([
+					{ key: "from", value: from },
+					{ key: "to", value: organizer },
+					{ key: "subject", value: subject },
+					{ key: "date", value: now },
+					{ key: "message-id", value: `<${outgoingMessageId}>` },
+				]),
+			},
+			[],
+		);
+	} catch (e) {
+		console.error("Storing the invite reply's Sent copy failed:", (e as Error).message);
+	}
+
+	c.executionCtx.waitUntil(
+		sendEmail(c.env.EMAIL, {
+			to: organizer,
+			from,
+			subject,
+			text,
+			attachments: [
+				{
+					content: base64Utf8(ics),
+					filename: "invite.ics",
+					type: "text/calendar",
+					disposition: "attachment",
+				},
+			],
+		}).catch((e) => {
+			console.error("Deferred invite reply delivery failed:", (e as Error).message);
+		}),
+	);
+
+	const updated = await stub.setCalendarInviteResponse(emailId, response);
+	return c.json({ id: messageId, status: "sent", invite: updated }, 202);
 });
 
 // -- Remote-image proxy ----------------------------------------------
@@ -2316,6 +2457,25 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		console.error("Delivery report handling failed:", (e as Error).message);
 	}
 
+
+	// Calendar invite bookkeeping: an iMIP text/calendar part is parsed into
+	// the mailbox's calendar_invites row so the message panel can show the
+	// invitation and the operator can answer it. Best-effort — a failure only
+	// logs — and deliberately AFTER the duplicate check above, so a redelivery
+	// never rewrites the row. The message itself is stored as ordinary mail
+	// either way: this step is in addition to storage, and no fetch and no
+	// send happens here.
+	try {
+		const invite = extractCalendarInvite(parsedEmail.attachments, mailboxId);
+		if (invite) {
+			await stub.recordCalendarInvite({ ...invite, email_id: createResult.id });
+			console.log(
+				`Calendar invite recorded for ${mailboxId}: ${invite.method ?? "unknown method"} ${invite.uid ?? "no uid"} (email ${createResult.id})`,
+			);
+		}
+	} catch (e) {
+		console.error("Calendar invite handling failed:", (e as Error).message);
+	}
 
 	// Rule-driven outbound actions (forward / auto-reply). Both are skipped
 	// for spam and for discarded messages (a discard rule returned above), and
