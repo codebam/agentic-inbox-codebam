@@ -61,11 +61,16 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Remote-image proxy** — Opt-in per sender; images load through a same-origin, R2-cached proxy with a size/type cap, never from the sender's servers
 - **Morning brief** — A trailing-24-hour digest in the app (counts, needs-reply, recent arrivals, categories, fired reminders, tasks due), optionally POSTed to the mailbox webhook each morning
 - **Tasks and deadlines** — Extracted from inbound mail, listed per mailbox and in the message panel, with one-click reminders via the existing follow-up machinery
+- **Bounce and delivery status** — Delivery reports (DSNs) are detected on arrival and a Sent copy shows failed / delayed / delivered with the provider's detail
+- **Storage usage** — A per-mailbox storage card in Settings: database size, attachment count and bytes, and the stored message count
+- **Priority and Other streams** — The conversation list splits into Priority (unread, starred or needs-reply) and Other, with per-stream counts
+- **Large attachments as links** — Files at or above 5 MiB are stored in R2 and travel as a tokenised download link (30-day expiry, swept daily) instead of inside the message, so sends stay under the Email Service limit. Compose-only: replies, forwards and drafts refuse linked files
+- **Calendar invites** — Inbound `text/calendar` parts are parsed at ingest and shown in the message panel; Accept / Decline / Tentative sends an iMIP REPLY to the organizer and records the answer
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 
 ### What's different in this fork
 
-This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev, the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
+This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev, the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
 
 ## Stack
 
@@ -166,7 +171,14 @@ Auth results are cached per Worker isolate for 5 minutes (and in the Cloudflare 
 
 ### Available MCP tools
 
-`list_mailboxes`, `list_emails`, `get_email`, `get_thread`, `search_emails`, `draft_reply`, `create_draft`, `update_draft`, `send_reply`, `send_email`, `mark_email_read`, `move_email`, and `delete_email`.
+`cancel_scheduled_send`, `clear_reminder`, `create_draft`, `create_rule`, `delete_email`,
+`delete_spam_emails`, `discard_draft`, `draft_reply`, `get_attachment`, `get_email`,
+`get_thread`, `list_agent_actions`, `list_emails`, `list_items`, `list_mailboxes`, `list_rules`,
+`list_scheduled_sends`, `list_snoozed`, `list_templates`, `mark_email_read`, `move_email`,
+`search_all_mailboxes`, `search_contacts`, `search_emails`, `send_email`, `send_reply`,
+`set_reminder`, `set_sender_policy`, `snooze_email`, `star_email`, `undo_action`,
+`unsnooze_email`, `update_draft`, and `update_rule`. `get_attachment` is read-only: it returns
+attachment metadata always and text content only, capped and never above 1 MiB.
 
 ## Architecture
 
