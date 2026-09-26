@@ -1885,7 +1885,10 @@ app.get("/api/v1/downloads/:mailboxId/:attachmentId", async (c: AppContext) => {
 	const attachment = await getMailboxStub(c.env, mailboxId).getAttachment(attachmentId);
 	if (!attachment) return notFound();
 	if (!attachment.link_token || attachment.link_token !== token) return notFound();
-	if (!attachment.link_expires_at || Date.parse(attachment.link_expires_at) <= Date.now()) return notFound();
+	// Fail closed on a malformed expiry too: only an instant parsed from the
+	// stored value and still in the future keeps the link alive.
+	const expiresAt = Date.parse(attachment.link_expires_at ?? "");
+	if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return notFound();
 
 	const obj = await c.env.BUCKET.get(attachmentR2Key(attachment));
 	if (!obj) return notFound();
@@ -1893,6 +1896,9 @@ app.get("/api/v1/downloads/:mailboxId/:attachmentId", async (c: AppContext) => {
 	const headers = new Headers();
 	headers.set("Content-Type", attachment.mimetype);
 	headers.set("Cache-Control", "no-store");
+	// This route is reachable without an Access session, so refuse to let a
+	// browser second-guess the declared type.
+	headers.set("X-Content-Type-Options", "nosniff");
 	// Control characters are exactly what has to go from a header value.
 	// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
 	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");
