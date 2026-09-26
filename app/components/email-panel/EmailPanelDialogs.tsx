@@ -3,12 +3,84 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Button, Dialog } from "@cloudflare/kumo";
+import { useEffect, useRef, useState } from "react";
 import { downloadFile } from "~/lib/utils";
 import type { Email } from "~/types";
 
 interface PreviewImage {
 	url: string;
 	filename: string;
+}
+
+/** A fetched preview: one image's blob URL, or why it did not arrive. */
+interface LoadedPreview {
+	url: string;
+	src: string | null;
+	error: string | null;
+}
+
+/**
+ * The preview image, fetched rather than pointed at by the tag.
+ *
+ * An `<img src="/api/v1/...">` load has no way to report a failure — the
+ * dialog showed a broken-image icon and nothing else — and it leaves the
+ * browser to decide whether the response may be rendered as a subresource at
+ * all (the download route serves `Content-Disposition: attachment`, which
+ * some browsers honour for subresources too). Fetching the bytes the way the
+ * rest of the app does keeps the session, renders from a blob URL the browser
+ * cannot refuse, and turns a failure into a sentence.
+ */
+function usePreviewSrc(previewImage: PreviewImage | null) {
+	const [loaded, setLoaded] = useState<LoadedPreview | null>(null);
+	const liveUrlRef = useRef<string | null>(null);
+	const url = previewImage?.url ?? null;
+
+	useEffect(() => {
+		if (!url) return;
+		let cancelled = false;
+		const controller = new AbortController();
+		void (async () => {
+			try {
+				const res = await fetch(url, { signal: controller.signal });
+				if (!res.ok) throw new Error(`Couldn't load this image (${res.status}).`);
+				const blob = await res.blob();
+				const objectUrl = URL.createObjectURL(blob);
+				if (cancelled) {
+					URL.revokeObjectURL(objectUrl);
+					return;
+				}
+				// One preview at a time: the previous blob URL is released as
+				// the next one arrives.
+				if (liveUrlRef.current) URL.revokeObjectURL(liveUrlRef.current);
+				liveUrlRef.current = objectUrl;
+				setLoaded({ url, src: objectUrl, error: null });
+			} catch (e) {
+				if (!cancelled) {
+					setLoaded({
+						url,
+						src: null,
+						error:
+							e instanceof Error && e.name !== "AbortError"
+								? e.message
+								: "Couldn't load this image.",
+					});
+				}
+			}
+		})();
+		return () => {
+			cancelled = true;
+			controller.abort();
+		};
+	}, [url]);
+
+	// The last blob URL lives as long as the panel does.
+	useEffect(() => () => {
+		if (liveUrlRef.current) URL.revokeObjectURL(liveUrlRef.current);
+	}, []);
+
+	if (!url) return { src: null, error: null };
+	// Until this image's bytes arrive the dialog shows its loading line.
+	return loaded?.url === url ? { src: loaded.src, error: loaded.error } : { src: null, error: null };
 }
 
 interface EmailPanelDialogsProps {
@@ -85,6 +157,7 @@ export default function EmailPanelDialogs({
 	onClosePreview,
 }: EmailPanelDialogsProps) {
 	const sourceHeaders = sourceViewEmail ? getSourceHeaders(sourceViewEmail) : [];
+	const preview = usePreviewSrc(previewImage);
 
 	return (
 		<>
@@ -149,11 +222,17 @@ export default function EmailPanelDialogs({
 					<Dialog.Title>{previewImage?.filename}</Dialog.Title>
 					{previewImage && (
 						<div className="mt-4 flex flex-col items-center justify-center bg-kumo-tint/30 rounded-lg p-4 min-h-[200px]">
-							<img
-								src={previewImage.url}
-								alt={previewImage.filename}
-								className="max-w-full max-h-[70vh] object-contain rounded shadow-sm"
-							/>
+							{preview.error ? (
+								<p className="text-sm text-kumo-subtle py-8">{preview.error}</p>
+							) : preview.src ? (
+								<img
+									src={preview.src}
+									alt={previewImage.filename}
+									className="max-w-full max-h-[70vh] object-contain rounded shadow-sm"
+								/>
+							) : (
+								<p className="text-sm text-kumo-subtle py-8">Loading…</p>
+							)}
 						</div>
 					)}
 					<div className="flex justify-between items-center mt-4">
