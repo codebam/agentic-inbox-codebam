@@ -538,4 +538,35 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN delivery_updated_at TEXT;
         `),
 	},
+	{
+		// Calendar invites (workers/lib/calendar.ts): the metadata of the
+		// iMIP text/calendar part one inbound message carried, so the
+		// message panel can show the invitation and the operator can answer
+		// it with an iMIP REPLY. One row per email — the email_id index is
+		// unique, so a second ingest for the same email rewrites the
+		// metadata instead of adding a row. Metadata only: every text
+		// column is bounded by the parser, no ICS body is stored, and the
+		// message itself stays ordinary mail. `response` stays NULL until
+		// the operator answers.
+		name: "29_add_calendar_invites",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS calendar_invites (
+                id TEXT PRIMARY KEY,
+                email_id TEXT NOT NULL,
+                uid TEXT,
+                method TEXT,
+                summary TEXT,
+                organizer TEXT,
+                location TEXT,
+                start_at TEXT,
+                end_at TEXT,
+                attendee TEXT,
+                response TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_invites_email
+                ON calendar_invites(email_id);
+        `),
+	},
 ];

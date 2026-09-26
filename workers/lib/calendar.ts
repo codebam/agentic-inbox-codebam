@@ -329,7 +329,6 @@ export function parseIcsEvent(
 			continue;
 		}
 		if (property.name === "END" && value === "VEVENT") {
-			inEvent = false;
 			closed = true;
 			break;
 		}
