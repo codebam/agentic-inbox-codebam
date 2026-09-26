@@ -71,6 +71,10 @@ export interface AttachmentInfo {
 	size: number;
 	content_id?: string | null;
 	disposition?: string | null;
+	/** Public download link capability token, NULL on ordinary attachments (migration 28). */
+	link_token?: string | null;
+	/** ISO 8601 instant that link stops working; NULL when there is no link. */
+	link_expires_at?: string | null;
 }
 
 // ── Zod Schemas ────────────────────────────────────────────────────

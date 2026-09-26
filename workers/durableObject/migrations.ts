@@ -538,4 +538,17 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN delivery_updated_at TEXT;
         `),
 	},
+	{
+		// Public download links for large attachments (workers/lib/attachment-links.ts):
+		// the capability token the message body carries, and the instant the
+		// link stops working. Both stay NULL for ordinary attachments — a
+		// linked file is stored in R2 like any other, and only its row carries
+		// the token. The daily housekeeping sweep deletes the blobs of links
+		// whose expiry has passed and clears the two columns.
+		name: "28_add_attachment_links",
+		sql: txn(`
+            ALTER TABLE attachments ADD COLUMN link_token TEXT;
+            ALTER TABLE attachments ADD COLUMN link_expires_at TEXT;
+        `),
+	},
 ];

@@ -377,6 +377,10 @@ interface AttachmentData {
 	size: number;
 	content_id?: string | null;
 	disposition?: string | null;
+	/** Public download link token; set only for linked attachments (migration 28). */
+	link_token?: string | null;
+	/** ISO 8601 instant that link stops working; NULL when there is no link. */
+	link_expires_at?: string | null;
 }
 
 /** Most recent agent actions kept per mailbox; older rows are pruned on write. */
