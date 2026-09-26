@@ -336,4 +336,10 @@ export interface ExtractedItem {
 	status: ItemStatus;
 	created_at: string;
 	updated_at: string;
+	/**
+	 * The source message's sender and subject, joined by the items list for
+	 * the tasks view. Null when the message no longer exists.
+	 */
+	sender?: string | null;
+	subject?: string | null;
 }

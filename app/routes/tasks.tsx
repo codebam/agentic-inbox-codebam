@@ -18,19 +18,16 @@ import {
 	CheckIcon,
 	ProhibitIcon,
 } from "@phosphor-icons/react";
-import { useQueries } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { formatDetailDate } from "shared/dates";
 import { useUIStore } from "~/hooks/useUIStore";
-import api from "~/services/api";
 import { useSetReminder } from "~/queries/emails";
 import {
 	itemReminderInstant,
 	useItems,
 	useUpdateItemStatus,
 } from "~/queries/items";
-import { queryKeys } from "~/queries/keys";
 import type { ExtractedItem } from "~/types";
 
 /** Rows per bucket; the server caps one page at 50. */
@@ -332,34 +329,18 @@ export default function TasksRoute() {
 		? [...(done.data?.items ?? []), ...(dismissed.data?.items ?? [])]
 		: [];
 
-	// The frozen item row carries only the source message's id, so the sender
-	// and subject shown on each row come from the same cached email-detail
-	// query the message panel uses — one query per distinct message, and a
-	// message whose detail fails to load still gets a working link.
-	const sourceIds = [
-		...new Set(
-			[
-				...groups.flatMap((group) => group.query.data?.items ?? []),
-				...closedItems,
-			].map((item) => item.email_id),
-		),
-	];
-
-	const sourceQueries = useQueries({
-		queries: sourceIds.map((emailId) => ({
-			queryKey: mailboxId
-				? queryKeys.emails.detail(mailboxId, emailId)
-				: ["emails", "_disabled_detail"],
-			queryFn: () => api.getEmail(mailboxId!, emailId),
-			enabled: !!mailboxId,
-			staleTime: 60_000,
-		})),
-	});
+	// Each row carries its source message's sender and subject — the items
+	// query joins them — so the view makes no per-item request. A message
+	// that no longer exists simply renders without them.
 	const sources = new Map<string, { sender: string; subject: string }>();
-	sourceIds.forEach((emailId, index) => {
-		const email = sourceQueries[index]?.data;
-		if (email) sources.set(emailId, { sender: email.sender, subject: email.subject });
-	});
+	for (const item of [
+		...groups.flatMap((group) => group.query.data?.items ?? []),
+		...closedItems,
+	]) {
+		if (item.sender != null && item.subject != null) {
+			sources.set(item.email_id, { sender: item.sender, subject: item.subject });
+		}
+	}
 
 	const isLoading = groups.every((group) => group.query.isLoading);
 	const isFetching =

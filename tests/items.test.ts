@@ -543,7 +543,39 @@ describe("items routes", () => {
 			status: "open",
 			created_at: expect.any(String),
 			updated_at: expect.any(String),
+			// The source message does not exist here, so the joined fields
+			// come back null rather than missing.
+			sender: null,
+			subject: null,
 		});
+	});
+
+	it("carries the source message's sender and subject, null once it is gone", async () => {
+		const mailbox = "items-route-source@example.com";
+		await registerMailbox(mailbox);
+		const stub = stubFor(mailbox);
+		await seedItems(stub, [
+			{ id: "s-1", emailId: "src-mail", createdAt: "2026-01-02T00:00:00.000Z" },
+			{ id: "s-2", emailId: "gone-mail", createdAt: "2026-01-01T00:00:00.000Z" },
+		]);
+		await runInDurableObject(stub, async (_instance, state) => {
+			state.storage.sql.exec(
+				`INSERT INTO emails (id, folder_id, subject, sender, recipient, date, read, starred)
+				 VALUES ('src-mail', (SELECT id FROM folders WHERE name = 'inbox' OR id = 'inbox' LIMIT 1),
+					'Invoice due Friday', 'billing@example.net', 'box@example.com',
+					'2026-01-02T00:00:00.000Z', 1, 0)`,
+			);
+		});
+
+		const { status, body } = await getItems(mailbox);
+		expect(status).toBe(200);
+		const byId = new Map(body.items.map((item) => [item.id, item]));
+		// The tasks view renders these on every row instead of fetching one
+		// message detail per row.
+		expect(byId.get("s-1")?.sender).toBe("billing@example.net");
+		expect(byId.get("s-1")?.subject).toBe("Invoice due Friday");
+		expect(byId.get("s-2")?.sender).toBeNull();
+		expect(byId.get("s-2")?.subject).toBeNull();
 	});
 
 	it("applies the status and due filters and clamps the paging", async () => {

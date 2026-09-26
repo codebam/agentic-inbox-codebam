@@ -51,6 +51,13 @@ export interface ExtractedItem {
 	status: ItemStatus;
 	created_at: string;
 	updated_at: string;
+	/**
+	 * The source message's sender and subject, joined by listItems for the
+	 * tasks view. Null when the message no longer exists, absent from the
+	 * paths that do not join them.
+	 */
+	sender?: string | null;
+	subject?: string | null;
 }
 
 /** The parsed content of one item, before the Durable Object stamps ids. */

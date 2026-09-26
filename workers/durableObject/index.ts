@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, isNull, lt, lte, gte } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray, ne, isNotNull, isNull, lt, lte, gte, getTableColumns } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -3931,15 +3931,34 @@ export class MailboxDO extends DurableObject<Env> {
 				.where(where)
 				.get()?.total ?? 0;
 
+		// The rows carry their source message's sender and subject: the tasks
+		// view renders both on every row, and joining them here is what keeps
+		// that view to one request per group instead of one per item.
 		const items = this.db
-			.select()
+			.select({
+				...getTableColumns(schema.extractedItems),
+				sender: schema.emails.sender,
+				subject: schema.emails.subject,
+			})
 			.from(schema.extractedItems)
+			.leftJoin(
+				schema.emails,
+				eq(schema.emails.id, schema.extractedItems.email_id),
+			)
 			.where(where)
-			.orderBy(desc(schema.extractedItems.created_at), sql`rowid DESC`)
+			.orderBy(
+				desc(schema.extractedItems.created_at),
+				sql`extracted_items.rowid DESC`,
+			)
 			.limit(limit)
 			.offset((page - 1) * limit)
 			.all()
-			.map(parseExtractedItemRow)
+			.map((row) =>
+				parseExtractedItemRow(row, {
+					sender: row.sender,
+					subject: row.subject,
+				}),
+			)
 			.filter((item): item is ExtractedItem => item !== null);
 
 		return { items, totalCount };
@@ -3959,7 +3978,7 @@ export class MailboxDO extends DurableObject<Env> {
 			.orderBy(desc(schema.extractedItems.created_at), sql`rowid DESC`)
 			.limit(ITEM_LIST_LIMIT_MAX)
 			.all()
-			.map(parseExtractedItemRow)
+			.map((row) => parseExtractedItemRow(row))
 			.filter((item): item is ExtractedItem => item !== null);
 	}
 
@@ -4341,7 +4360,10 @@ type ExtractedItemRow = typeof schema.extractedItems.$inferSelect;
  * Unknown rows are ignored rather than trusted, so a hand-edited database
  * cannot put a bogus status or kind in front of the UI or the agent.
  */
-function parseExtractedItemRow(row: ExtractedItemRow): ExtractedItem | null {
+function parseExtractedItemRow(
+	row: ExtractedItemRow,
+	source?: { sender: string | null; subject: string | null },
+): ExtractedItem | null {
 	const title = typeof row.title === "string" ? row.title.trim() : "";
 	if (!title) return null;
 	if (!isItemKind(row.kind) || !isItemStatus(row.status)) return null;
@@ -4356,6 +4378,7 @@ function parseExtractedItemRow(row: ExtractedItemRow): ExtractedItem | null {
 		status: row.status,
 		created_at: String(row.created_at ?? ""),
 		updated_at: String(row.updated_at ?? ""),
+		...(source ? { sender: source.sender, subject: source.subject } : {}),
 	};
 }
 
