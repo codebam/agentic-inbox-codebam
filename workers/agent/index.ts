@@ -27,6 +27,7 @@ import {
 	toolListMailboxes,
 	toolListEmails,
 	toolGetEmail,
+	toolGetAttachment,
 	toolGetThread,
 	toolSearchEmails,
 	toolSearchAllMailboxes,
@@ -356,6 +357,29 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolGetEmail(env, mailboxId, args.emailId);
+			},
+		}),
+
+
+
+
+		get_attachment: defineTool({
+			description:
+				"Read one attachment's metadata and, for text-ish files (text/*, application/json, application/xml, application/javascript, application/x-ndjson, message/rfc822), its text content, decoded as UTF-8 and capped at 200000 characters. Read-only and bounded: binary attachments, files over 1 MiB, and blobs missing from storage come back as metadata plus an omission reason — never as raw bytes.",
+			parameters: z.object({
+				...mailboxIdField,
+				attachmentId: z
+					.string()
+					.describe(
+						"The attachment ID from an email's attachments list (get_email)",
+					),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetAttachment(env, mailboxId, {
+					attachmentId: args.attachmentId,
+				});
 			},
 		}),
 
