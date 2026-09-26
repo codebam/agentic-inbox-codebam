@@ -211,6 +211,143 @@ export async function toolGetThread(
 	return getFullThread(stub, threadId);
 }
 
+// ── get_attachment ─────────────────────────────────────────────────
+
+/** Text-ish mimetypes whose bytes get_attachment decodes and returns. */
+const ATTACHMENT_TEXT_MIMETYPES = new Set([
+	"application/json",
+	"application/xml",
+	"application/javascript",
+	"application/x-ndjson",
+	"message/rfc822",
+]);
+
+/** Characters of attachment text returned before the content is clipped. */
+const ATTACHMENT_TEXT_MAX_CHARS = 200000;
+
+/** Stored attachment sizes above this are never read (bytes). */
+const ATTACHMENT_TEXT_MAX_BYTES = 1048576;
+
+/** True for the text-ish mimetypes whose content the tool returns as text. */
+function isTextAttachmentMimetype(mimetype: string): boolean {
+	const base = mimetype.split(";")[0]?.trim().toLowerCase() ?? "";
+	return base.startsWith("text/") || ATTACHMENT_TEXT_MIMETYPES.has(base);
+}
+
+/** Content of a get_attachment result: decoded text, or why it was omitted. */
+type AttachmentToolContent =
+	| { kind: "text"; text: string; truncated: boolean }
+	| { kind: "omitted"; reason: string };
+
+/** One stored attachment row, as MailboxDO.getAttachment returns it. */
+type MailboxAttachmentRow = {
+	id: string;
+	email_id: string;
+	filename: string;
+	mimetype: string;
+	size: number;
+	content_id: string | null;
+	disposition: string | null;
+};
+
+/**
+ * The attachment RPC the get_attachment tool calls. Declared structurally for
+ * the same reason as the contacts and template tools: the stub's own RPC
+ * result types carry `& Disposable`, which the MCP result wrapper cannot
+ * accept.
+ */
+type MailboxAttachmentStub = {
+	getAttachment: (id: string) => Promise<MailboxAttachmentRow | null>;
+};
+
+function mailboxAttachmentStub(
+	env: Env,
+	mailboxId: string,
+): MailboxAttachmentStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/** Result of the get_attachment tool: metadata plus content, or not found. */
+type AttachmentToolResult =
+	| {
+			mailboxId: string;
+			attachment: {
+				id: string;
+				emailId: string;
+				filename: string;
+				mimetype: string;
+				size: number;
+				disposition: string | null;
+				contentId: string | null;
+			};
+			content: AttachmentToolContent;
+	  }
+	| { error: string };
+
+/**
+ * Read one attachment's metadata and, when it is text-ish, its content.
+ *
+ * Read-only and bounded: metadata always comes back for an attachment that
+ * exists; content comes back only for text-ish mimetypes, only for stored
+ * sizes at or below 1 MiB, and only when the R2 object exists. Text is
+ * decoded as UTF-8 and clipped to 200000 characters (`truncated: true`).
+ * Binary and oversized attachments, and blobs missing from storage, come
+ * back as an omission reason — this tool never returns raw bytes, never
+ * sends mail, and never writes state.
+ */
+export async function toolGetAttachment(
+	env: Env,
+	mailboxId: string,
+	params: { attachmentId: string },
+): Promise<AttachmentToolResult> {
+	const attachment = await mailboxAttachmentStub(env, mailboxId).getAttachment(
+		params.attachmentId,
+	);
+	if (!attachment) return { error: "Attachment not found" };
+
+	const metadata = {
+		id: attachment.id,
+		emailId: attachment.email_id,
+		filename: attachment.filename,
+		mimetype: attachment.mimetype,
+		size: attachment.size,
+		disposition: attachment.disposition,
+		contentId: attachment.content_id,
+	};
+
+	let content: AttachmentToolContent;
+	if (!isTextAttachmentMimetype(attachment.mimetype)) {
+		content = {
+			kind: "omitted",
+			reason: `Attachment mimetype "${attachment.mimetype}" is not text; content is omitted.`,
+		};
+	} else if (attachment.size > ATTACHMENT_TEXT_MAX_BYTES) {
+		content = {
+			kind: "omitted",
+			reason: `Attachment size ${attachment.size} bytes exceeds the ${ATTACHMENT_TEXT_MAX_BYTES}-byte text limit; content is omitted.`,
+		};
+	} else {
+		// Same key shape as deleteEmailWithAttachments and the download route:
+		// attachments/<email id>/<attachment id>/<filename>.
+		const object = await env.BUCKET.get(
+			`attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`,
+		);
+		if (!object) {
+			content = { kind: "omitted", reason: "file not found in storage" };
+		} else {
+			const text = await object.text();
+			const truncated = text.length > ATTACHMENT_TEXT_MAX_CHARS;
+			content = {
+				kind: "text",
+				text: truncated ? text.slice(0, ATTACHMENT_TEXT_MAX_CHARS) : text,
+				truncated,
+			};
+		}
+	}
+
+	return { mailboxId, attachment: metadata, content };
+}
+
 // ── search_emails ──────────────────────────────────────────────────
 
 /** Filters accepted by the shared search tools (agent + MCP). */
