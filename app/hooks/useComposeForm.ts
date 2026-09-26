@@ -16,6 +16,7 @@ import {
 	stripHtml,
 	toEmailListValue,
 } from "~/lib/utils";
+import { ensureMessageBody } from "shared/compose-body";
 import {
 	blobToBase64,
 	createPendingAttachment,
@@ -564,8 +565,7 @@ export function useComposeForm(mailboxId?: string) {
 			bcc: toEmailListValue(bccRecipients),
 			from,
 			subject,
-			html: body,
-			text: htmlToPlainText(body),
+			...ensureMessageBody(body),
 			...(attachmentPayloads.length > 0 ? { attachments: attachmentPayloads } : {}),
 			// The linked bytes never travel in the message: the server stores
 			// them in R2 and appends the download links to the body.
