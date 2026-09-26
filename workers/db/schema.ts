@@ -102,6 +102,14 @@ export const attachments = sqliteTable("attachments", {
 	size: integer("size").notNull(),
 	content_id: text("content_id"),
 	disposition: text("disposition"),
+	/**
+	 * Capability token of the public download link, NULL on ordinary
+	 * attachments (migration 28_add_attachment_links). The token is the only
+	 * credential the public route needs; the sweep clears it with the expiry.
+	 */
+	link_token: text("link_token"),
+	/** ISO 8601 instant the public link stops working; NULL when there is no link. */
+	link_expires_at: text("link_expires_at"),
 });
 
 

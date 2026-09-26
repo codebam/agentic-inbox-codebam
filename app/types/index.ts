@@ -132,6 +132,15 @@ export interface Attachment {
 	size: number;
 	content_id?: string;
 	disposition?: string;
+	/**
+	 * Capability token of this attachment's public download link, when the
+	 * file was too large for the send binding (migration 28). Absent/null on
+	 * an ordinary attachment; the link's URL is
+	 * `/api/v1/downloads/{mailboxId}/{id}?token={link_token}`.
+	 */
+	link_token?: string | null;
+	/** ISO 8601 instant the public link stops working; absent/null when there is no link. */
+	link_expires_at?: string | null;
 }
 
 export interface Folder {

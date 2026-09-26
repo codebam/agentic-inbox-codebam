@@ -7,14 +7,24 @@ import { cors } from "hono/cors";
 import PostalMime from "postal-mime";
 import { z } from "zod";
 import { sendEmail } from "./email-sender";
-import { storeAttachments, type StoredAttachment } from "./lib/attachments";
+import { storeAttachments, attachmentR2Key, type StoredAttachment } from "./lib/attachments";
 import {
 	validateSender,
 	SenderValidationError,
 	generateMessageId,
 	buildThreadingHeaders,
+	getMailboxStub,
 	listMailboxes,
 } from "./lib/email-helpers";
+import {
+	buildDownloadUrl,
+	buildLinkedAttachmentSection,
+	buildLinkedAttachmentText,
+	linkedAttachmentCapError,
+	linkedAttachmentSize,
+	toLinkedAttachmentInput,
+	type LinkedAttachmentLink,
+} from "./lib/attachment-links";
 import {
 	ApplyRuleSchema,
 	SendEmailRequestSchema,
@@ -162,6 +172,16 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 	const v = c.req.query(key);
 	if (v === undefined || v === "") return undefined;
 	return v === "true" || v === "1";
+}
+
+/**
+ * True when a request body carries the `linked_attachments` field at all.
+ * Drafts and the reply/forward routes refuse it — the composer only offers
+ * linking for new messages — and a raw presence check keeps that refusal
+ * working even though those routes' schemas never declare the field.
+ */
+function isLinkedAttachmentsFieldPresent(body: Record<string, unknown>): boolean {
+	return body["linked_attachments"] !== undefined && body["linked_attachments"] !== null;
 }
 
 
@@ -656,7 +676,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const body = SendEmailRequestSchema.parse(await c.req.json());
-	const { to, cc, bcc, from, subject, html, text, attachments, in_reply_to, references, thread_id } = body;
+	const { to, cc, bcc, from, subject, html, text, attachments, linked_attachments, in_reply_to, references, thread_id } = body;
 
 	let toStr: string, fromEmail: string, fromDomain: string;
 	try {
@@ -666,17 +686,69 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 		throw e;
 	}
 
+	// The linked-file caps are checked before anything is written — the
+	// composer applies the same limits (app/lib/attachments.ts) and a direct
+	// API caller gets a 400 instead of a half-stored message.
+	const linkedCapError = linkedAttachmentCapError(
+		(linked_attachments ?? []).map(linkedAttachmentSize),
+	);
+	if (linkedCapError) return c.json({ error: linkedCapError }, 400);
+
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 	const stub = c.var.mailboxStub;
 	const rateLimitError = await stub.checkSendRateLimit();
 	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
+	// Linked files use the same R2 keying as ordinary attachments; only their
+	// rows differ — each carries a public download link token and a 30-day
+	// expiry. Their bytes are never handed to the email binding.
+	const linkedAttachmentData = await storeAttachments(
+		c.env.BUCKET,
+		messageId,
+		linked_attachments?.map(toLinkedAttachmentInput),
+		{ linked: true },
+	);
+	// Stored rows are re-checked with their exact byte lengths, so a caller
+	// cannot get past the caps by lying about `size`; a rejected batch is
+	// removed again (no email row exists yet, so nothing references it).
+	const storedCapError = linkedAttachmentCapError(linkedAttachmentData);
+	if (storedCapError) {
+		await c.env.BUCKET.delete(linkedAttachmentData.map(attachmentR2Key));
+		return c.json({ error: storedCapError }, 400);
+	}
+
+	const links: LinkedAttachmentLink[] = linkedAttachmentData.flatMap((att) =>
+		att.link_token && att.link_expires_at
+			? [
+					{
+						filename: att.filename,
+						size: att.size,
+						url: buildDownloadUrl(
+							mailboxId,
+							att.id,
+							att.link_token,
+							new URL(c.req.url).origin,
+						),
+						expiresAt: att.link_expires_at,
+					},
+				]
+			: [],
+	);
+	// The recipient needs the links, so the download section travels with the
+	// message and the Sent copy stores exactly what was sent. A message with
+	// no HTML part gets the plain-text version instead.
+	const outgoingHtml = html
+		? `${html}${buildLinkedAttachmentSection(links)}`
+		: html;
+	const outgoingText = text
+		? `${text}${buildLinkedAttachmentText(links)}`
+		: text;
 
 	await stub.createEmail(Folders.SENT, {
 		id: messageId, subject, sender: fromEmail, recipient: toStr,
 		cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
 		bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
-		date: new Date().toISOString(), body: html || text || "",
+		date: new Date().toISOString(), body: outgoingHtml || outgoingText || "",
 		in_reply_to: in_reply_to || null, email_references: references ? JSON.stringify(references) : null,
 		thread_id: thread_id || in_reply_to || messageId, message_id: outgoingMessageId,
 		raw_headers: JSON.stringify([
@@ -687,11 +759,11 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 			{ key: "subject", value: subject }, { key: "date", value: new Date().toISOString() },
 			{ key: "message-id", value: `<${outgoingMessageId}>` },
 		]),
-	}, attachmentData);
+	}, [...attachmentData, ...linkedAttachmentData]);
 
 	c.executionCtx.waitUntil(
 		sendEmail(c.env.EMAIL, {
-			to, cc, bcc, from, subject, html, text,
+			to, cc, bcc, from, subject, html: outgoingHtml, text: outgoingText,
 			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
 			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
 		}).catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
@@ -701,7 +773,17 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id, applySignature } = DraftBodySchema.parse(await c.req.json());
+	const rawBody: Record<string, unknown> = await c.req.json();
+	// Linked attachments are only offered for new messages: a draft can be
+	// edited into a reply or a forward, where links are refused, and the
+	// composer never sends the field here. Refuse rather than drop it.
+	if (isLinkedAttachmentsFieldPresent(rawBody)) {
+		return c.json(
+			{ error: "Linked attachments are only supported on new messages." },
+			400,
+		);
+	}
+	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id, applySignature } = DraftBodySchema.parse(rawBody);
 	const stub = c.var.mailboxStub;
 	// Thread lookups go through their structural shape: the real RPC type is
 	// excessively deep to instantiate (see the Durable Object RPC shapes above).
@@ -1776,6 +1858,47 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	if (!obj) return c.json({ error: "Attachment file not found" }, 404);
 	const headers = new Headers();
 	headers.set("Content-Type", attachment.mimetype);
+	// Control characters are exactly what has to go from a header value.
+	// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
+	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");
+	headers.set("Content-Disposition", `attachment; filename="${sanitized}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
+	return new Response(obj.body, { headers });
+});
+
+/**
+ * Public attachment download link (workers/lib/attachment-links.ts). The
+ * token in the query string IS the capability, so this route sits outside
+ * the Cloudflare Access gate (see isPublicDownloadPath in workers/app.ts)
+ * and outside the mailbox middleware. Every miss — no token, unknown
+ * attachment, wrong token, expired link — answers the same 404, so the
+ * route never confirms that an id exists. The bytes go out with the same
+ * header hygiene as the authenticated download route, plus
+ * `Cache-Control: no-store`: a link can expire or be swept at any moment.
+ */
+app.get("/api/v1/downloads/:mailboxId/:attachmentId", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const attachmentId = c.req.param("attachmentId")!;
+	const token = c.req.query("token");
+	const notFound = () => c.json({ error: "Not found" }, 404);
+	if (!token) return notFound();
+
+	const attachment = await getMailboxStub(c.env, mailboxId).getAttachment(attachmentId);
+	if (!attachment) return notFound();
+	if (!attachment.link_token || attachment.link_token !== token) return notFound();
+	// Fail closed on a malformed expiry too: only an instant parsed from the
+	// stored value and still in the future keeps the link alive.
+	const expiresAt = Date.parse(attachment.link_expires_at ?? "");
+	if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return notFound();
+
+	const obj = await c.env.BUCKET.get(attachmentR2Key(attachment));
+	if (!obj) return notFound();
+
+	const headers = new Headers();
+	headers.set("Content-Type", attachment.mimetype);
+	headers.set("Cache-Control", "no-store");
+	// This route is reachable without an Access session, so refuse to let a
+	// browser second-guess the declared type.
+	headers.set("X-Content-Type-Options", "nosniff");
 	// Control characters are exactly what has to go from a header value.
 	// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
 	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");

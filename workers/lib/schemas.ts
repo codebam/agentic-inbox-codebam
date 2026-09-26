@@ -71,6 +71,10 @@ export interface AttachmentInfo {
 	size: number;
 	content_id?: string | null;
 	disposition?: string | null;
+	/** Public download link capability token, NULL on ordinary attachments (migration 28). */
+	link_token?: string | null;
+	/** ISO 8601 instant that link stops working; NULL when there is no link. */
+	link_expires_at?: string | null;
 }
 
 // ── Zod Schemas ────────────────────────────────────────────────────
@@ -103,6 +107,25 @@ export const SendEmailRequestSchema = z
 					filename: z.string(),
 					type: z.string(),
 					disposition: z.enum(["attachment", "inline"]),
+					contentId: z.string().optional(),
+				}),
+			)
+			.optional(),
+		// Files too large for the send binding: their bytes go to R2 and the
+		// body carries a public download link. Same entry shape as
+		// `attachments[]` — `mimetype` is accepted as an alias for `type` —
+		// plus the declared `size` the cap check reads before storing
+		// anything. Only the new-message send route accepts them; replies,
+		// forwards and drafts refuse the field.
+		linked_attachments: z
+			.array(
+				z.object({
+					content: z.string(), // base64 encoded
+					filename: z.string(),
+					type: z.string().optional(),
+					mimetype: z.string().optional(),
+					size: z.number().nonnegative().optional(),
+					disposition: z.enum(["attachment", "inline"]).optional(),
 					contentId: z.string().optional(),
 				}),
 			)

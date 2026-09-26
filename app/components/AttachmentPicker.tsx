@@ -7,6 +7,7 @@ import { Button } from "@cloudflare/kumo";
 import {
 	FileIcon,
 	ImageIcon,
+	LinkIcon,
 	PaperclipIcon,
 	XIcon,
 } from "@phosphor-icons/react";
@@ -19,6 +20,7 @@ import {
 } from "react";
 import {
 	formatFileSize,
+	LINK_THRESHOLD_BYTES,
 	MAX_FILES,
 	MAX_TOTAL_BYTES,
 	type PendingAttachment,
@@ -36,10 +38,23 @@ interface AttachmentPickerProps {
 	onRemove: (id: string) => void;
 	className?: string;
 	children?: ReactNode;
+	/**
+	 * Files at or above LINK_THRESHOLD_BYTES, shared as public download links
+	 * instead of travelling in the message. Only new messages offer them, so
+	 * the composer passes these only when linking is available.
+	 */
+	linkedAttachments?: PendingAttachment[];
+	/** Inline messages for linked files the caps rejected. */
+	linkedErrors?: string[];
+	/** Footer summary for the linked list, e.g. "1 file · 12 MB shared as links". */
+	linkedSummary?: string | null;
+	/** Removes a linked file; falls back to onRemove when not given. */
+	onRemoveLinked?: (id: string) => void;
 }
 
 
 const MAX_TOTAL_LABEL = formatFileSize(MAX_TOTAL_BYTES);
+const LINK_THRESHOLD_LABEL = formatFileSize(LINK_THRESHOLD_BYTES);
 
 
 /**
@@ -58,7 +73,13 @@ export default function AttachmentPicker({
 	onRemove,
 	className,
 	children,
+	linkedAttachments = [],
+	linkedErrors = [],
+	linkedSummary = null,
+	onRemoveLinked,
 }: AttachmentPickerProps) {
+	const linksEnabled = !!onRemoveLinked;
+	const removeLinked = onRemoveLinked ?? onRemove;
 	const inputRef = useRef<HTMLInputElement>(null);
 	const dragDepthRef = useRef(0);
 	const [isDragging, setIsDragging] = useState(false);
@@ -140,6 +161,7 @@ export default function AttachmentPicker({
 					</Button>
 					<span className="text-xs text-kumo-subtle">
 						or drop files here · up to {MAX_FILES} files, {MAX_TOTAL_LABEL} total
+						{linksEnabled ? ` · over ${LINK_THRESHOLD_LABEL} becomes a download link` : ""}
 					</span>
 				</div>
 				<input
@@ -186,9 +208,49 @@ export default function AttachmentPicker({
 				)}
 
 
-				{errors.length > 0 && (
+				{linkedAttachments.length > 0 && (
+					<div className="space-y-1">
+						<div className="flex items-center gap-1.5 text-xs text-kumo-subtle">
+							<LinkIcon size={12} className="shrink-0" />
+							<span className="truncate">
+								{linkedSummary ?? "Shared as download links"}
+							</span>
+						</div>
+						<div className="flex flex-wrap gap-2">
+							{linkedAttachments.map((attachment) => (
+								<div
+									key={attachment.id}
+									className="flex items-center gap-2 rounded-md border border-dashed border-kumo-line px-3 py-2 text-sm"
+								>
+									<FileIcon size={16} className="text-kumo-subtle shrink-0" />
+									<span className="text-kumo-default font-medium truncate max-w-[140px]">
+										{attachment.filename}
+									</span>
+									<span className="text-kumo-subtle">
+										{formatFileSize(attachment.size)}
+									</span>
+									<span className="rounded-sm bg-kumo-tint px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-kumo-subtle">
+										Link
+									</span>
+									<button
+										type="button"
+										onClick={() => removeLinked(attachment.id)}
+										disabled={disabled}
+										aria-label={`Remove ${attachment.filename}`}
+										className="text-kumo-subtle hover:text-kumo-default disabled:opacity-50"
+									>
+										<XIcon size={14} />
+									</button>
+								</div>
+							))}
+						</div>
+					</div>
+				)}
+
+
+				{[...errors, ...linkedErrors].length > 0 && (
 					<ul className="space-y-1">
-						{errors.map((message) => (
+						{[...errors, ...linkedErrors].map((message) => (
 							<li key={message} className="text-xs text-kumo-error">
 								{message}
 							</li>

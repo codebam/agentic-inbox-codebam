@@ -3,7 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Banner, Button, Dialog, Input, Text } from "@cloudflare/kumo";
-import { ClockIcon, FloppyDiskIcon, PaperPlaneTiltIcon, PaperclipIcon } from "@phosphor-icons/react";
+import { ClockIcon, FloppyDiskIcon, LinkIcon, PaperPlaneTiltIcon, PaperclipIcon } from "@phosphor-icons/react";
 import { lazy, Suspense } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
@@ -46,6 +46,10 @@ export default function ComposeEmail() {
 		attachments,
 		attachmentErrors,
 		attachmentSummary,
+		linkedAttachments,
+		linkedAttachmentErrors,
+		linkedAttachmentSummary,
+		handleRemoveLinkedAttachment,
 		isEncodingAttachments,
 		handleAddAttachments,
 		handleRemoveAttachment,
@@ -67,6 +71,10 @@ export default function ComposeEmail() {
 						disabled={isScheduling || isSavingDraft}
 						onAddFiles={(files) => { void handleAddAttachments(files); }}
 						onRemove={handleRemoveAttachment}
+						linkedAttachments={linkedAttachments}
+						linkedErrors={linkedAttachmentErrors}
+						linkedSummary={linkedAttachmentSummary}
+						onRemoveLinked={handleRemoveLinkedAttachment}
 					>
 					{error && <Banner variant="error" text={error} />}
 					<div className="flex items-center gap-2">
@@ -150,6 +158,12 @@ export default function ComposeEmail() {
 								<span className="flex items-center gap-1.5 text-xs text-kumo-subtle truncate">
 									<PaperclipIcon size={14} className="shrink-0" />
 									{attachmentSummary}
+								</span>
+							)}
+							{linkedAttachmentSummary && (
+								<span className="flex items-center gap-1.5 text-xs text-kumo-subtle truncate">
+									<LinkIcon size={14} className="shrink-0" />
+									{linkedAttachmentSummary}
 								</span>
 							)}
 						</div>

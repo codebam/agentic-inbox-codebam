@@ -13,12 +13,40 @@
  * module, so the picker, the tests and any future caller read the same
  * numbers: tune them in this block.
  *
+ * Files at or above LINK_THRESHOLD_BYTES are too large for the send binding,
+ * so the composer routes them into the linked list instead: their bytes are
+ * stored in R2 and the message carries a public download link. That list has
+ * its own caps (MAX_LINKED_*), enforced here in the composer and again on the
+ * send route.
+ *
  * Everything in this file except `blobToBase64` is pure, so it can be unit
  * tested inside workerd without a DOM.
  */
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 export const MAX_FILES = 20;
+
+/**
+ * Files at or above this size are too large to travel in the message: the
+ * Cloudflare Email Service send binding rejects a message — headers, body and
+ * attachments together — over its documented total-message limit, so the
+ * composer routes them into the linked list instead. Their bytes are stored
+ * in R2 and the message carries a public download link.
+ * https://developers.cloudflare.com/email-service/api/send-emails/workers-api/
+ *
+ * These five numbers are the single source of truth for both the composer and
+ * the server-side enforcement on the send route (workers/lib/attachment-links.ts
+ * re-exports them for the worker).
+ */
+export const LINK_THRESHOLD_BYTES = 5 * 1024 * 1024;
+/** Largest single file that may be shared as a download link. */
+export const MAX_LINKED_FILE_BYTES = 60 * 1024 * 1024;
+/** Largest combined size of the files shared as links in one message. */
+export const MAX_LINKED_TOTAL_BYTES = 100 * 1024 * 1024;
+/** Most files one message may share as download links. */
+export const MAX_LINKED_FILES = 5;
+/** How long a public download link stays valid, in days. */
+export const LINK_TTL_DAYS = 30;
 
 
 export const DEFAULT_ATTACHMENT_TYPE = "application/octet-stream";
@@ -56,6 +84,17 @@ export interface AttachmentPayload {
 	type: string;
 	disposition: AttachmentDisposition;
 	contentId?: string;
+}
+
+
+/**
+ * One entry of the `linked_attachments[]` array the send API accepts: a file
+ * whose bytes are stored in R2 and whose row carries a public download link.
+ * Mirrors the `attachments[]` entry — `type` is the mime type — plus the
+ * declared `size` the server's cap check reads before storing anything.
+ */
+export interface LinkedAttachmentPayload extends AttachmentPayload {
+	size: number;
 }
 
 
@@ -156,6 +195,66 @@ export function validateAttachmentSelection(
 }
 
 
+/** True when a picked file is too large for the send binding, so it is shared as a link. */
+export function isLinkableAttachment(candidate: { size: number }): boolean {
+	return candidate.size >= LINK_THRESHOLD_BYTES;
+}
+
+
+/**
+ * Apply the linked-file limits to a batch of picked files, given the links
+ * already held. Mirrors `validateAttachmentSelection`; the send route enforces
+ * the same caps (workers/lib/attachment-links.ts) so a direct API caller
+ * cannot store more than one message may link.
+ */
+export function validateLinkedAttachmentSelection(
+	candidates: readonly AttachmentCandidate[],
+	existing: readonly { size: number }[] = [],
+): AttachmentSelectionResult {
+	const accepted: AttachmentCandidate[] = [];
+	const errors: string[] = [];
+	let count = existing.length;
+	let totalBytes = getAttachmentTotalBytes(existing);
+
+
+	for (const candidate of candidates) {
+		const name = candidate.filename || "file";
+
+
+		if (candidate.size <= 0) {
+			errors.push(`"${name}" is empty and was not attached.`);
+			continue;
+		}
+		if (candidate.size > MAX_LINKED_FILE_BYTES) {
+			errors.push(
+				`"${name}" is ${formatFileSize(candidate.size)} — over the ${formatFileSize(MAX_LINKED_FILE_BYTES)} limit for a linked file.`,
+			);
+			continue;
+		}
+		if (count >= MAX_LINKED_FILES) {
+			errors.push(
+				`"${name}" was not attached — up to ${MAX_LINKED_FILES} files can be shared as links.`,
+			);
+			continue;
+		}
+		if (totalBytes + candidate.size > MAX_LINKED_TOTAL_BYTES) {
+			errors.push(
+				`"${name}" was not attached — linked files would exceed the ${formatFileSize(MAX_LINKED_TOTAL_BYTES)} total limit.`,
+			);
+			continue;
+		}
+
+
+		accepted.push(candidate);
+		count += 1;
+		totalBytes += candidate.size;
+	}
+
+
+	return { accepted, errors };
+}
+
+
 /** Build composer state for a picked file once its bytes are encoded. */
 export function createPendingAttachment(
 	candidate: AttachmentCandidate,
@@ -214,6 +313,27 @@ export function toAttachmentPayloads(
 
 
 /**
+ * Shape the composer's linked files for the API's `linked_attachments[]`
+ * array. Same entry shape as `attachments[]` (so the send schema reads the
+ * same fields), plus the declared size the server's cap check uses.
+ */
+export function toLinkedAttachmentPayloads(
+	items: readonly PendingAttachment[],
+): LinkedAttachmentPayload[] {
+	return items
+		.filter((item) => item.content.length > 0)
+		.map((item) => ({
+			content: item.content,
+			filename: item.filename,
+			type: item.type || DEFAULT_ATTACHMENT_TYPE,
+			size: item.size,
+			disposition: item.disposition,
+			...(item.contentId ? { contentId: item.contentId } : {}),
+		}));
+}
+
+
+/**
  * Composer footer summary, e.g. "2 files · 1.5 MB of 25 MB".
  * Null when nothing is attached.
  */
@@ -223,6 +343,19 @@ export function describeAttachmentSummary(
 	if (items.length === 0) return null;
 	const label = items.length === 1 ? "file" : "files";
 	return `${items.length} ${label} · ${formatFileSize(getAttachmentTotalBytes(items))} of ${formatFileSize(MAX_TOTAL_BYTES)}`;
+}
+
+
+/**
+ * Composer footer summary for the linked list, e.g.
+ * "1 file · 12 MB shared as links". Null when nothing is linked.
+ */
+export function describeLinkedAttachmentSummary(
+	items: readonly { size: number }[],
+): string | null {
+	if (items.length === 0) return null;
+	const label = items.length === 1 ? "file" : "files";
+	return `${items.length} ${label} · ${formatFileSize(getAttachmentTotalBytes(items))} shared as links`;
 }
 
 

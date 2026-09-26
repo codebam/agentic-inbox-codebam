@@ -208,6 +208,25 @@ export function getAttachmentUrl(
 	return `/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`;
 }
 
+/**
+ * Public download URL of a linked attachment — the same path
+ * workers/lib/attachment-links.ts builds for the message body. The token in
+ * the query string IS the capability, so it opens without an Access session.
+ */
+export function getPublicAttachmentUrl(
+	mailboxId: string,
+	attachmentId: string,
+	token: string,
+): string {
+	return `/api/v1/downloads/${encodeURIComponent(mailboxId)}/${encodeURIComponent(attachmentId)}?token=${encodeURIComponent(token)}`;
+}
+
+/** A download link's expiry as a plain date, "2026-10-25". */
+export function formatLinkExpiry(expiresAt: string): string {
+	const parsed = Date.parse(expiresAt);
+	return Number.isNaN(parsed) ? expiresAt : new Date(parsed).toISOString().slice(0, 10);
+}
+
 export function downloadFile(url: string, filename: string) {
 	const link = document.createElement("a");
 	link.href = url;
