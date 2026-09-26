@@ -2,11 +2,17 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AttachmentPayload } from "~/lib/attachments";
 import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import api from "~/services/api";
 import type { BulkEmailAction, BulkEmailTarget, Email } from "~/types";
+import {
+	invalidateCoalesced,
+	isEmailListQuery,
+	patchEmailInCaches,
+	restoreEmailCaches,
+} from "./email-cache";
 import { queryKeys } from "./keys";
 
 // ---------- Types ----------
@@ -26,18 +32,6 @@ interface EmailListResponse {
 	/** Present on threaded folder lists; absent from aggregate/detail queries. */
 	streamCounts?: StreamCounts;
 }
-
-/**
- * True for cached email *list* queries of a mailbox — excludes detail queries
- * (third key element is an email id string) and thread queries.
- */
-const isEmailListQuery =
-	(mailboxId: string) =>
-	(query: { queryKey: readonly unknown[] }) =>
-		query.queryKey[0] === "emails" &&
-		query.queryKey[1] === mailboxId &&
-		typeof query.queryKey[2] === "object" &&
-		query.queryKey[2] !== null;
 
 // ---------- Queries ----------
 
@@ -153,16 +147,22 @@ export function useReminderEmails(
 
 // ---------- Mutations ----------
 
-/** Invalidate both the email list and folder counts after any email mutation. */
+/**
+ * Invalidate the email list, folder counts and the All Accounts aggregate
+ * after any email mutation.
+ *
+ * Every call is coalesced: opening a message marks it read, and a burst of
+ * triage (or a scroll through unread messages) fires this once per message.
+ * Coalescing keeps a burst to one refetch per window per key — see
+ * `invalidateCoalesced`.
+ */
 export function useInvalidateEmailData() {
 	const qc = useQueryClient();
 	return (mailboxId: string) => {
-		void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
-		void qc.invalidateQueries({
-			queryKey: queryKeys.folders.list(mailboxId),
-		});
+		invalidateCoalesced(qc, ["emails", mailboxId]);
+		invalidateCoalesced(qc, queryKeys.folders.list(mailboxId));
 		// Keep the All Accounts aggregate in sync when a mailbox changes.
-		void qc.invalidateQueries({ queryKey: ["all-emails"] });
+		invalidateCoalesced(qc, ["all-emails"]);
 	};
 }
 
@@ -194,104 +194,23 @@ export function useUpdateEmail() {
 				predicate: isEmailListQuery(mailboxId),
 			});
 
-			// Snapshot current email list caches for rollback
-			const listQueries = qc.getQueriesData<{ emails: Email[]; totalCount: number }>({
-				queryKey: ["emails", mailboxId],
-				predicate: isEmailListQuery(mailboxId),
-			});
-
-			// Optimistically patch every cached email list that contains this email
-			for (const [key, cached] of listQueries) {
-				if (!cached?.emails) continue;
-				qc.setQueryData(key, {
-					...cached,
-					emails: cached.emails.map((e) =>
-						e.id === id ? { ...e, ...(data as Partial<Email>) } : e,
-					),
-				});
-			}
-
-			// Also patch the detail cache
-			const detailKey = queryKeys.emails.detail(mailboxId, id);
-			const prevDetail = qc.getQueryData<Email>(detailKey);
-			if (prevDetail) {
-				qc.setQueryData(detailKey, { ...prevDetail, ...(data as Partial<Email>) });
-			}
-
-			return { listQueries, prevDetail, detailKey };
+			// Patch every cached copy of the row — the mailbox lists, the All
+			// Accounts aggregate and the detail — and keep the snapshots for
+			// rollback.
+			return patchEmailInCaches(qc, mailboxId, id, data as Partial<Email>);
 		},
-		onError: (_err, _vars, context) => {
+		onError: (_err, _vars, snapshot) => {
 			// Roll back optimistic updates on failure
-			if (context?.listQueries) {
-				for (const [key, cached] of context.listQueries) {
-					qc.setQueryData(key, cached);
-				}
-			}
-			if (context?.prevDetail) {
-				qc.setQueryData(context.detailKey, context.prevDetail);
-			}
+			restoreEmailCaches(qc, snapshot);
 		},
 		onSettled: (_data, _err, { mailboxId }) => {
-			// Always refetch to ensure server truth
-			void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
-			void qc.invalidateQueries({
-				queryKey: queryKeys.folders.list(mailboxId),
-			});
-			void qc.invalidateQueries({ queryKey: ["all-emails"] });
+			// Refetch server truth — coalesced, because opening a message
+			// fires this once per message.
+			invalidateCoalesced(qc, ["emails", mailboxId]);
+			invalidateCoalesced(qc, queryKeys.folders.list(mailboxId));
+			invalidateCoalesced(qc, ["all-emails"]);
 		},
 	});
-}
-
-/**
- * Mirror an optimistic patch into every cached list that shows this email,
- * plus its detail cache, and return the snapshots needed to roll back.
- */
-function patchEmailInCaches(
-	qc: QueryClient,
-	mailboxId: string,
-	id: string,
-	patch: Partial<Email>,
-) {
-	const listQueries = qc.getQueriesData<{
-		emails: Email[];
-		totalCount: number;
-	}>({
-		queryKey: ["emails", mailboxId],
-		predicate: isEmailListQuery(mailboxId),
-	});
-	for (const [key, cached] of listQueries) {
-		if (!cached?.emails) continue;
-		qc.setQueryData(key, {
-			...cached,
-			emails: cached.emails.map((email) =>
-				email.id === id ? { ...email, ...patch } : email,
-			),
-		});
-	}
-
-	const detailKey = queryKeys.emails.detail(mailboxId, id);
-	const prevDetail = qc.getQueryData<Email>(detailKey);
-	if (prevDetail) {
-		qc.setQueryData(detailKey, { ...prevDetail, ...patch });
-	}
-
-	return { listQueries, detailKey, prevDetail };
-}
-
-type EmailPatchSnapshot = ReturnType<typeof patchEmailInCaches>;
-
-/** Roll back a `patchEmailInCaches` snapshot after a failed mutation. */
-function restoreEmailCaches(
-	qc: QueryClient,
-	snapshot: EmailPatchSnapshot | undefined,
-) {
-	if (!snapshot) return;
-	for (const [key, cached] of snapshot.listQueries) {
-		qc.setQueryData(key, cached);
-	}
-	if (snapshot.prevDetail) {
-		qc.setQueryData(snapshot.detailKey, snapshot.prevDetail);
-	}
 }
 
 /**
@@ -396,11 +315,9 @@ export function useMarkThreadRead() {
 		}: { mailboxId: string; threadId: string }) =>
 			api.markThreadRead(mailboxId, threadId),
 		onSuccess: (_data, { mailboxId }) => {
-			void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
-			void qc.invalidateQueries({
-				queryKey: queryKeys.folders.list(mailboxId),
-			});
-			void qc.invalidateQueries({ queryKey: ["all-emails"] });
+			invalidateCoalesced(qc, ["emails", mailboxId]);
+			invalidateCoalesced(qc, queryKeys.folders.list(mailboxId));
+			invalidateCoalesced(qc, ["all-emails"]);
 		},
 	});
 }
@@ -596,12 +513,10 @@ export function useBulkEmailAction() {
 		},
 		onSettled: (_data, _err, { targets }) => {
 			for (const mailboxId of new Set(targets.map((target) => target.mailboxId))) {
-				void qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
-				void qc.invalidateQueries({
-					queryKey: queryKeys.folders.list(mailboxId),
-				});
+				invalidateCoalesced(qc, ["emails", mailboxId]);
+				invalidateCoalesced(qc, queryKeys.folders.list(mailboxId));
 			}
-			void qc.invalidateQueries({ queryKey: ["all-emails"] });
+			invalidateCoalesced(qc, ["all-emails"]);
 		},
 	});
 }
