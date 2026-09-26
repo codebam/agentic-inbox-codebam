@@ -5,7 +5,7 @@
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import PostalMime from "postal-mime";
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, attachmentR2Key, type StoredAttachment } from "./lib/attachments";
 import {
@@ -212,6 +212,38 @@ function senderPolicyErrorMessage(error: z.ZodError): string {
 // -- App & middleware -----------------------------------------------
 
 const app = new Hono<MailboxContext>();
+
+/**
+ * Surface API failures.
+ *
+ * A thrown error used to answer a bare 500: nothing for the client to show
+ * (it renders the body's `error` text) and nothing in the log to act on, so
+ * a live failure arrived as "Request failed: 500" with no way in. The message
+ * now goes back to the caller — the app is single-operator and sits behind
+ * Access — and the error with its stack goes to Workers Logs.
+ *
+ * A body that fails schema validation is a client error, not a server one:
+ * every route calls `.parse()` on its body, and a malformed request used to
+ * turn into a 500. It answers 400 naming the field instead.
+ */
+app.onError((error, c) => {
+	if (error instanceof ZodError) {
+		const issue = error.issues[0];
+		const field = issue && issue.path.length > 0 ? issue.path.join(".") : "body";
+		return c.json(
+			{ error: `Invalid request: ${field} — ${issue?.message ?? "failed validation"}` },
+			400,
+		);
+	}
+	console.error(
+		`[api] ${c.req.method} ${c.req.path} failed:`,
+		error instanceof Error ? (error.stack ?? error.message) : error,
+	);
+	return c.json(
+		{ error: error instanceof Error ? error.message : "Internal Server Error" },
+		500,
+	);
+});
 app.use("/api/*", cors({
 	origin: (origin) => {
 		// Same-origin requests have no Origin header — allow them.
