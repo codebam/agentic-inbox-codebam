@@ -37,6 +37,32 @@ export function attachmentR2Key(attachment: {
 	return `attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`;
 }
 
+/**
+ * Decode a base64 string to bytes with the runtime's native decoder.
+ *
+ * The obvious `Uint8Array.from(atob(content), (c) => c.charCodeAt(0))` is a
+ * per-character JS loop: measured at 376 ms of CPU for a 6.5 MB file, where
+ * the native decoder does the same work in about 1 ms. A Worker is killed
+ * when it exceeds its CPU budget and answers 500 — and the loop only ever
+ * shows up at the sizes the download-link feature exists to send, never with
+ * a small test payload. Keep this native.
+ */
+export function decodeBase64Bytes(content: string): Uint8Array {
+	// The base64 proposal is native in the runtime (workerd, compatibility
+	// date 2025-11-28); the cast keeps the call typed if the TypeScript lib
+	// lags behind. `nodejs_compat` is enabled in wrangler.jsonc, so Buffer
+	// covers any runtime without it — both are native and fast.
+	const fromBase64 = (Uint8Array as unknown as {
+		fromBase64?: (value: string) => Uint8Array;
+	}).fromBase64;
+	if (typeof fromBase64 === "function") return fromBase64.call(Uint8Array, content);
+	const buffer = (globalThis as unknown as {
+		Buffer?: { from(value: string, encoding: string): Uint8Array };
+	}).Buffer;
+	if (buffer) return buffer.from(content, "base64");
+	throw new Error("No native base64 decoder is available in this runtime");
+}
+
 export interface StoreAttachmentOptions {
 	/**
 	 * Store the files as public download links: each row gets a fresh
@@ -71,8 +97,7 @@ export async function storeAttachments(
 		// Sanitize filename to prevent path traversal in R2 keys
 		const safeFilename = (att.filename || "untitled").replace(/[/\\:*?"<>|\p{Cc}]/gu, "_");
 		const key = `attachments/${emailId}/${attachmentId}/${safeFilename}`;
-		const binaryStr = atob(att.content);
-		const bytes = Uint8Array.from(binaryStr, (c) => c.charCodeAt(0));
+		const bytes = decodeBase64Bytes(att.content);
 		await bucket.put(key, bytes);
 		results.push({
 			id: attachmentId,

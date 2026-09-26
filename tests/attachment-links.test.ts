@@ -30,6 +30,7 @@ import {
 	type AttachmentCandidate,
 } from "../app/lib/attachments";
 import { SendEmailRequestSchema } from "../workers/lib/schemas";
+import { decodeBase64Bytes } from "../workers/lib/attachments";
 
 const MB = 1024 * 1024;
 /** "hello" — the bytes every linked file in these tests carries. */
@@ -640,4 +641,91 @@ describe("link sweep bounds", () => {
 		expect(LINK_SWEEP_BATCH).toBeGreaterThan(0);
 		expect(LINK_SWEEP_BATCH).toBeLessThanOrEqual(500);
 	});
+});
+
+
+/**
+ * Base64 of `bytes` deterministic bytes — the composer's payload shape at a
+ * real size. The tests above send a five-byte file with a declared size, so
+ * they never exercised the decoder at the sizes that matter.
+ */
+function bigBase64(bytes: number, seed = 7) {
+	const buf = new Uint8Array(bytes);
+	let x = seed;
+	for (let i = 0; i < bytes; i++) {
+		x = (x * 1103515245 + 12345) & 0x7fffffff;
+		buf[i] = x & 0xff;
+	}
+	let binary = "";
+	const CHUNK = 0x8000;
+	for (let i = 0; i < bytes; i += CHUNK) {
+		binary += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+	}
+	return btoa(binary);
+}
+
+describe("real-size linked attachments", () => {
+	/**
+	 * The operator's own failing shape: a small inline file plus a
+	 * multi-megabyte linked one. It exists because a per-character base64
+	 * decode only blows a Worker's CPU budget at exactly these sizes — and
+	 * the earlier tests never sent more than five bytes.
+	 */
+	it("stores a multi-megabyte linked file with its bytes intact", async () => {
+		const mailbox = "attach-links-big@example.com";
+		await registerMailbox(mailbox);
+		const size = 6 * MB + 12345;
+		const content = bigBase64(size, 11);
+
+		const response = await sendEmail(mailbox, {
+			attachments: [
+				{
+					content: HELLO_BASE64,
+					filename: "[0.5] All Content 100.txt",
+					type: "text/plain",
+					disposition: "attachment",
+				},
+			],
+			linked_attachments: [
+				{
+					content,
+					filename: "Gemini_Generated_Image_big.png",
+					type: "image/png",
+					size,
+					disposition: "attachment",
+				},
+			],
+		});
+		expect(response.status).toBe(202);
+
+		const stub = stubFor(mailbox);
+		const sent = await sentCopy(stub);
+		expect(sent).not.toBeNull();
+		const linked = (sent?.attachments ?? []).find(
+			(attachment) => attachment.filename === "Gemini_Generated_Image_big.png",
+		);
+		expect(linked?.size).toBe(size);
+		expect(linked?.link_token).toMatch(/^[0-9a-f]{64}$/);
+
+		const object = await env.BUCKET.get(
+			r2Key(sent?.id ?? "", linked?.id ?? "", "Gemini_Generated_Image_big.png"),
+		);
+		expect(object?.size).toBe(size);
+	}, 120000);
+
+	/**
+	 * A CPU-budget guard, not a benchmark: the native decoder takes about a
+	 * millisecond for 6 MB where the per-character loop it replaced takes
+	 * about 350 ms — long enough for a Worker to be killed with a 500, which
+	 * is the live failure this pair of tests exists to prevent. The bound is
+	 * deliberately generous; only the O(n) callback path can miss it.
+	 */
+	it("decodes 6 MB natively, well inside a CPU budget", () => {
+		const content = bigBase64(6 * MB, 13);
+		const started = Date.now();
+		const bytes = decodeBase64Bytes(content);
+		const elapsed = Date.now() - started;
+		expect(bytes.byteLength).toBe(6 * MB);
+		expect(elapsed).toBeLessThan(150);
+	}, 60000);
 });
