@@ -327,6 +327,36 @@ describe("calendar invite ingest", () => {
 		expect(body.invite?.response).toBeNull();
 	});
 
+	it("keeps one row per email when the same email is ingested twice", async () => {
+		const stub = stubFor("calendar-replace@example.com");
+		const first = {
+			email_id: "same-email",
+			uid: "first@example.org",
+			method: "REQUEST",
+			summary: "First",
+			organizer: "organizer@example.org",
+			location: null,
+			start_at: null,
+			end_at: null,
+			attendee: "box@example.com",
+		};
+
+		await stub.recordCalendarInvite(first);
+		const replaced = await stub.recordCalendarInvite({
+			...first,
+			uid: "second@example.org",
+			summary: "Second",
+		});
+		expect(replaced?.uid).toBe("second@example.org");
+		expect(replaced?.summary).toBe("Second");
+
+		// A recorded answer survives a later rewrite of the metadata.
+		await stub.setCalendarInviteResponse("same-email", "tentative");
+		const again = await stub.recordCalendarInvite(first);
+		expect(again?.uid).toBe("first@example.org");
+		expect(again?.response).toBe("tentative");
+	});
+
 	it("answers null for a message with no calendar part", async () => {
 		const mailbox = "calendar-plain@example.com";
 		await registerMailbox(mailbox);
