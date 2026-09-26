@@ -1105,6 +1105,47 @@ export class MailboxDO extends DurableObject<Env> {
 		);
 	}
 
+	/**
+	 * Expire public attachment links (migration 28_add_attachment_links) whose
+	 * expiry has passed: hand back the rows whose R2 blobs the caller must
+	 * delete, and clear the two link columns so a second sweep run finds
+	 * nothing. A Durable Object cannot touch R2, so the worker deletes the
+	 * objects — exactly like the empty-trash route and the Trash retention
+	 * sweep. `limit` bounds one round trip; the daily sweep loops until the
+	 * mailbox has no expired links left (or hits its own cap).
+	 */
+	expireAttachmentLinks(
+		now: string,
+		limit: number,
+	): { id: string; email_id: string; filename: string }[] {
+		const expired = this.db
+			.select({
+				id: schema.attachments.id,
+				email_id: schema.attachments.email_id,
+				filename: schema.attachments.filename,
+			})
+			.from(schema.attachments)
+			.where(
+				and(
+					isNotNull(schema.attachments.link_token),
+					isNotNull(schema.attachments.link_expires_at),
+					lte(schema.attachments.link_expires_at, now),
+				),
+			)
+			.limit(limit)
+			.all();
+
+		if (expired.length === 0) return [];
+
+		this.db
+			.update(schema.attachments)
+			.set({ link_token: null, link_expires_at: null })
+			.where(inArray(schema.attachments.id, expired.map((att) => att.id)))
+			.run();
+
+		return expired;
+	}
+
 	// ── Folders (Drizzle) ──────────────────────────────────────────
 
 	getFolders() {

@@ -25,6 +25,15 @@ export async function handleReplyEmail(c: AppContext) {
 	const mailboxId = c.req.param("mailboxId") ?? "";
 	const id = c.req.param("id") ?? "";
 	const body = SendEmailRequestSchema.parse(await c.req.json());
+	// Linked attachments are only offered for new messages — the composer
+	// never sends the field here, and the reply/forward paths store every
+	// attachment in the message itself. Refuse rather than drop it.
+	if (body.linked_attachments) {
+		return c.json(
+			{ error: "Linked attachments are only supported on new messages." },
+			400,
+		);
+	}
 	const { to, cc, bcc, from, subject, html, text, attachments } = body;
 
 	const stub = c.var.mailboxStub;
@@ -116,6 +125,15 @@ export async function handleForwardEmail(c: AppContext) {
 	const mailboxId = c.req.param("mailboxId") ?? "";
 	const id = c.req.param("id") ?? "";
 	const body = SendEmailRequestSchema.parse(await c.req.json());
+	// Linked attachments are only offered for new messages — the composer
+	// never sends the field here, and the reply/forward paths store every
+	// attachment in the message itself. Refuse rather than drop it.
+	if (body.linked_attachments) {
+		return c.json(
+			{ error: "Linked attachments are only supported on new messages." },
+			400,
+		);
+	}
 	const { to, cc, bcc, from, subject, html, text, attachments } = body;
 
 	const stub = c.var.mailboxStub;

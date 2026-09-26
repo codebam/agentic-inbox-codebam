@@ -14,6 +14,7 @@ import { sweepDueMail } from "./lib/mail-sweep";
 import { DIGEST_CRON, sweepDigests } from "./lib/digest-sweep";
 import { sweepImageProxyCache } from "./lib/image-proxy";
 import { sweepTrash } from "./lib/trash-retention";
+import { sweepAttachmentLinks } from "./lib/attachment-links";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
@@ -98,6 +99,16 @@ function isMcpPath(pathname: string) {
 }
 
 /**
+ * Public attachment download links (workers/lib/attachment-links.ts): the
+ * token in the query string IS the capability, so these paths are opened by
+ * recipients who have no Cloudflare Access session. Exactly this prefix is
+ * exempt — nothing else outside it.
+ */
+function isPublicDownloadPath(pathname: string) {
+	return pathname.startsWith("/api/v1/downloads/");
+}
+
+/**
  * Context of the top-level auth middleware. It is only mounted on "*" and
  * reads no route params, so the path type is pinned here rather than carrying
  * the router's inferred `any` input type into the auth helper.
@@ -138,6 +149,11 @@ app.use("*", async (c: AuthContext, next) => {
 	}
 
 	const pathname = new URL(c.req.url).pathname;
+	// Public download links authenticate with their token, not an Access JWT:
+	// the recipient is outside the Access boundary by definition.
+	if (isPublicDownloadPath(pathname)) {
+		return next();
+	}
 	if (isMcpPath(pathname)) {
 		// CORS preflight carries no credentials and must reach the MCP handler.
 		if (c.req.method === "OPTIONS") {
@@ -255,11 +271,11 @@ export default {
 	 * `triggers` block in wrangler.jsonc): the morning-digest cron builds and
 	 * delivers every opted-in mailbox's digest, and every other trigger runs
 	 * the housekeeping sweeps — automatic Trash retention, the remote-image
-	 * proxy cache sweep and the due-mail backstop (snoozes, reminders and
-	 * scheduled sends). Every sweep logs its own summary and tolerates a
-	 * single failure; the extra catch only guards its own listing. They run
-	 * as separate waitUntils so a failure in one never delays or cancels the
-	 * others.
+	 * proxy cache sweep, expired attachment-link cleanup and the due-mail
+	 * backstop (snoozes, reminders and scheduled sends). Every sweep logs its
+	 * own summary and tolerates a single failure; the extra catch only guards
+	 * its own listing. They run as separate waitUntils so a failure in one
+	 * never delays or cancels the others.
 	 */
 	scheduled(
 		event: ScheduledController,
@@ -285,6 +301,11 @@ export default {
 		ctx.waitUntil(
 			sweepImageProxyCache(env).catch((e) =>
 				console.error("Image proxy cache sweep failed:", (e as Error).message),
+			),
+		);
+		ctx.waitUntil(
+			sweepAttachmentLinks(env).catch((e) =>
+				console.error("Attachment link sweep failed:", (e as Error).message),
 			),
 		);
 		// Mailboxes fire their own snoozes, reminders and scheduled sends via

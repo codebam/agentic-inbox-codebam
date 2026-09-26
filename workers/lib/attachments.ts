@@ -6,7 +6,9 @@
  * Shared attachment storage logic.
  * Eliminates the triplicated atob → Uint8Array → R2.put pattern.
  */
+import { LINK_TTL_DAYS } from "../../app/lib/attachments";
 import type { Env } from "../types";
+import { createLinkToken, linkExpiryIso } from "./attachment-links";
 
 export interface StoredAttachment {
 	id: string;
@@ -16,6 +18,33 @@ export interface StoredAttachment {
 	size: number;
 	content_id: string | null;
 	disposition: string;
+	/** Capability token of the file's public download link; set only when it was stored as one. */
+	link_token?: string | null;
+	/** ISO 8601 instant that link stops working; null when there is no link. */
+	link_expires_at?: string | null;
+}
+
+/**
+ * R2 key an attachment's bytes live at. One layout for every caller:
+ * `attachments/{email_id}/{attachment_id}/{filename}` — the send route, the
+ * download routes, the trash purge and the link sweep all read it here.
+ */
+export function attachmentR2Key(attachment: {
+	email_id: string;
+	id: string;
+	filename: string;
+}): string {
+	return `attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`;
+}
+
+export interface StoreAttachmentOptions {
+	/**
+	 * Store the files as public download links: each row gets a fresh
+	 * capability token and a LINK_TTL_DAYS expiry, so the file is reachable
+	 * through GET /api/v1/downloads/:mailboxId/:attachmentId. The bytes are
+	 * stored exactly like an ordinary attachment — only the row differs.
+	 */
+	linked?: boolean;
 }
 
 /**
@@ -31,9 +60,11 @@ export async function storeAttachments(
 		disposition: string;
 		contentId?: string | undefined;
 	}[],
+	options: StoreAttachmentOptions = {},
 ): Promise<StoredAttachment[]> {
 	if (!attachments?.length) return [];
 
+	const linkExpiresAt = options.linked ? linkExpiryIso(new Date(), LINK_TTL_DAYS) : null;
 	const results: StoredAttachment[] = [];
 	for (const att of attachments) {
 		const attachmentId = crypto.randomUUID();
@@ -51,6 +82,9 @@ export async function storeAttachments(
 			size: bytes.byteLength,
 			content_id: att.contentId || null,
 			disposition: att.disposition,
+			...(options.linked
+				? { link_token: createLinkToken(), link_expires_at: linkExpiresAt }
+				: {}),
 		});
 	}
 	return results;
