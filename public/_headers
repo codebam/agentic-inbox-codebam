@@ -1,0 +1,11 @@
+# Fingerprinted client assets. Everything under /assets/ carries a content
+# hash, so a change to a file is a change to its URL.
+#
+# Workers serves static assets with `max-age=0, must-revalidate` by default,
+# which means the browser revalidates every chunk on every page load — and the
+# zone's rate limiting rule counts those requests, because rate limiting
+# applies to cached assets unless that is turned off. `immutable` makes a
+# repeat load fetch nothing at all; a deploy changes the hashes, so the new
+# files arrive on their own.
+/assets/*
+  Cache-Control: public, max-age=31556952, immutable
