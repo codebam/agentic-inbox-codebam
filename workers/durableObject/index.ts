@@ -2092,6 +2092,8 @@ export class MailboxDO extends DurableObject<Env> {
 	 */
 	async #fireScheduledSend(row: ScheduledSendDbRow, now: string): Promise<void> {
 		const markFailed = (reason: string): void => {
+			// The row carries this reason too; the log is what a tail sees live.
+			console.error(`Scheduled send ${row.id} failed: ${reason}`);
 			this.ctx.storage.sql.exec(
 				`UPDATE scheduled_sends
 				 SET status = 'failed', attempts = attempts + 1, last_error = ?1
@@ -2227,11 +2229,15 @@ export class MailboxDO extends DurableObject<Env> {
 
 		let sent: { messageId: string };
 		try {
+			// Logged before the call, so a send that never returns shows up
+			// as a "sending" line with no outcome after it.
+			console.log(`Scheduled send ${row.id}: sending to ${toStr}`);
 			sent = await sender.send(params);
 		} catch (e) {
 			markFailed(`Send failed: ${(e as Error).message}`);
 			return;
 		}
+		console.log(`Scheduled send ${row.id}: delivered (binding id ${sent.messageId})`);
 		// The message is out, so every queued file is consumed. Stamped
 		// before the Sent copy below, so the daily sweep cannot delete a row
 		// whose bytes are still being copied into that copy.
@@ -2370,9 +2376,16 @@ export class MailboxDO extends DurableObject<Env> {
 	 */
 	override async alarm(): Promise<void> {
 		const now = new Date().toISOString();
-		this.wakeDueSnoozes(now);
-		this.fireDueReminders(now);
-		await this.fireDueSends(now);
+		const woken = this.wakeDueSnoozes(now);
+		const reminded = this.fireDueReminders(now);
+		const fired = await this.fireDueSends(now);
+		// One line per wake: what this alarm did, and what it re-armed for.
+		// Without it the fire path is silent and a tail shows nothing at all.
+		console.log(
+			`MailboxDO alarm ${this.ctx.id.name ?? "?"} at ${now}: ` +
+				`${woken} snooze(s), ${reminded} reminder(s), ${fired} send(s) fired; ` +
+				`next due ${this.#nextDueAtMs() ?? "none"}`,
+		);
 		await this.#armAlarm();
 	}
 

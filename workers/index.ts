@@ -1201,6 +1201,7 @@ app.post("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) =
 		payload: payload.payload,
 		...(draft_id ? { draft_id } : {}),
 	});
+	console.log(`Queued send ${send.id} for ${sendAt} in ${mailboxId}`);
 	return c.json(send, 201);
 });
 
