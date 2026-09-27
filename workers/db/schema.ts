@@ -283,3 +283,22 @@ export const calendarInvites = sqliteTable("calendar_invites", {
 	response: text("response").$type<CalendarResponse>(),
 	created_at: text("created_at").notNull(),
 });
+
+/**
+ * Web push subscriptions (migration 30_add_push_subscriptions): the browser
+ * endpoints this mailbox can raise a notification on, written by the
+ * subscribe route and read by the new-mail push fan-out
+ * (workers/lib/webpush.ts). Keyed by endpoint, so re-subscribing from the
+ * same browser refreshes the keys in place; `last_ok_at` stays null until a
+ * push to that endpoint succeeds. The table never holds message content —
+ * only the endpoint and the two keys the payload is encrypted to — and
+ * MailboxDO prunes each mailbox back to its newest MAX_PUSH_SUBSCRIPTIONS
+ * rows on every insert.
+ */
+export const pushSubscriptions = sqliteTable("push_subscriptions", {
+	endpoint: text("endpoint").primaryKey(),
+	p256dh: text("p256dh").notNull(),
+	auth: text("auth").notNull(),
+	created_at: text("created_at").notNull(),
+	last_ok_at: text("last_ok_at"),
+});

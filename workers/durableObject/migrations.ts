@@ -582,4 +582,25 @@ export const mailboxMigrations: Migration[] = [
                 ON calendar_invites(email_id);
         `),
 	},
+	{
+		// Web push subscriptions (workers/lib/webpush.ts): the browser
+		// endpoints this mailbox can raise a notification on. One row per
+		// endpoint — the primary key, so re-subscribing from the same
+		// browser refreshes the two keys in place — carrying the endpoint
+		// plus the keys the payload is encrypted to and the bookkeeping
+		// timestamps (`last_ok_at` stays NULL until a push succeeds). No
+		// message content is ever stored here. MailboxDO prunes each
+		// mailbox back to its newest MAX_PUSH_SUBSCRIPTIONS endpoints on
+		// every insert, and a 404/410 from the push service deletes the row.
+		name: "30_add_push_subscriptions",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                endpoint TEXT PRIMARY KEY,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_ok_at TEXT
+            );
+        `),
+	},
 ];

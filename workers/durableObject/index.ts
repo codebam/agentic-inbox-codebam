@@ -121,6 +121,11 @@ import {
 	type DigestDeliveryResult,
 	type DigestEmailRef,
 } from "../lib/digest";
+import {
+	MAX_PUSH_SUBSCRIPTIONS,
+	type PushSubscriptionInput,
+	type PushSubscriptionRecord,
+} from "../../shared/push";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -2990,6 +2995,99 @@ export class MailboxDO extends DurableObject<Env> {
 			)
 			.limit(capped)
 			.all();
+	}
+
+	// ── Web push subscriptions (workers/lib/webpush.ts) ────────────
+
+
+	/**
+	 * Store (or refresh) one browser push subscription, keyed by its
+	 * endpoint: subscribing again from the same browser rewrites the two keys
+	 * in place and keeps the row's `created_at` and `last_ok_at`. After every
+	 * insert the mailbox is pruned back to its newest MAX_PUSH_SUBSCRIPTIONS
+	 * endpoints, so the table — and the fan-out over it — can never grow
+	 * unbounded.
+	 */
+	upsertPushSubscription(subscription: PushSubscriptionInput): void {
+		this.ctx.storage.sql.exec(
+			`INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at, last_ok_at)
+			 VALUES (?1, ?2, ?3, ?4, NULL)
+			 ON CONFLICT(endpoint) DO UPDATE SET
+				p256dh = excluded.p256dh,
+				auth = excluded.auth`,
+			subscription.endpoint,
+			subscription.p256dh,
+			subscription.auth,
+			new Date().toISOString(),
+		);
+		this.prunePushSubscriptions();
+	}
+
+
+	/**
+	 * Remove one subscription by endpoint. Answers whether a row was actually
+	 * deleted, so the unsubscribe route can report an idempotent
+	 * `removed: false` for an endpoint that was already gone.
+	 */
+	deletePushSubscription(endpoint: string): boolean {
+		const cursor = this.ctx.storage.sql.exec(
+			`DELETE FROM push_subscriptions WHERE endpoint = ?1`,
+			endpoint,
+		);
+		return cursor.rowsWritten > 0;
+	}
+
+
+	/**
+	 * The mailbox's subscriptions, newest first and capped at
+	 * MAX_PUSH_SUBSCRIPTIONS — the same order `prunePushSubscriptions` keeps,
+	 * so the fan-out and the table always agree. This is the whole list the
+	 * push notifier can ever iterate.
+	 */
+	listPushSubscriptions(): PushSubscriptionRecord[] {
+		return this.db
+			.select()
+			.from(schema.pushSubscriptions)
+			.orderBy(
+				desc(schema.pushSubscriptions.created_at),
+				desc(sql`rowid`),
+			)
+			.limit(MAX_PUSH_SUBSCRIPTIONS)
+			.all();
+	}
+
+
+	/**
+	 * Delete every subscription past the newest MAX_PUSH_SUBSCRIPTIONS,
+	 * newest-first by `created_at` with the insertion order (rowid) as the
+	 * tie-break. Returns how many rows were deleted; called by the upsert, and
+	 * safe to call on its own.
+	 */
+	prunePushSubscriptions(): number {
+		const cursor = this.ctx.storage.sql.exec(
+			`DELETE FROM push_subscriptions
+			 WHERE rowid NOT IN (
+				SELECT rowid FROM push_subscriptions
+				ORDER BY created_at DESC, rowid DESC
+				LIMIT ?1
+			 )`,
+			MAX_PUSH_SUBSCRIPTIONS,
+		);
+		return cursor.rowsWritten;
+	}
+
+
+	/**
+	 * Record that a push to this endpoint succeeded (`last_ok_at`). Unknown or
+	 * already-pruned endpoints update nothing — best-effort bookkeeping, never
+	 * an error for the caller.
+	 */
+	markPushSubscriptionOk(endpoint: string): void {
+		this.ctx.storage.sql.exec(
+			`UPDATE push_subscriptions SET last_ok_at = ?1 WHERE endpoint = ?2`,
+			new Date().toISOString(),
+			endpoint,
+		);
 	}
 
 	/** How many contacts match the same query searchContacts reads. */
