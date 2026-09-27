@@ -1541,6 +1541,167 @@ app.delete("/api/v1/mailboxes/:mailboxId/templates/:templateId", async (c: AppCo
 });
 
 
+// -- Mailbox export (mbox and EML) -----------------------------------
+
+/** The stored fields every reconstructed message is built from. */
+interface StoredMessageFields {
+	sender: string | null;
+	recipient: string | null;
+	cc: string | null;
+	date: string | null;
+	subject: string | null;
+	message_id: string | null;
+	body: string | null;
+}
+
+/**
+ * One export page row: the stored message fields plus the metadata of its
+ * attachments. Mirrors what the Durable Object's `listEmailsForExport`
+ * returns, so a page can be handed straight to the framing helpers below.
+ */
+interface ExportMessageRow extends StoredMessageFields {
+	id: string;
+	attachments: { filename: string; mimetype: string; size: number }[];
+}
+
+/** Messages pulled from the Durable Object per export page. */
+const EXPORT_PAGE_SIZE = 200;
+
+const MBOX_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MBOX_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The date on an mbox "From " separator line, in the ctime form mbox
+ * readers expect ("Tue Sep  1 10:00:00 2026", UTC). A value the runtime
+ * cannot parse is kept verbatim rather than dropped.
+ */
+function mboxSeparatorDate(date: string | null): string {
+	if (!date) return "";
+	const parsed = new Date(date);
+	if (Number.isNaN(parsed.getTime())) return date;
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${MBOX_WEEKDAYS[parsed.getUTCDay()] ?? ""} ${MBOX_MONTHS[parsed.getUTCMonth()] ?? ""} ${String(parsed.getUTCDate()).padStart(2, " ")} ${pad(parsed.getUTCHours())}:${pad(parsed.getUTCMinutes())}:${pad(parsed.getUTCSeconds())} ${parsed.getUTCFullYear()}`;
+}
+
+/**
+ * One stored message as an RFC 5322 block: the headers the mailbox kept
+ * (From, To, Cc when present, Date, Subject and Message-ID when the row has
+ * one), a blank line, then the stored body. The mailbox never stores the
+ * wire source, so this is a reconstruction from those fields — not a
+ * byte-exact copy of what was sent or received. A body line that begins
+ * with "From " is quoted with a leading ">" (RFC 4155) so it cannot be
+ * mistaken for the next message's separator line.
+ */
+function reconstructedMessage(row: StoredMessageFields): string {
+	const lines: string[] = [
+		`From: ${row.sender ?? ""}`,
+		`To: ${row.recipient ?? ""}`,
+	];
+	if (row.cc) lines.push(`Cc: ${row.cc}`);
+	lines.push(`Date: ${row.date ?? ""}`);
+	lines.push(`Subject: ${row.subject ?? ""}`);
+	if (row.message_id) lines.push(`Message-ID: ${row.message_id}`);
+	lines.push("");
+	for (const line of (row.body ?? "").split("\n")) {
+		lines.push(line.startsWith("From ") ? `>${line}` : line);
+	}
+	return `${lines.join("\n")}\n`;
+}
+
+/**
+ * One message as an mbox record: the RFC 4155 separator line built from the
+ * stored sender and the message date, the reconstructed message, then the
+ * blank line that closes the record.
+ */
+function mboxRecord(row: ExportMessageRow): string {
+	const parts = ["From", row.sender?.trim() || "MAILER-DAEMON", mboxSeparatorDate(row.date)];
+	return `${parts.filter((part) => part.length > 0).join(" ")}\n${reconstructedMessage(row)}\n`;
+}
+
+/** Strip the characters that must never reach a Content-Disposition value. */
+function sanitizeDownloadFilename(name: string): string {
+	// Control characters are exactly what has to go from a header value.
+	// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
+	return name.replace(/[\x00-\x1f"\\]/g, "_");
+}
+
+/**
+ * GET /api/v1/mailboxes/:mailboxId/export — every stored message as one
+ * streaming mbox download (application/mbox).
+ *
+ * RECONSTRUCTED, NOT BYTE-EXACT: the mailbox never stores the wire source,
+ * only the fields it kept at ingest, so each record is rebuilt from those
+ * (sender, recipients, date, subject, message_id, body — see
+ * reconstructedMessage). Attachment bytes are not inlined.
+ *
+ * The Durable Object answers with bounded pages (listEmailsForExport) and
+ * the stream pulls the next page only once the current one has been handed
+ * out, so a mailbox of thousands of messages is exported without holding
+ * the whole thing in memory. Each record is closed by a blank line, per
+ * mbox framing, and a body line that could read as a "From " separator is
+ * quoted.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/export", async (c: AppContext) => {
+	const stub = c.var.mailboxStub;
+	const encoder = new TextEncoder();
+	// The first page is read before the response goes out, so an empty
+	// mailbox answers with an empty body and a Durable Object failure
+	// surfaces as an error response rather than a truncated download.
+	const firstPage = await stub.listEmailsForExport({ page: 1, limit: EXPORT_PAGE_SIZE });
+	let page = 2;
+	let pending: ExportMessageRow[] = firstPage.emails;
+	let hasMore = firstPage.has_more && firstPage.emails.length > 0;
+
+	const stream = new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			while (pending.length === 0 && hasMore) {
+				const result = await stub.listEmailsForExport({ page, limit: EXPORT_PAGE_SIZE });
+				pending = result.emails;
+				hasMore = result.has_more && result.emails.length > 0;
+				page += 1;
+			}
+			const next = pending.shift();
+			if (!next) {
+				controller.close();
+				return;
+			}
+			controller.enqueue(encoder.encode(mboxRecord(next)));
+		},
+	});
+
+	const mailboxId = c.req.param("mailboxId")!;
+	const headers = new Headers();
+	headers.set("Content-Type", "application/mbox");
+	headers.set(
+		"Content-Disposition",
+		`attachment; filename="${sanitizeDownloadFilename(mailboxId)}.mbox"; filename*=UTF-8''${encodeURIComponent(`${mailboxId}.mbox`)}`,
+	);
+	headers.set("Cache-Control", "no-store");
+	return new Response(stream, { headers });
+});
+
+/**
+ * GET /api/v1/mailboxes/:mailboxId/emails/:emailId/eml — one stored message
+ * as a message/rfc822 download (attachment, filename ending in .eml); an
+ * unknown id is a 404. Same reconstruction caveat as the mbox export: the
+ * record is rebuilt from the stored fields, never the wire source.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/eml", async (c: AppContext) => {
+	const emailId = c.req.param("emailId")!;
+	const email = await c.var.mailboxStub.getEmail(emailId);
+	if (!email) return c.json({ error: "Email not found" }, 404);
+
+	const headers = new Headers();
+	headers.set("Content-Type", "message/rfc822");
+	headers.set(
+		"Content-Disposition",
+		`attachment; filename="${sanitizeDownloadFilename(emailId)}.eml"; filename*=UTF-8''${encodeURIComponent(`${emailId}.eml`)}`,
+	);
+	headers.set("Cache-Control", "no-store");
+	return new Response(reconstructedMessage(email), { headers });
+});
+
+
 app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 	const parsed = BulkEmailActionSchema.safeParse(await c.req.json().catch(() => null));
 	if (!parsed.success) {

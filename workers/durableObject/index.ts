@@ -4130,6 +4130,118 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 	/**
+	 * One bounded page of stored messages for the mbox and EML export routes
+	 * (GET /api/v1/mailboxes/:mailboxId/export and .../emails/:emailId/eml):
+	 * the raw stored fields an export reconstructs from — sender, recipient,
+	 * cc, date, subject, the stored message_id and body — plus each
+	 * message's attachment metadata (filename, mimetype, size). The mailbox
+	 * never stores the wire source, so the routes rebuild a message from
+	 * this page rather than copying bytes.
+	 *
+	 * Rows come back oldest-first (date, then rowid), so a paged export
+	 * reads the mailbox in one stable order and `has_more` says whether
+	 * another page follows. Both inputs are clamped and the limit is capped
+	 * at 500, so a single call can never pull an unbounded number of rows.
+	 */
+	listEmailsForExport(
+		options: { page?: number | undefined; limit?: number | undefined } = {},
+	): {
+		emails: {
+			id: string;
+			sender: string | null;
+			recipient: string | null;
+			cc: string | null;
+			date: string | null;
+			subject: string | null;
+			message_id: string | null;
+			body: string | null;
+			attachments: { filename: string; mimetype: string; size: number }[];
+		}[];
+		total: number;
+		has_more: boolean;
+	} {
+		const requestedLimit = Number(options.limit);
+		const limit = Number.isFinite(requestedLimit)
+			? Math.min(Math.max(Math.trunc(requestedLimit), 1), 500)
+			: 200;
+		const requestedPage = Number(options.page);
+		const page = Number.isFinite(requestedPage)
+			? Math.max(Math.trunc(requestedPage), 1)
+			: 1;
+		const offset = (page - 1) * limit;
+
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, sender, recipient, cc, date, subject, message_id, body
+				 FROM emails
+				 ORDER BY date ASC, rowid ASC
+				 LIMIT ?1 OFFSET ?2`,
+				limit,
+				offset,
+			),
+		] as unknown as {
+			id: string;
+			sender: string | null;
+			recipient: string | null;
+			cc: string | null;
+			date: string | null;
+			subject: string | null;
+			message_id: string | null;
+			body: string | null;
+		}[];
+
+		// Attachment metadata for the whole page, grouped here rather than
+		// fetched per message. Durable Object SQLite caps one statement at
+		// 100 bound parameters, so the page's ids go through in chunks
+		// instead of a single IN list.
+		const attachmentsByEmail = new Map<
+			string,
+			{ filename: string; mimetype: string; size: number }[]
+		>();
+		const attachmentLookupChunk = 100;
+		for (let start = 0; start < rows.length; start += attachmentLookupChunk) {
+			const chunk = rows.slice(start, start + attachmentLookupChunk);
+			const placeholders = chunk.map((_, index) => `?${index + 1}`).join(",");
+			const attachmentRows = [
+				...this.ctx.storage.sql.exec(
+					`SELECT email_id, filename, mimetype, size FROM attachments
+					 WHERE email_id IN (${placeholders})
+					 ORDER BY rowid ASC`,
+					...chunk.map((row) => row.id),
+				),
+			] as unknown as {
+				email_id: string;
+				filename: string;
+				mimetype: string;
+				size: number;
+			}[];
+			for (const attachment of attachmentRows) {
+				const list = attachmentsByEmail.get(attachment.email_id) ?? [];
+				list.push({
+					filename: attachment.filename,
+					mimetype: attachment.mimetype,
+					size: attachment.size,
+				});
+				attachmentsByEmail.set(attachment.email_id, list);
+			}
+		}
+
+		const totalRow = [
+			...this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM emails"),
+		][0] as { count: number };
+
+		return {
+			emails: rows.map((row) => ({
+				...row,
+				attachments: attachmentsByEmail.get(row.id) ?? [],
+			})),
+			total: totalRow.count,
+			has_more: offset + rows.length < totalRow.count,
+		};
+	}
+
+
+	/**
 	 * Bound one caller-supplied item before it is stored: a missing title
 	 * makes the row unusable (null, dropped), kind falls back to task, text
 	 * is trimmed and clamped, and an unparseable due date becomes null.
