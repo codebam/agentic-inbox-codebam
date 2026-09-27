@@ -18,6 +18,10 @@
 	"ai": {
 		"binding": "AI"
 	},
+	// Semantic search's bindings are deliberately NOT declared here: without
+	// VECTORIZE the pool exercises the not-configured path, and an AI binding
+	// cannot run remotely from a test run. Adding the binding to this file
+	// would turn those tests into live-call attempts.
 	"durable_objects": {
 		"bindings": [
 			{ "name": "MAILBOX", "class_name": "MailboxDO" },

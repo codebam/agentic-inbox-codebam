@@ -138,8 +138,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
 					sizes="48x48 32x32 16x16"
 					suppressHydrationWarning
 				/>
-				{/* PWA install: name, colours and icons for the standalone app. */}
+				{/* PWA install: name, colours and icons for the standalone app.
+				    Chromium will not offer the install until the manifest carries a
+				    192px and a 512px icon; the apple-touch-icon is what iOS puts on
+				    the home screen. */}
 				<link rel="manifest" href="/manifest.webmanifest" />
+				<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+				<meta name="apple-mobile-web-app-title" content="Inbox" />
 				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />
 				<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 				<title>Agentic Inbox Codebam</title>

@@ -7,15 +7,28 @@
 	"background_color": "#f2f2f2",
 	"icons": [
 		{
+			"src": "/icon-192.png",
+			"type": "image/png",
+			"sizes": "192x192",
+			"purpose": "any"
+		},
+		{
+			"src": "/icon-512.png",
+			"type": "image/png",
+			"sizes": "512x512",
+			"purpose": "any"
+		},
+		{
+			"src": "/icon-maskable-512.png",
+			"type": "image/png",
+			"sizes": "512x512",
+			"purpose": "maskable"
+		},
+		{
 			"src": "/favicon.svg",
 			"type": "image/svg+xml",
 			"sizes": "any",
 			"purpose": "any"
-		},
-		{
-			"src": "/favicon.ico",
-			"type": "image/x-icon",
-			"sizes": "48x48 32x32 16x16"
 		}
 	]
 }
