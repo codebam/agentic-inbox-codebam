@@ -94,4 +94,34 @@ describe("auto-draft gate", () => {
 		await deliver(mailbox);
 		expect(await agentTouched(mailbox)).toBe(false);
 	});
+
+	it("schedules no agent fetch when the deployment disables the AI agent", async () => {
+		const mailbox = "auto-draft-disabled@example.com";
+		await registerMailbox(mailbox, PIPELINE_SETTINGS);
+		// The same message deliver() sends, but with ENABLE_AI_AGENT forced
+		// off in the env the pipeline reads.
+		const raw = [
+			"From: sender@example.org",
+			`To: ${mailbox}`,
+			"Subject: Hello",
+			"",
+			"body",
+			"",
+		].join("\r\n");
+		const bytes = new TextEncoder().encode(raw);
+		const ctx = createExecutionContext();
+		const event: InboundEmailEvent = {
+			raw: new Response(bytes).body as ReadableStream,
+			rawSize: bytes.byteLength,
+			to: mailbox,
+		};
+		const disabledEnv = { ...env, ENABLE_AI_AGENT: "false" };
+		await receiveEmail(
+			event,
+			disabledEnv as unknown as Parameters<typeof receiveEmail>[1],
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		expect(await agentTouched(mailbox)).toBe(false);
+	});
 });

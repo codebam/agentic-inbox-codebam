@@ -16,6 +16,7 @@ import { sweepImageProxyCache } from "./lib/image-proxy";
 import { sweepTrash } from "./lib/trash-retention";
 import { sweepAttachmentLinks } from "./lib/attachment-links";
 import { sweepPendingUploads } from "./lib/pending-uploads";
+import { isAiAgentEnabled, isMcpEnabled } from "../shared/agent-flags";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
@@ -226,10 +227,18 @@ const mcpHandler = EmailMCP.serve("/mcp", {
 		maxAge: 86400,
 	},
 });
+// The MCP server is opt-out (ENABLE_MCP): a disabled deployment answers 404
+// here, before the handler does any auth or session work.
 app.all("/mcp", async (c) => {
+	if (!isMcpEnabled(c.env)) {
+		return c.json({ error: "MCP server is disabled." }, 404);
+	}
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });
 app.all("/mcp/*", async (c) => {
+	if (!isMcpEnabled(c.env)) {
+		return c.json({ error: "MCP server is disabled." }, 404);
+	}
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });
 
@@ -237,7 +246,12 @@ app.all("/mcp/*", async (c) => {
 app.route("/", apiApp);
 
 // Agent WebSocket routing - must be before React Router catch-all
+// The agent surface is opt-out (ENABLE_AI_AGENT): a disabled deployment
+// answers 404 before any agent routing happens.
 app.all("/agents/*", async (c) => {
+	if (!isAiAgentEnabled(c.env)) {
+		return c.json({ error: "AI agent is disabled." }, 404);
+	}
 	const response = await routeAgentRequest(c.req.raw, c.env);
 	if (response) return response;
 	return c.text("Agent not found", 404);

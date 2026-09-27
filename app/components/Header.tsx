@@ -8,6 +8,7 @@ import { type KeyboardEvent, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import SemanticSearchToggle, { isSemanticMode, SEMANTIC_MODE_PARAM, SEMANTIC_MODE_VALUE } from "~/components/SemanticSearchToggle";
 import { useUIStore } from "~/hooks/useUIStore";
+import { useConfig } from "~/queries/config";
 
 export default function Header() {
 	const [searchQuery, setSearchQuery] = useState("");
@@ -17,6 +18,11 @@ export default function Header() {
 	const location = useLocation();
 	const [searchParams] = useSearchParams();
 	const { toggleSidebar, toggleAgentPanel, isAgentPanelOpen } = useUIStore();
+	const { data: config } = useConfig();
+	// The panel holds the agent chat and the MCP panel, so the toggle is only
+	// pointless once both surfaces are off. While config loads (undefined) the
+	// button keeps today's always-visible behaviour.
+	const showAgentPanel = config === undefined || config.agentEnabled || config.mcpEnabled;
 
 	// Sync search input with URL query param so it stays populated. The
 	// adjustment happens during render (the same place React recommends for
@@ -135,16 +141,18 @@ export default function Header() {
 			)}
 
 			<div className="flex items-center gap-1 ml-auto shrink-0">
-				<Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
-					<Button
-						variant={isAgentPanelOpen ? "secondary" : "ghost"}
-						shape="square"
-						icon={<RobotIcon size={20} />}
-						onClick={toggleAgentPanel}
-						aria-label="Toggle agent panel"
-						className="hidden lg:inline-flex"
-					/>
-				</Tooltip>
+				{showAgentPanel && (
+					<Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
+						<Button
+							variant={isAgentPanelOpen ? "secondary" : "ghost"}
+							shape="square"
+							icon={<RobotIcon size={20} />}
+							onClick={toggleAgentPanel}
+							aria-label="Toggle agent panel"
+							className="hidden lg:inline-flex"
+						/>
+					</Tooltip>
+				)}
 				<Tooltip content="Settings" side="bottom" asChild>
 					<Button
 						variant={isSettingsActive ? "secondary" : "ghost"}

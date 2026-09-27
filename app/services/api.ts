@@ -169,6 +169,8 @@ const api = {
 			emailAddresses: string[];
 			catchAllMailbox?: string | null;
 			catchAllMailboxes?: string[];
+			agentEnabled: boolean;
+			mcpEnabled: boolean;
 		}>("/api/v1/config"),
 
 	// Global categorization (applies to every mailbox that opts in)

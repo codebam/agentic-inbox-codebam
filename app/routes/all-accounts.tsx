@@ -38,6 +38,7 @@ import {
 } from "~/queries/emails";
 import { useMailboxes } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
+import { useConfig } from "~/queries/config";
 import { useEmailSelection } from "~/hooks/useEmailSelection";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { BulkEmailAction, Email } from "~/types";
@@ -114,6 +115,10 @@ export default function AllAccountsRoute() {
 	} = useUIStore();
 	const { data: mailboxes = [] } = useMailboxes();
 	const { data: globalCategorization } = useGlobalCategorization();
+	const { data: config } = useConfig();
+	// The all-mailbox agent toggle is useless when the deployment disabled the
+	// agent; while config loads it stays visible, like the header button.
+	const agentEnabled = config?.agentEnabled ?? true;
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
@@ -358,21 +363,24 @@ export default function AllAccountsRoute() {
 									aria-label="Search all accounts"
 								/>
 							</Tooltip>
-							<Tooltip
-								content={isAgentPanelOpen ? "Hide agent panel" : "Show all-mailbox agent"}
-								side="bottom"
-								asChild
-							>
-								<Button
-									variant={isAgentPanelOpen ? "secondary" : "ghost"}
-									shape="square"
-									size="sm"
-									icon={<RobotIcon size={18} />}
-									onClick={toggleAgentPanel}
-									aria-label="Toggle all-mailbox agent panel"
-									className="hidden lg:inline-flex"
-								/>
-							</Tooltip>
+							{/* Only while the deployment keeps the agent enabled. */}
+							{agentEnabled && (
+								<Tooltip
+									content={isAgentPanelOpen ? "Hide agent panel" : "Show all-mailbox agent"}
+									side="bottom"
+									asChild
+								>
+									<Button
+										variant={isAgentPanelOpen ? "secondary" : "ghost"}
+										shape="square"
+										size="sm"
+										icon={<RobotIcon size={18} />}
+										onClick={toggleAgentPanel}
+										aria-label="Toggle all-mailbox agent panel"
+										className="hidden lg:inline-flex"
+									/>
+								</Tooltip>
+							)}
 						</>
 					)}
 				</div>
