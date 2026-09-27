@@ -3,7 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey } from "drizzle-orm/sqlite-core";
 import type { CalendarResponse } from "../lib/calendar";
 
 export const folders = sqliteTable("folders", {
@@ -354,3 +354,40 @@ export const pendingUploads = sqliteTable("pending_uploads", {
 	/** 1 once a send has used the bytes; such a row is never swept. */
 	consumed: integer("consumed").notNull().default(0),
 });
+
+/**
+ * Per-mailbox labels (migration 34_add_labels, workers/lib/labels.ts):
+ * user/agent-applied tags on messages, distinct from the AI-assigned
+ * `category` column. A name is unique per mailbox case-insensitively (the
+ * migration's unique NOCASE index enforces it on top of the Durable
+ * Object's check), and one mailbox holds at most MAX_LABELS rows (refused
+ * by MailboxDO.createLabel; labels are kept, never pruned).
+ */
+export const labels = sqliteTable("labels", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	/** Color token the UI renders (e.g. "#f59e0b"); null when the label sets none. */
+	color: text("color"),
+	created_at: text("created_at").notNull(),
+});
+
+/**
+ * Which labels a message carries (migration 34_add_labels): one row per
+ * (email, label) pair, so a message can carry many labels and a label many
+ * messages. The composite primary key makes a repeated attach idempotent
+ * and covers the by-email lookup; MailboxDO deletes the rows with their
+ * label (deleteLabel) and with their message (every email-delete path).
+ */
+export const emailLabels = sqliteTable(
+	"email_labels",
+	{
+		email_id: text("email_id")
+			.notNull()
+			.references(() => emails.id, { onDelete: "cascade" }),
+		label_id: text("label_id")
+			.notNull()
+			.references(() => labels.id, { onDelete: "cascade" }),
+		created_at: text("created_at").notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.email_id, table.label_id] })],
+);

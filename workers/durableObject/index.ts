@@ -71,6 +71,15 @@ import {
 	type TemplatePatch,
 } from "../lib/templates";
 import {
+	LabelValidationError,
+	MAX_LABELS,
+	normalizeLabelColor,
+	normalizeLabelName,
+	type Label,
+	type LabelInput,
+	type LabelPatch,
+} from "../lib/labels";
+import {
 	isItemDueFilter,
 	isItemKind,
 	isItemStatus,
@@ -340,6 +349,8 @@ interface SearchFilterOptions {
 	query: string;
 	folder?: string;
 	category?: string;
+	/** Exact, case-insensitive match on one label name the message carries. */
+	label?: string;
 	from?: string;
 	to?: string;
 	subject?: string;
@@ -563,6 +574,16 @@ function threadedConversationCtes(categoryClause: string): string {
 	)
 	`;
 }
+
+/**
+ * Result of attaching or detaching a label on one email: the email's labels
+ * after the change, or which side of the pair was missing, so the routes can
+ * answer a 404 that names it.
+ */
+export type LabelEmailResult =
+	| { ok: true; labels: Label[] }
+	| { ok: false; error: "Email not found" | "Label not found" };
+
 
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
@@ -1077,6 +1098,14 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.attachments.email_id, id))
 			.all();
 
+		// The message's label assignments go with it — deleted explicitly
+		// here and in every other delete path, so no join row can outlive the
+		// message regardless of foreign-key enforcement.
+		this.db
+			.delete(schema.emailLabels)
+			.where(eq(schema.emailLabels.email_id, id))
+			.run();
+
 		this.db
 			.delete(schema.emails)
 			.where(eq(schema.emails.id, id))
@@ -1475,6 +1504,11 @@ export class MailboxDO extends DurableObject<Env> {
 			.all();
 
 		this.db
+			.delete(schema.emailLabels)
+			.where(inArray(schema.emailLabels.email_id, ids))
+			.run();
+
+		this.db
 			.delete(schema.emails)
 			.where(inArray(schema.emails.id, ids))
 			.run();
@@ -1583,6 +1617,12 @@ export class MailboxDO extends DurableObject<Env> {
 
 
 		this.db
+			.delete(schema.emailLabels)
+			.where(inArray(schema.emailLabels.email_id, ids))
+			.run();
+
+
+		this.db
 			.delete(schema.emails)
 			.where(inArray(schema.emails.id, ids))
 			.run();
@@ -1664,6 +1704,12 @@ export class MailboxDO extends DurableObject<Env> {
 			.from(schema.attachments)
 			.where(inArray(schema.attachments.email_id, ids))
 			.all();
+
+
+		this.db
+			.delete(schema.emailLabels)
+			.where(inArray(schema.emailLabels.email_id, ids))
+			.run();
 
 
 		this.db
@@ -2764,7 +2810,7 @@ export class MailboxDO extends DurableObject<Env> {
 		options: SearchFilterOptions,
 		tableAlias = "",
 	): { conditions: string[]; params: (string | number)[] } {
-		const { query, folder, category, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment } = options;
+		const { query, folder, category, label, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment } = options;
 		const prefix = tableAlias ? `${tableAlias}.` : "";
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
@@ -2818,6 +2864,16 @@ export class MailboxDO extends DurableObject<Env> {
 			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);
 		}
 		if (category) { const p = addParam(category); conditions.push(`${prefix}category = ${p}`); }
+		// A label filter matches the label NAME exactly (case-insensitively),
+		// never as a prefix, and only through the message's assignment rows:
+		// the subquery is prefixed like every other column so the builder
+		// works with and without a table alias (countSearchResults passes none).
+		if (label) {
+			const p = addParam(label);
+			conditions.push(
+				`${prefix}id IN (SELECT el.email_id FROM email_labels el JOIN labels l ON l.id = el.label_id WHERE l.name = ${p} COLLATE NOCASE)`,
+			);
+		}
 		addLikeConditions(["sender"], from);
 		addLikeConditions(["recipient", "envelope_recipient", "cc", "bcc"], to);
 		addLikeConditions(["subject"], subject);
@@ -3980,6 +4036,223 @@ export class MailboxDO extends DurableObject<Env> {
 				sql`${schema.templates.name} COLLATE NOCASE ASC`,
 				asc(schema.templates.created_at),
 				asc(schema.templates.id),
+			)
+			.all();
+	}
+
+	// ── Labels (mailbox-wide tags) ─────────────────────────────────
+
+	/**
+	 * Every label for this mailbox, ordered by name (case-insensitive), then
+	 * creation order, then id (the tie-break that keeps the list stable when
+	 * two labels share a timestamp). A label is a user/agent-applied tag —
+	 * unlike the AI-assigned `category`, nothing here is a model verdict.
+	 */
+	listLabels(): Label[] {
+		return this.db
+			.select()
+			.from(schema.labels)
+			.orderBy(
+				sql`${schema.labels.name} COLLATE NOCASE ASC`,
+				asc(schema.labels.created_at),
+				asc(schema.labels.id),
+			)
+			.all();
+	}
+
+	/** How many labels this mailbox holds (the create-time cap check). */
+	#countLabels(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.labels)
+			.get();
+		return row?.total ?? 0;
+	}
+
+	/** One label by name, case-insensitively — the uniqueness check. */
+	#getLabelByName(name: string): Label | null {
+		return (
+			this.db
+				.select()
+				.from(schema.labels)
+				.where(sql`${schema.labels.name} = ${name} COLLATE NOCASE`)
+				.get() ?? null
+		);
+	}
+
+	/**
+	 * Store a new label. The name is validated (1..MAX_LABEL_NAME_LENGTH
+	 * characters, trimmed, unique per mailbox case-insensitively) and a
+	 * mailbox already holding MAX_LABELS refuses the write, so a runaway
+	 * caller cannot grow the table without limit — labels are kept, never
+	 * pruned. Throws LabelValidationError so routes can answer with a 400.
+	 */
+	createLabel(input: LabelInput | null): Label {
+		const name = normalizeLabelName(input?.name);
+		const color = normalizeLabelColor(input?.color);
+		if (this.#getLabelByName(name)) {
+			throw new LabelValidationError(
+				`A label named "${name}" already exists`,
+			);
+		}
+		if (this.#countLabels() >= MAX_LABELS) {
+			throw new LabelValidationError(
+				`A mailbox can hold at most ${MAX_LABELS} labels`,
+			);
+		}
+		const row: Label = {
+			id: crypto.randomUUID(),
+			name,
+			color,
+			created_at: new Date().toISOString(),
+		};
+		this.db.insert(schema.labels).values(row).run();
+		return row;
+	}
+
+	/**
+	 * Apply a partial change to one label: omitted fields keep their stored
+	 * value, an explicit null (or blank) color clears it, and a rename that
+	 * collides with another label's name (case-insensitively) is refused.
+	 * Returns the updated row, or null when the id is unknown (the route
+	 * answers 404).
+	 */
+	updateLabel(id: string, patch: LabelPatch | null): Label | null {
+		const existing = this.db
+			.select()
+			.from(schema.labels)
+			.where(eq(schema.labels.id, id))
+			.get();
+		if (!existing) return null;
+		const name =
+			patch?.name === undefined ? existing.name : normalizeLabelName(patch.name);
+		const color =
+			patch?.color === undefined
+				? existing.color
+				: normalizeLabelColor(patch.color);
+		if (name !== existing.name) {
+			const clash = this.#getLabelByName(name);
+			if (clash && clash.id !== id) {
+				throw new LabelValidationError(
+					`A label named "${name}" already exists`,
+				);
+			}
+		}
+		this.db
+			.update(schema.labels)
+			.set({ name, color })
+			.where(eq(schema.labels.id, id))
+			.run();
+		return { ...existing, name, color };
+	}
+
+	/**
+	 * Remove one label and every assignment of it. The messages themselves
+	 * are never touched. Returns false when the id is unknown.
+	 */
+	deleteLabel(id: string): boolean {
+		const existing = this.db
+			.select({ id: schema.labels.id })
+			.from(schema.labels)
+			.where(eq(schema.labels.id, id))
+			.get();
+		if (!existing) return false;
+		this.db
+			.delete(schema.emailLabels)
+			.where(eq(schema.emailLabels.label_id, id))
+			.run();
+		this.db.delete(schema.labels).where(eq(schema.labels.id, id)).run();
+		return true;
+	}
+
+	/**
+	 * Attach one label to one email. Both sides must exist — the result says
+	 * which one was missing so the route can answer a 404 by name — and
+	 * attaching a label the email already carries is a no-op, not an error.
+	 * Answers the email's labels after the change.
+	 */
+	addLabelToEmail(emailId: string, labelId: string): LabelEmailResult {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, emailId))
+			.get();
+		if (!email) return { ok: false, error: "Email not found" };
+		const label = this.db
+			.select({ id: schema.labels.id })
+			.from(schema.labels)
+			.where(eq(schema.labels.id, labelId))
+			.get();
+		if (!label) return { ok: false, error: "Label not found" };
+		this.db
+			.insert(schema.emailLabels)
+			.values({
+				email_id: emailId,
+				label_id: labelId,
+				created_at: new Date().toISOString(),
+			})
+			.onConflictDoNothing()
+			.run();
+		return { ok: true, labels: this.listLabelsForEmail(emailId) };
+	}
+
+	/**
+	 * Detach one label from one email. Both sides must exist; detaching a
+	 * label the email does not carry is a no-op, not an error. Answers the
+	 * email's labels after the change.
+	 */
+	removeLabelFromEmail(emailId: string, labelId: string): LabelEmailResult {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, emailId))
+			.get();
+		if (!email) return { ok: false, error: "Email not found" };
+		const label = this.db
+			.select({ id: schema.labels.id })
+			.from(schema.labels)
+			.where(eq(schema.labels.id, labelId))
+			.get();
+		if (!label) return { ok: false, error: "Label not found" };
+		this.db
+			.delete(schema.emailLabels)
+			.where(
+				and(
+					eq(schema.emailLabels.email_id, emailId),
+					eq(schema.emailLabels.label_id, labelId),
+				),
+			)
+			.run();
+		return { ok: true, labels: this.listLabelsForEmail(emailId) };
+	}
+
+	/**
+	 * The labels one email carries, ordered by name (case-insensitive). The
+	 * join to `emails` means a deleted message never shows a label, even if
+	 * an assignment row somehow outlived it.
+	 */
+	listLabelsForEmail(emailId: string): Label[] {
+		return this.db
+			.select({
+				id: schema.labels.id,
+				name: schema.labels.name,
+				color: schema.labels.color,
+				created_at: schema.labels.created_at,
+			})
+			.from(schema.emailLabels)
+			.innerJoin(
+				schema.labels,
+				eq(schema.labels.id, schema.emailLabels.label_id),
+			)
+			.innerJoin(
+				schema.emails,
+				eq(schema.emails.id, schema.emailLabels.email_id),
+			)
+			.where(eq(schema.emailLabels.email_id, emailId))
+			.orderBy(
+				sql`${schema.labels.name} COLLATE NOCASE ASC`,
+				asc(schema.labels.created_at),
+				asc(schema.labels.id),
 			)
 			.all();
 	}

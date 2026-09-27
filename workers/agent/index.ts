@@ -56,6 +56,9 @@ import {
 	toolUndoAgentAction,
 	toolSearchContacts,
 	toolListTemplates,
+	toolListLabels,
+	toolAddLabel,
+	toolRemoveLabel,
 	toolListItems,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
@@ -1114,6 +1117,70 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolListTemplates(env, mailboxId);
+			},
+		}),
+
+
+		list_labels: defineTool({
+			description:
+				"The mailbox's labels — user/agent-applied tags on messages (id, name, color, created_at), ordered by name. Read-only: labels are created and removed by the operator in the app. Use a label's name or id with add_label or remove_label to tag a message.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListLabels(env, mailboxId);
+			},
+		}),
+
+
+		add_label: defineTool({
+			description:
+				"Attach one label to one email. Pass the label's name (matched case-insensitively) or its id; the label must already exist — labels are created by the operator in the app. Answers the email's labels after the change. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID"),
+				label: z.string().describe("The label's name or id"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "add_label",
+						mailboxId,
+						emailId: args.emailId,
+						args: { emailId: args.emailId, label: args.label },
+					},
+					() => toolAddLabel(env, mailboxId, args.emailId, args.label),
+				);
+			},
+		}),
+
+
+		remove_label: defineTool({
+			description:
+				"Detach one label from one email. Pass the label's name (matched case-insensitively) or its id; detaching a label the email does not carry is a no-op. Answers the email's labels after the change. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID"),
+				label: z.string().describe("The label's name or id"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "remove_label",
+						mailboxId,
+						emailId: args.emailId,
+						args: { emailId: args.emailId, label: args.label },
+					},
+					() => toolRemoveLabel(env, mailboxId, args.emailId, args.label),
+				);
 			},
 		}),
 

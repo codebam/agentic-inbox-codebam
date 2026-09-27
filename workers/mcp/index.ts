@@ -40,6 +40,9 @@ import {
 	toolUndoAgentAction,
 	toolSearchContacts,
 	toolListTemplates,
+	toolListLabels,
+	toolAddLabel,
+	toolRemoveLabel,
 	toolListItems,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
@@ -997,6 +1000,77 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				return mcpText(await toolListTemplates(env, mailboxId));
+			},
+		);
+
+
+		// ── list_labels ────────────────────────────────────────────
+		this.server.tool(
+			"list_labels",
+			"List the mailbox's labels — user/agent-applied tags on messages (id, name, color, created_at), ordered by name. Read-only: labels are created and removed by the operator in the app.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListLabels(env, mailboxId));
+			},
+		);
+
+
+		// ── add_label ──────────────────────────────────────────────
+		this.server.tool(
+			"add_label",
+			"Attach one label to one email. Pass the label's name (matched case-insensitively) or its id; the label must already exist — labels are created by the operator in the app. Answers the email's labels after the change. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID"),
+				label: z.string().describe("The label's name or id"),
+			},
+			async ({ mailboxId, emailId, label }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "add_label",
+						mailboxId,
+						emailId,
+						args: { emailId, label },
+					},
+					() => toolAddLabel(env, mailboxId, emailId, label),
+				);
+				return mcpResult(result);
+			},
+		);
+
+
+		// ── remove_label ───────────────────────────────────────────
+		this.server.tool(
+			"remove_label",
+			"Detach one label from one email. Pass the label's name (matched case-insensitively) or its id; detaching a label the email does not carry is a no-op. Answers the email's labels after the change. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID"),
+				label: z.string().describe("The label's name or id"),
+			},
+			async ({ mailboxId, emailId, label }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "remove_label",
+						mailboxId,
+						emailId,
+						args: { emailId, label },
+					},
+					() => toolRemoveLabel(env, mailboxId, emailId, label),
+				);
+				return mcpResult(result);
 			},
 		);
 
