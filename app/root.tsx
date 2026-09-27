@@ -138,6 +138,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 					sizes="48x48 32x32 16x16"
 					suppressHydrationWarning
 				/>
+				{/* PWA install: name, colours and icons for the standalone app. */}
+				<link rel="manifest" href="/manifest.webmanifest" />
 				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />
 				<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 				<title>Agentic Inbox Codebam</title>

@@ -7,6 +7,7 @@ import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { ItemStatus } from "shared/items";
+import type { PushConfig, PushSubscriptionInput } from "shared/push";
 import type {
 	MailRule,
 	RuleApplyResult,
@@ -182,6 +183,16 @@ const api = {
 	/** Send a sample payload to the mailbox webhook and report the upstream result. */
 	testWebhook: (mailboxId: string, body: { url?: string | undefined; secret?: string | undefined }) =>
 		post<WebhookDeliveryResult>(`/api/v1/mailboxes/${mailboxId}/webhook/test`, body),
+
+	// Web push notifications (PWA; notification only — never sends mail)
+	/** Whether this deployment can push, and the VAPID public key to subscribe with. */
+	getPushConfig: () => get<PushConfig>("/api/v1/push/config"),
+	/** Register this browser's push subscription for a mailbox. */
+	subscribePush: (mailboxId: string, subscription: PushSubscriptionInput) =>
+		post<{ ok: boolean; endpoint: string }>(`/api/v1/mailboxes/${mailboxId}/push/subscribe`, subscription),
+	/** Remove this browser's push subscription from a mailbox. */
+	unsubscribePush: (mailboxId: string, endpoint: string) =>
+		post<{ ok: boolean; removed: boolean }>(`/api/v1/mailboxes/${mailboxId}/push/unsubscribe`, { endpoint }),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

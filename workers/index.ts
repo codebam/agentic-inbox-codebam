@@ -106,6 +106,12 @@ import {
 	validateWebhookUrl,
 } from "../shared/webhook";
 import { notifyNewEmail } from "./lib/webhook";
+import { notifyPushSubscriptions, resolveVapidConfig } from "./lib/webpush";
+import {
+	normalizePushEndpoint,
+	normalizePushSubscription,
+	validatePushSubscription,
+} from "../shared/push";
 import {
 	classifyIncomingEmail,
 	serializeClassification,
@@ -456,6 +462,60 @@ app.post("/api/v1/mailboxes/:mailboxId/webhook/test", async (c) => {
 		body: "This is a sample notification sent from the Agentic Inbox settings page.",
 	}, { ...settings, notifyWebhookUrl: url, notifyWebhookSecret: secret });
 	return c.json({ ok: result.ok, status: result.status, error: result.error });
+});
+
+
+// -- Web push notifications (PWA) ------------------------------------
+
+
+/**
+ * Whether web push is configured for this deployment, and the VAPID public
+ * key a browser subscribes with. `enabled: false` with a null key means the
+ * operator has not set the VAPID vars yet; the settings card shows that as a
+ * not-configured state instead of offering a subscribe button that could
+ * only fail. Notification only — this route never sends mail.
+ */
+app.get("/api/v1/push/config", (c) => {
+	const config = resolveVapidConfig(c.env);
+	return c.json({
+		enabled: config !== null,
+		publicKey: config ? config.publicKey : null,
+	});
+});
+
+
+/**
+ * Store (or refresh) one browser push subscription for a mailbox. The body
+ * is the browser's `PushSubscription.toJSON()` shape — `{ endpoint, keys:
+ * { p256dh, auth } }` — and anything malformed is a 400. The mailbox keeps
+ * its newest MAX_PUSH_SUBSCRIPTIONS endpoints; older ones are pruned.
+ * Notification only: nothing here sends, replies or forwards mail.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/push/subscribe", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	const error = validatePushSubscription(body);
+	if (error) return c.json({ error }, 400);
+	const subscription = normalizePushSubscription(body);
+	if (!subscription) return c.json({ error: "Invalid push subscription" }, 400);
+
+	await c.get("mailboxStub").upsertPushSubscription(subscription);
+	return c.json({ ok: true, endpoint: subscription.endpoint });
+});
+
+
+/**
+ * Remove one browser push subscription from a mailbox, keyed by its
+ * endpoint. Idempotent: an endpoint that is not stored answers
+ * `removed: false` rather than an error, so a browser can always clean up
+ * after itself.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/push/unsubscribe", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	const endpoint = normalizePushEndpoint(body);
+	if (!endpoint) return c.json({ error: "Subscription endpoint must be an https URL" }, 400);
+
+	const removed = await c.get("mailboxStub").deletePushSubscription(endpoint);
+	return c.json({ ok: true, removed });
 });
 
 
@@ -2839,6 +2899,25 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		}
 	}
 
+
+	// Web push notification for this arrival — notification only, never a send
+	// path, and never message content: the title is the sender, the body is
+	// the subject clamped to 120 characters, and the url opens this mailbox
+	// (workers/lib/webpush.ts). Non-spam only, matching the auto-draft and
+	// webhook rules below, and only scheduled when VAPID is configured —
+	// otherwise there would be nothing to sign with. Best-effort: the notifier
+	// logs and swallows every failure, and the waitUntil is wrapped anyway, so
+	// a push problem can never affect delivery.
+	if (!isSpam && !ruleMarkedSpam && resolveVapidConfig(env) !== null) {
+		try {
+			ctx.waitUntil(notifyPushSubscriptions(env, mailboxId, {
+				sender: (parsedEmail.from?.address || "").toLowerCase(),
+				subject: parsedEmail.subject || "",
+			}));
+		} catch (e) {
+			console.error("Web push notification failed:", (e as Error).message);
+		}
+	}
 
 	// Do not auto-draft replies to spam: neither AI-classified spam, mail a
 	// rule filed in Spam or stamped with the spam category, nor mail from a
