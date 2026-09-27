@@ -15,6 +15,7 @@ import AiCategorizationCard from "~/components/AiCategorizationCard";
 import AiModelsCard from "~/components/AiModelsCard";
 import EmailViewCard from "~/components/EmailViewCard";
 import ItemsCard from "~/components/ItemsCard";
+import SemanticSearchCard from "~/components/SemanticSearchCard";
 import WebhookCard from "~/components/WebhookCard";
 import SenderPolicyCard from "~/components/SenderPolicyCard";
 import DigestCard from "~/components/DigestCard";
@@ -197,6 +198,8 @@ export default function SettingsRoute() {
 				/>
 
 				<ItemsCard mailboxId={mailboxId} />
+
+				<SemanticSearchCard mailboxId={mailboxId} />
 
 				<SenderPolicyCard mailboxId={mailboxId} />
 

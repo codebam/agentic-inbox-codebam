@@ -6,6 +6,7 @@ import { Button, Input, Tooltip } from "@cloudflare/kumo";
 import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
 import { type KeyboardEvent, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
+import SemanticSearchToggle, { isSemanticMode, SEMANTIC_MODE_PARAM, SEMANTIC_MODE_VALUE } from "~/components/SemanticSearchToggle";
 import { useUIStore } from "~/hooks/useUIStore";
 
 export default function Header() {
@@ -21,6 +22,7 @@ export default function Header() {
 	// adjustment happens during render (the same place React recommends for
 	// resetting state from props) so the input never paints behind the URL.
 	const urlQuery = searchParams.get("q") || "";
+	const semanticMode = isSemanticMode(searchParams);
 	const searchRouteKey = `${location.pathname}|${urlQuery}`;
 	const [syncedSearchRoute, setSyncedSearchRoute] = useState(searchRouteKey);
 	if (syncedSearchRoute !== searchRouteKey) {
@@ -34,10 +36,14 @@ export default function Header() {
 		const q = searchQuery.trim();
 		if (!q) return;
 		// Without a mailbox in scope (All Accounts), search every mailbox.
+		// Semantic mode is per mailbox, so it rides along only where one is
+		// in scope.
+		const params = new URLSearchParams({ q });
+		if (mailboxId && semanticMode) {
+			params.set(SEMANTIC_MODE_PARAM, SEMANTIC_MODE_VALUE);
+		}
 		void navigate(
-			mailboxId
-				? `/mailbox/${mailboxId}/search?q=${encodeURIComponent(q)}`
-				: `/search?q=${encodeURIComponent(q)}`,
+			mailboxId ? `/mailbox/${mailboxId}/search?${params}` : `/search?${params}`,
 		);
 		setIsSearchExpanded(false);
 	};
@@ -112,6 +118,7 @@ export default function Header() {
 						aria-label="Search"
 					/>
 				</Tooltip>
+				{mailboxId && <SemanticSearchToggle />}
 			</div>
 
 			{/* Search toggle button - mobile only, hidden when search is expanded */}

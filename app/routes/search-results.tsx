@@ -7,9 +7,10 @@ import { ArrowLeftIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import MailboxSplitView from "~/components/MailboxSplitView";
+import SemanticSearchToggle, { isSemanticMode } from "~/components/SemanticSearchToggle";
 import { formatListDate, getSnippetText } from "~/lib/utils";
 import { useUpdateEmail } from "~/queries/emails";
-import { useSearchEmails, SEARCH_PAGE_SIZE } from "~/queries/search";
+import { useSearchEmails, useSemanticSearch, SEARCH_PAGE_SIZE } from "~/queries/search";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
 
@@ -60,11 +61,14 @@ export default function SearchResultsRoute() {
 		closePanel();
 	}, [closePanel, searchKey]);
 
-	const { data: searchData, isLoading, isError, refetch } = useSearchEmails(
-		mailboxId,
-		urlQuery,
-		currentPage,
-	);
+	// Semantic mode searches the vector index instead of the keyword route;
+	// the idle hook keeps the same result shape while the mode is off.
+	const semanticMode = isSemanticMode(searchParams);
+	const keywordSearch = useSearchEmails(mailboxId, urlQuery, currentPage);
+	const semanticSearch = useSemanticSearch(mailboxId, semanticMode ? urlQuery : "");
+	const { data: searchData, isLoading, isError, error, refetch } = semanticMode
+		? semanticSearch
+		: keywordSearch;
 	const results = searchData?.results ?? [];
 	const totalCount = searchData?.totalCount ?? 0;
 	const isPanelOpen = selectedEmailId !== null || isComposing;
@@ -80,14 +84,15 @@ export default function SearchResultsRoute() {
 			<>
 				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
 					<Tooltip content="Back to inbox" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => void navigate(`/mailbox/${mailboxId}/emails/inbox`)} aria-label="Back to inbox" /></Tooltip>
-					<div className="min-w-0 flex-1"><h1 className="text-lg font-semibold text-kumo-default truncate">Search Results</h1>{!isLoading && <span className="text-sm text-kumo-subtle">{totalCount} result{totalCount !== 1 ? "s" : ""}{urlQuery ? ` for "${urlQuery}"` : ""}</span>}</div>
+					<div className="min-w-0 flex-1"><h1 className="text-lg font-semibold text-kumo-default truncate">{semanticMode ? "Semantic Search Results" : "Search Results"}</h1>{!isLoading && <span className="text-sm text-kumo-subtle">{totalCount} result{totalCount !== 1 ? "s" : ""}{urlQuery ? ` for "${urlQuery}"` : ""}</span>}</div>
+					<SemanticSearchToggle />
 				</div>
 				<div className="flex-1 overflow-y-auto">
 					{isLoading ? <div className="flex justify-center py-16"><Loader size="lg" /></div> : isError ? (
 						<div className="flex flex-col items-center justify-center py-24 px-6 text-center">
 							<div className="mb-4"><MagnifyingGlassIcon size={48} weight="thin" className="text-kumo-subtle" /></div>
-							<h3 className="text-base font-semibold text-kumo-default mb-1.5">Search failed</h3>
-							<p className="text-sm text-kumo-subtle max-w-xs">Something went wrong while searching this mailbox. Check your connection and try again.</p>
+							<h3 className="text-base font-semibold text-kumo-default mb-1.5">{semanticMode ? "Semantic search failed" : "Search failed"}</h3>
+							<p className="text-sm text-kumo-subtle max-w-xs">{semanticMode && error instanceof Error ? error.message : "Something went wrong while searching this mailbox. Check your connection and try again."}</p>
 							<Button variant="secondary" className="mt-4" onClick={() => void refetch()}>Retry</Button>
 						</div>
 					) : results.length === 0 ? (
@@ -96,6 +101,7 @@ export default function SearchResultsRoute() {
 							<h3 className="text-base font-semibold text-kumo-default mb-1.5">No results found</h3>
 							<p className="text-sm text-kumo-subtle max-w-xs">{urlQuery ? `Nothing matched "${urlQuery}". Try different keywords or check your spelling.` : "Enter a search term to find emails by subject, sender, or content."}</p>
 							{urlQuery && <p className="text-xs text-kumo-subtle mt-3 max-w-sm">Tip: Use operators like <code className="bg-kumo-tint px-1 rounded">from:name</code>, <code className="bg-kumo-tint px-1 rounded">is:unread</code>, <code className="bg-kumo-tint px-1 rounded">has:attachment</code>, <code className="bg-kumo-tint px-1 rounded">before:2025-01-01</code></p>}
+							{semanticMode && <p className="text-xs text-kumo-subtle mt-3 max-w-sm">Semantic search ranks by meaning and needs an index of this mailbox&apos;s mail — build one in Settings → Semantic search, then try again.</p>}
 						</div>
 					) : (
 						<div>{results.map((email) => {
@@ -106,7 +112,7 @@ export default function SearchResultsRoute() {
 								<div key={email.id} role="button" tabIndex={0} onClick={() => handleRowClick(email)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleRowClick(email); } }} className={`group flex items-center gap-3 w-full text-left cursor-pointer transition-colors border-b border-kumo-line px-4 py-2.5 md:px-5 md:py-3 ${isPanelOpen ? "md:px-4 md:py-2.5" : ""} ${isSelected ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}>
 									<div className="w-2.5 shrink-0 flex justify-center">{!email.read && <div className="h-2 w-2 rounded-full bg-kumo-brand" />}</div>
 									<div className="min-w-0 flex-1">
-										<div className="flex items-center gap-2"><span className={`truncate text-sm ${!email.read ? "font-semibold text-kumo-default" : "text-kumo-strong"}`}>{highlightTerms(email.sender.split("@")[0] ?? email.sender, urlQuery)}</span>{folderName && <Badge variant="outline">{folderDisplayName(folderName)}</Badge>}<span className="text-sm text-kumo-subtle shrink-0 ml-auto">{formatListDate(email.date)}</span></div>
+										<div className="flex items-center gap-2"><span className={`truncate text-sm ${!email.read ? "font-semibold text-kumo-default" : "text-kumo-strong"}`}>{highlightTerms(email.sender.split("@")[0] ?? email.sender, urlQuery)}</span>{folderName && <Badge variant="outline">{folderDisplayName(folderName)}</Badge>}{typeof email.score === "number" && <Badge variant="outline">{Math.round(Math.max(0, Math.min(1, email.score)) * 100)}% match</Badge>}<span className="text-sm text-kumo-subtle shrink-0 ml-auto">{formatListDate(email.date)}</span></div>
 										<div className={`truncate text-sm mt-0.5 ${!email.read ? "font-medium text-kumo-default" : "text-kumo-subtle"}`}>{highlightTerms(email.subject, urlQuery)}</div>
 										{snippet && <div className="truncate text-xs text-kumo-subtle mt-0.5">{highlightTerms(snippet, urlQuery)}</div>}
 									</div>
@@ -115,7 +121,7 @@ export default function SearchResultsRoute() {
 						})}</div>
 					)}
 				</div>
-				{totalCount > SEARCH_PAGE_SIZE && <div className="flex justify-center py-3 border-t border-kumo-line shrink-0"><Pagination page={currentPage} setPage={setPage} perPage={SEARCH_PAGE_SIZE} totalCount={totalCount} /></div>}
+				{!semanticMode && totalCount > SEARCH_PAGE_SIZE && <div className="flex justify-center py-3 border-t border-kumo-line shrink-0"><Pagination page={currentPage} setPage={setPage} perPage={SEARCH_PAGE_SIZE} totalCount={totalCount} /></div>}
 			</>
 		</MailboxSplitView>
 	);

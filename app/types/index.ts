@@ -6,6 +6,7 @@ import type { CategorizationSettings } from "shared/categories";
 import type { ModelConfig } from "shared/models";
 import type { EmailViewMode } from "shared/email-view";
 import type { ItemKind, ItemStatus, ItemsSettings } from "shared/items";
+import type { SemanticSearchSettings } from "shared/semantic";
 
 export interface SignatureSettings {
 	enabled: boolean;
@@ -40,6 +41,11 @@ export interface MailboxSettings {
 	imageAllowlist?: string[];
 	/** Whether inbound mail is scanned for tasks and deadlines. Defaults to on. */
 	items?: ItemsSettings;
+	/**
+	 * Whether inbound mail is embedded and indexed for semantic search.
+	 * Off by default: it spends one embedding call per message at ingest.
+	 */
+	semanticSearch?: SemanticSearchSettings;
 }
 
 export interface Mailbox {
@@ -123,6 +129,11 @@ export interface Email {
 	// Present in the aggregated All Accounts list so each row knows which
 	// mailbox it belongs to.
 	mailboxId?: string;
+	/**
+	 * Similarity of a semantic-search hit to the query (higher is closer).
+	 * Only present on rows from the semantic route.
+	 */
+	score?: number;
 }
 
 export interface Attachment {

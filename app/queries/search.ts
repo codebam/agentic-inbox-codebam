@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { parseSearchQuery } from "~/lib/search-parser";
 import api from "~/services/api";
 import type { Email } from "~/types";
@@ -77,5 +77,43 @@ export function useSearchAllMailboxes(query: string, page: number) {
 			};
 		},
 		enabled: !!query,
+	});
+}
+
+
+/**
+ * Semantic (vector) search over one mailbox's stored mail: the server embeds
+ * the query text and answers the closest messages ranked by similarity. Rows
+ * carry the same fields as a keyword-search row plus `score`, and the answer
+ * is one bounded ranked list (at most 20), so there is nothing to page
+ * through.
+ *
+ * A deployment without the AI + Vectorize bindings answers 503 with the
+ * not-configured message; react-query surfaces it as an error so the results
+ * page can say so instead of reporting an empty search.
+ */
+export function useSemanticSearch(mailboxId: string | undefined, query: string) {
+	return useQuery<{ results: Email[]; totalCount: number }>({
+		queryKey: mailboxId && query
+			? queryKeys.search.semantic(mailboxId, query)
+			: ["search", "semantic", "_disabled"],
+		queryFn: async () => {
+			const data = await api.semanticSearch(mailboxId!, query);
+			const results = data.results ?? [];
+			return { results, totalCount: results.length };
+		},
+		enabled: !!mailboxId && !!query,
+	});
+}
+
+
+/**
+ * Embed one bounded batch (20) of a mailbox's unembedded messages. The
+ * Settings card loops this until the answer reports nothing remaining; each
+ * call is idempotent, so a retry never double-indexes a message.
+ */
+export function useSemanticReindex() {
+	return useMutation({
+		mutationFn: (mailboxId: string) => api.semanticReindex(mailboxId),
 	});
 }

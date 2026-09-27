@@ -67,6 +67,9 @@ export const queryKeys = {
 			["search", mailboxId, query, page] as const,
 		all: (query: string, page: number) =>
 			["search", "all-mailboxes", query, page] as const,
+		/** One semantic (vector) search over a mailbox, ranked by similarity. */
+		semantic: (mailboxId: string, query: string) =>
+			["search", "semantic", mailboxId, query] as const,
 	},
 	config: ["config"] as const,
 	categorization: {
