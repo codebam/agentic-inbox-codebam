@@ -34,6 +34,15 @@ function usePreviewSrc(previewImage: PreviewImage | null) {
 	const [loaded, setLoaded] = useState<LoadedPreview | null>(null);
 	const liveUrlRef = useRef<string | null>(null);
 	const url = previewImage?.url ?? null;
+	// What the failure message names: the route the bytes should have come from.
+	const shortPath = (() => {
+		if (!url) return "";
+		try {
+			return new URL(url, window.location.origin).pathname;
+		} catch {
+			return url;
+		}
+	})();
 
 	useEffect(() => {
 		if (!url) return;
@@ -42,7 +51,11 @@ function usePreviewSrc(previewImage: PreviewImage | null) {
 		void (async () => {
 			try {
 				const res = await fetch(url, { signal: controller.signal });
-				if (!res.ok) throw new Error(`Couldn't load this image (${res.status}).`);
+				if (!res.ok) {
+					throw new Error(
+						`Couldn't load this image (${res.status}) — ${shortPath}`,
+					);
+				}
 				const blob = await res.blob();
 				const objectUrl = URL.createObjectURL(blob);
 				if (cancelled) {
@@ -62,7 +75,7 @@ function usePreviewSrc(previewImage: PreviewImage | null) {
 						error:
 							e instanceof Error && e.name !== "AbortError"
 								? e.message
-								: "Couldn't load this image.",
+								: `Couldn't load this image — ${shortPath}`,
 					});
 				}
 			}
@@ -71,7 +84,7 @@ function usePreviewSrc(previewImage: PreviewImage | null) {
 			cancelled = true;
 			controller.abort();
 		};
-	}, [url]);
+	}, [url, shortPath]);
 
 	// The last blob URL lives as long as the panel does.
 	useEffect(() => () => {
