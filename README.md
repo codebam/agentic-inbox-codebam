@@ -49,10 +49,12 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **All-mailbox AI agent** — The All Accounts page has its own chat that can list every mailbox and then read, search, organise, and delete spam across all of them. Per-mailbox chats stay scoped to their mailbox. Tools cover reading, searching, folder moves, drafts, and spam cleanup; sending always requires the operator.
 - **Spam-safe drafting** — No draft reply is created for an email marked as spam (Spam folder, `spam` category, or a stored spam classification), whether it comes from auto-draft, the built-in chat, MCP, or the composer
 - **Agent-first MCP server** — External agents authenticate with the local Wrangler login key (`wrangler auth token`) to read, search, draft, and send email
+- **Optional AI surfaces** — Deployment-wide `ENABLE_AI_AGENT` and `ENABLE_MCP` switches (both default on): a disabled agent answers 404 on `/agents/*` and skips auto-draft, a disabled MCP server answers 404 on `/mcp`, and the UI hides the panels it can no longer use
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending. Auto-draft is skipped for spam and refused even if the trigger is invoked directly
 - **AI categorization on arrival** — TypeSafe's Jev model (`typesafe/jev`) classifies each incoming email as spam or not-spam with a calibrated probability, and can label it with custom categories. Detected spam is filed in the Spam folder and skipped by auto-draft. Categories can be defined per mailbox, app-wide in Global Settings for every mailbox, or both; each mailbox can opt out of global categories.
 - **Full-text search** — An FTS5 trigram index over every message's subject, body and parties (substring matching kept: "arter" finds "quarterly"), with the same index backing the All Accounts search
 - **Attachment text search** — Text extracted from attachments joins the same search index: text-ish files are decoded locally, PDFs and HTML go through Workers AI's markdown conversion, and a term matches inside a file as well as the message
+- **Saved searches** — Save the current query from the search page and re-run it in one click from the sidebar's Saved searches section; up to 50 named searches per mailbox
 - **Rules** — Deterministic per-mailbox filters (folder, category, read, star, spam) that run before the AI classifier, with "Apply to existing mail" that replays the local actions over stored mail idempotently
 - **Templates** — Per-mailbox reusable snippets the composer can insert, save from a draft, or delete
 - **Scheduled sends and undo send** — Queue outbound mail for a future time, review or cancel it in the Scheduled view, and undo a just-sent message
@@ -62,6 +64,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Remote-image proxy** — Opt-in per sender; images load through a same-origin, R2-cached proxy with a size/type cap, never from the sender's servers
 - **Morning brief** — A trailing-24-hour digest in the app (counts, needs-reply, recent arrivals, categories, fired reminders, tasks due), optionally POSTed to the mailbox webhook each morning
 - **Thread summaries** — A one-click AI summary of a conversation — participants, decisions, open questions, action items, current state — computed on demand and never stored or sent
+- **Thread mute** — Mute a conversation from the message toolbar: new mail in it still arrives and classifies, but raises no push or webhook notification
 - **Tasks and deadlines** — Extracted from inbound mail, listed per mailbox and in the message panel, with one-click reminders via the existing follow-up machinery
 - **Bounce and delivery status** — Delivery reports (DSNs) are detected on arrival and a Sent copy shows failed / delayed / delivered with the provider's detail
 - **Storage usage** — A per-mailbox storage card in Settings: database size, attachment count and bytes, and the stored message count
@@ -72,7 +75,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 ### What's different in this fork
 
-This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev, the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
+This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev, the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, per-mailbox saved searches, thread muting with notification suppression, opt-out switches for the AI agent and MCP server, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
 
 ## Stack
 
@@ -93,6 +96,7 @@ npm run dev
 1. Set your domains in `wrangler.jsonc` (`DOMAINS` accepts a comma-separated list)
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
 3. Optional: override catch-all routing with `CATCH_ALL_MAILBOXES` (comma-separated mailbox addresses, one per domain) or `CATCH_ALL_MAILBOX` (one mailbox for every domain). Leave both unset to derive `catch-all@<domain>`. Set `CATCH_ALL_MAILBOX` to an empty string to reject/ignore unknown recipients instead of capturing them.
+4. Optional: set `ENABLE_AI_AGENT` or `ENABLE_MCP` to `"false"` to disable the AI agent (agent panels, `/agents/*`, auto-draft) or the MCP server (`/mcp`). Both default to enabled; see the comments in `wrangler.jsonc`.
 
 ### Deploy
 
