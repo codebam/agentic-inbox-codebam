@@ -1,0 +1,21 @@
+{
+	"name": "Agentic Inbox Codebam",
+	"short_name": "Inbox",
+	"start_url": "/",
+	"display": "standalone",
+	"theme_color": "#ffffff",
+	"background_color": "#f2f2f2",
+	"icons": [
+		{
+			"src": "/favicon.svg",
+			"type": "image/svg+xml",
+			"sizes": "any",
+			"purpose": "any"
+		},
+		{
+			"src": "/favicon.ico",
+			"type": "image/x-icon",
+			"sizes": "48x48 32x32 16x16"
+		}
+	]
+}
