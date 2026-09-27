@@ -76,6 +76,16 @@ import {
 	type PendingUploadRow,
 } from "./lib/pending-uploads";
 import {
+	DEFAULT_IMPORT_JOB_LIMIT,
+	IMPORT_JOB_NOT_FOUND,
+	IMPORT_MAX_FILE_BYTES,
+	MAX_IMPORT_JOB_LIST,
+	importJobR2Key,
+	type CreateImportJobInput,
+	type ImportJobCancelResult,
+	type ImportJobRow,
+} from "./lib/mbox-import";
+import {
 	searchAllMailboxes,
 	type MailboxSearchRow,
 	type SearchAllFilters,
@@ -1891,6 +1901,173 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/eml", async (c: AppContext
 });
 
 
+// -- Mailbox import (mbox and EML) ----------------------------------
+
+/**
+ * The import RPCs the import routes call. No RPC here sends mail: the
+ * routes stage bytes and read or update rows, and the mailbox's alarm does
+ * the parsing.
+ */
+type MailboxImportStub = {
+	createImportJob: (input: CreateImportJobInput) => Promise<ImportJobRow>;
+	listImportJobs: (options: { limit?: number }) => Promise<ImportJobRow[]>;
+	cancelImportJob: (id: string) => Promise<ImportJobCancelResult>;
+};
+
+/** The mailbox stub, narrowed to the import RPCs the routes use. */
+function importStub(c: AppContext): MailboxImportStub {
+	return c.var.mailboxStub;
+}
+
+/** The one message both cap checks answer with. */
+const IMPORT_CAP_ERROR = `The upload is larger than the ${IMPORT_MAX_FILE_BYTES / (1024 * 1024)} MiB import cap.`;
+
+/**
+ * Slack the declared-length check allows for multipart framing, so a file
+ * exactly at the cap is not refused for its boundary headers. The exact
+ * byte count is checked again once the body has been read.
+ */
+const IMPORT_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
+
+/**
+ * POST /api/v1/mailboxes/:mailboxId/import — stage one mbox or EML file
+ * for import.
+ *
+ * Accepts a multipart/form-data upload (field `file`) or, when a
+ * `filename` query parameter is present, the raw request body. The bytes
+ * go to R2 (`imports/{mailboxId}/{jobId}.mbox`), one `import_jobs` row
+ * records the job, and the mailbox's alarm drains it in bounded batches:
+ * this route parses nothing and stores no message. Answers 202 with the
+ * job row.
+ *
+ * The cap is IMPORT_MAX_FILE_BYTES (50 MiB). A request that declares more
+ * is refused before its body is read, and one that carries more is refused
+ * after it is read; either way nothing is staged.
+ */
+/**
+ * Read the uploaded file: multipart/form-data (field `file`), or the raw
+ * request body when a `filename` query parameter is present. Returns the
+ * refusals the route answers as-is; nothing is staged either way.
+ */
+async function readImportUpload(
+	c: AppContext,
+	contentType: string,
+): Promise<
+	| { ok: true; filename: string; bytes: Uint8Array }
+	| { ok: false; status: 400; error: string }
+> {
+	if (contentType.includes("multipart/form-data")) {
+		const form = await c.req.formData().catch(() => null);
+		const file = form?.get("file");
+		if (!(file instanceof File)) {
+			return {
+				ok: false,
+				status: 400,
+				error: "Expected a multipart/form-data upload with a `file` field.",
+			};
+		}
+		return {
+			ok: true,
+			filename: file.name || "import.mbox",
+			bytes: new Uint8Array(await file.arrayBuffer()),
+		};
+	}
+
+	const queryFilename = c.req.query("filename");
+	if (!queryFilename) {
+		return {
+			ok: false,
+			status: 400,
+			error:
+				"Send the file as multipart/form-data (field `file`), or add a `filename` query parameter and send the bytes as the raw body.",
+		};
+	}
+	return {
+		ok: true,
+		filename: queryFilename,
+		bytes: new Uint8Array(await c.req.arrayBuffer()),
+	};
+}
+
+app.post("/api/v1/mailboxes/:mailboxId/import", async (c: AppContext) => {
+	const declaredLength = Number(c.req.header("content-length") ?? "");
+	if (
+		Number.isFinite(declaredLength) &&
+		declaredLength > IMPORT_MAX_FILE_BYTES + IMPORT_MULTIPART_OVERHEAD_BYTES
+	) {
+		return c.json({ error: IMPORT_CAP_ERROR }, 413);
+	}
+
+	const contentType = (c.req.header("content-type") ?? "").toLowerCase();
+	const upload = await readImportUpload(c, contentType);
+	if (!upload.ok) return c.json({ error: upload.error }, upload.status);
+	const { filename, bytes } = upload;
+
+	if (bytes.byteLength === 0) {
+		return c.json({ error: "The uploaded file is empty." }, 400);
+	}
+	if (bytes.byteLength > IMPORT_MAX_FILE_BYTES) {
+		return c.json({ error: IMPORT_CAP_ERROR }, 413);
+	}
+
+	const mailboxId = c.req.param("mailboxId")!;
+	const jobId = crypto.randomUUID();
+	const safeFilename = sanitizeAttachmentFilename(filename);
+	const r2Key = importJobR2Key(mailboxId, jobId);
+	await c.env.BUCKET.put(r2Key, bytes);
+	let job: ImportJobRow;
+	try {
+		job = await importStub(c).createImportJob({
+			id: jobId,
+			filename: safeFilename,
+			r2Key,
+			size: bytes.byteLength,
+		});
+	} catch (e) {
+		// The bytes are staged but the row is not: drop them again rather
+		// than leave an object no job (and so no drain) can ever reach.
+		await c.env.BUCKET.delete(r2Key);
+		throw e;
+	}
+	console.log(
+		`Staged import job ${job.id} for ${mailboxId}: ${safeFilename} (${bytes.byteLength} bytes)`,
+	);
+	return c.json({ job }, 202);
+});
+
+/**
+ * GET /api/v1/mailboxes/:mailboxId/import — the mailbox's import jobs,
+ * newest first (bounded page). Every row carries its status and the three
+ * per-message counts, so the settings card can show progress without
+ * asking the Durable Object for anything else.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/import", async (c: AppContext) => {
+	const limit = Math.min(
+		Math.max(intQuery(c, "limit") ?? DEFAULT_IMPORT_JOB_LIMIT, 1),
+		MAX_IMPORT_JOB_LIST,
+	);
+	const jobs = await importStub(c).listImportJobs({ limit });
+	return c.json({ jobs });
+});
+
+/**
+ * DELETE /api/v1/mailboxes/:mailboxId/import/:jobId — cancel an import
+ * job. The row is marked `cancelled` (the log keeps it) and the staged
+ * object is removed from R2, so a cancelled job leaves no bytes behind.
+ * A job that already finished cannot be cancelled and answers 400; an
+ * unknown id answers 404.
+ */
+app.delete("/api/v1/mailboxes/:mailboxId/import/:jobId", async (c: AppContext) => {
+	const result = await importStub(c).cancelImportJob(c.req.param("jobId")!);
+	if (!result.ok) {
+		return c.json(
+			{ error: result.error },
+			result.error === IMPORT_JOB_NOT_FOUND ? 404 : 400,
+		);
+	}
+	await c.env.BUCKET.delete(result.job.r2_key);
+	return c.json({ job: result.job });
+});
 app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
 	const parsed = BulkEmailActionSchema.safeParse(await c.req.json().catch(() => null));
 	if (!parsed.success) {

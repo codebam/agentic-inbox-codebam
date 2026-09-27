@@ -20,6 +20,7 @@ import WebhookCard from "~/components/WebhookCard";
 import SenderPolicyCard from "~/components/SenderPolicyCard";
 import DigestCard from "~/components/DigestCard";
 import MailboxExportCard from "~/components/MailboxExportCard";
+import ImportCard from "~/components/ImportCard";
 import PushNotificationsCard from "~/components/PushNotificationsCard";
 import StorageCard from "~/components/StorageCard";
 import { normalizeAutoDraft } from "shared/auto-draft";
@@ -381,6 +382,7 @@ export default function SettingsRoute() {
 				<PushNotificationsCard mailboxId={mailboxId} />
 				<StorageCard mailboxId={mailboxId} />
 				<MailboxExportCard mailboxId={mailboxId} />
+				<ImportCard mailboxId={mailboxId} />
 
 
 				{/* Save */}

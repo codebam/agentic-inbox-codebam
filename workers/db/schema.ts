@@ -354,3 +354,32 @@ export const pendingUploads = sqliteTable("pending_uploads", {
 	/** 1 once a send has used the bytes; such a row is never swept. */
 	consumed: integer("consumed").notNull().default(0),
 });
+
+
+/**
+ * Uploaded mbox/EML files staged for import (migration 35_add_import_jobs,
+ * workers/lib/mbox-import.ts). The bytes live in R2 at
+ * `imports/{mailbox_id}/{id}.mbox` and never enter the Durable Object's
+ * SQLite; this row is the job the mailbox's alarm drains — `cursor` is a
+ * byte offset into the object, the three counters are per-message
+ * outcomes, and `status` is pending | running | done | failed | cancelled.
+ * A job with bytes left re-arms the alarm immediately, so a large file
+ * imports in bounded batches; the staged object is deleted once the job
+ * finishes.
+ */
+export const importJobs = sqliteTable("import_jobs", {
+	id: text("id").primaryKey(),
+	filename: text("filename").notNull(),
+	/** R2 key of the staged bytes (`imports/{mailbox_id}/{id}.mbox`). */
+	r2_key: text("r2_key").notNull(),
+	size: integer("size").notNull(),
+	/** Byte offset into the object the drain has reached. */
+	cursor: integer("cursor").notNull().default(0),
+	status: text("status").notNull(),
+	imported: integer("imported").notNull().default(0),
+	skipped: integer("skipped").notNull().default(0),
+	failed: integer("failed").notNull().default(0),
+	last_error: text("last_error"),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
