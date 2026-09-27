@@ -53,6 +53,11 @@ import { normalizeImageAllowlist } from "../shared/remote-images";
 import { normalizeAutoDraft } from "../shared/auto-draft";
 import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
+import {
+	buildThreadSummaryPrompt,
+	normalizeThreadSummary,
+	resolveThreadSummaryAiRunner,
+} from "./lib/thread-summary";
 import { normalizeItemsSettings } from "../shared/items";
 import { normalizeSemanticSearchSettings, SEMANTIC_SEARCH_LIMIT_MAX } from "../shared/semantic";
 import { DEFAULT_ATTACHMENT_TYPE } from "../app/lib/attachments";
@@ -2414,6 +2419,39 @@ app.post("/api/v1/mailboxes/:mailboxId/trash/empty", async (c: AppContext) => {
 app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId", async (c: AppContext) => {
 	const stub = c.var.mailboxStub as unknown as MailboxThreadStub;
 	return c.json(await stub.getThreadEmails(c.req.param("threadId")!));
+});
+
+/**
+ * On-demand AI summary of one thread, built per request — nothing is
+ * stored, cached or sent, mirroring the digest route's posture. The
+ * transcript comes from the thread's stored messages within fixed
+ * budgets (workers/lib/thread-summary.ts) and one Workers AI call
+ * answers in plain text. An unknown or empty thread is a 404; a model
+ * that is unavailable or answers nothing usable is a 502.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId/summary", async (c: AppContext) => {
+	const stub = c.var.mailboxStub as unknown as MailboxThreadStub;
+	const emails = await stub.getThreadEmails(c.req.param("threadId")!);
+	if (emails.length === 0) return c.json({ error: "Thread not found" }, 404);
+
+	const mailboxId = decodeURIComponent(c.req.param("mailboxId")!);
+	const models = await resolveMailboxModels(c.env, mailboxId);
+	const { prompt, messageCount, truncated } = buildThreadSummaryPrompt(emails);
+
+	try {
+		const runner = resolveThreadSummaryAiRunner(c.env);
+		const text = normalizeThreadSummary(await runner.run(prompt, models.summarizer));
+		if (!text) {
+			console.error("Thread summarization returned no usable text");
+			return c.json({ error: "Thread summarization is unavailable right now." }, 502);
+		}
+		return c.json({
+			summary: { text, message_count: messageCount, truncated, model: models.summarizer },
+		});
+	} catch (e) {
+		console.error("Thread summarization failed:", (e as Error).message);
+		return c.json({ error: "Thread summarization is unavailable right now." }, 502);
+	}
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppContext) => {

@@ -26,6 +26,8 @@ export const DEFAULT_MODELS = {
 	classifier: "typesafe/jev",
 	/** Model that extracts tasks and deadlines from inbound mail. */
 	extractor: "@cf/meta/llama-3.1-8b-instruct-fast",
+	/** Model that summarizes a thread on demand. */
+	summarizer: "@cf/meta/llama-3.1-8b-instruct-fast",
 } as const;
 
 
@@ -39,6 +41,9 @@ export const MODEL_CONFIG_KEYS: readonly ModelConfigKey[] = [
 	"promptInjection",
 	"classifier",
 	"extractor",
+	// Appended at the end: the settings UI renders fields in this order,
+	// so a new key lands after the existing ones.
+	"summarizer",
 ];
 
 
@@ -49,6 +54,7 @@ export const MODEL_CONFIG_LABELS: Record<ModelConfigKey, string> = {
 	promptInjection: "Prompt-injection scanner model",
 	classifier: "Email classifier model",
 	extractor: "Items extractor model",
+	summarizer: "Thread summarizer model",
 };
 
 
@@ -63,6 +69,7 @@ export interface ModelConfig {
 	promptInjection?: string;
 	classifier?: string;
 	extractor?: string;
+	summarizer?: string;
 }
 
 
