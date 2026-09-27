@@ -138,6 +138,11 @@ import {
 	type SenderPolicy,
 } from "./lib/sender-policy";
 import { isTemplateValidationError } from "./lib/templates";
+import {
+	isLabelValidationError,
+	type LabelInput,
+	type LabelPatch,
+} from "./lib/labels";
 import { insertExtractedItems, isItemDueFilter, isItemStatus, ITEM_LIST_LIMIT_DEFAULT, ITEM_LIST_LIMIT_MAX } from "./lib/items";
 import { embedAndIndexMessage, isSemanticConfigured, semanticReindex, semanticSearch } from "./lib/semantic";
 import {
@@ -1730,6 +1735,104 @@ app.delete("/api/v1/mailboxes/:mailboxId/templates/:templateId", async (c: AppCo
 });
 
 
+// -- Labels (mailbox-wide tags) -------------------------------------
+
+/**
+ * The mailbox's labels, ordered by name (case-insensitive) then creation
+ * order. A label is a user/agent-applied tag — the AI-assigned `category`
+ * stays the model's verdict — and every entry carries its id, name, color
+ * and created_at.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/labels", async (c: AppContext) => {
+	return c.json({ labels: await c.var.mailboxStub.listLabels() });
+});
+
+
+/**
+ * Store one label. The name (1..50 characters, trimmed, unique per mailbox
+ * case-insensitively) and the 100-per-mailbox cap are enforced by the
+ * Durable Object; an unusable payload is a 400 here, never a silently
+ * clipped row. `color` is optional.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/labels", async (c: AppContext) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	try {
+		return c.json(await c.var.mailboxStub.createLabel(body as LabelInput), 201);
+	} catch (e) {
+		if (isLabelValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+/**
+ * Partial update of one label (name and/or color). The stored row comes
+ * back so a client can refresh without a second read; an unknown id is a
+ * 404, and a rename that collides with another label is a 400.
+ */
+app.patch("/api/v1/mailboxes/:mailboxId/labels/:labelId", async (c: AppContext) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	try {
+		const label = await c.var.mailboxStub.updateLabel(
+			c.req.param("labelId")!,
+			body as LabelPatch,
+		);
+		return label ? c.json(label) : c.json({ error: "Label not found" }, 404);
+	} catch (e) {
+		if (isLabelValidationError(e)) return c.json({ error: (e as Error).message }, 400);
+		throw e;
+	}
+});
+
+
+/**
+ * Remove one label and every assignment of it; the messages it tagged are
+ * never touched. 404 when there is nothing to remove.
+ */
+app.delete("/api/v1/mailboxes/:mailboxId/labels/:labelId", async (c: AppContext) => {
+	const deleted = await c.var.mailboxStub.deleteLabel(c.req.param("labelId")!);
+	return deleted ? c.json({ ok: true }) : c.json({ error: "Label not found" }, 404);
+});
+
+
+/**
+ * Attach one label to one message and answer the message's labels. A
+ * missing message or label is a 404; attaching a label the message already
+ * carries is a no-op.
+ */
+app.post(
+	"/api/v1/mailboxes/:mailboxId/emails/:emailId/labels/:labelId",
+	async (c: AppContext) => {
+		const result = await c.var.mailboxStub.addLabelToEmail(
+			c.req.param("emailId")!,
+			c.req.param("labelId")!,
+		);
+		return result.ok
+			? c.json({ labels: result.labels })
+			: c.json({ error: result.error }, 404);
+	},
+);
+
+
+/**
+ * Detach one label from one message and answer the message's labels. A
+ * missing message or label is a 404; detaching a label the message does not
+ * carry is a no-op.
+ */
+app.delete(
+	"/api/v1/mailboxes/:mailboxId/emails/:emailId/labels/:labelId",
+	async (c: AppContext) => {
+		const result = await c.var.mailboxStub.removeLabelFromEmail(
+			c.req.param("emailId")!,
+			c.req.param("labelId")!,
+		);
+		return result.ok
+			? c.json({ labels: result.labels })
+			: c.json({ error: result.error }, 404);
+	},
+);
+
+
 // -- Mailbox export (mbox and EML) -----------------------------------
 
 /** The stored fields every reconstructed message is built from. */
@@ -2401,6 +2504,7 @@ app.get("/api/v1/mailboxes/:mailboxId/storage", async (c: AppContext) => {
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 	const searchOpts: SearchAllFilters & { query: string } = {
 		query: c.req.query("query") || "", folder: c.req.query("folder"), category: c.req.query("category"),
+		label: c.req.query("label"),
 		from: c.req.query("from"),
 		to: c.req.query("to"), subject: c.req.query("subject"), date_start: c.req.query("date_start"),
 		date_end: c.req.query("date_end"), is_read: boolQuery(c, "is_read"),

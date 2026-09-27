@@ -24,6 +24,12 @@ export interface SearchAllFilters {
 	query?: string | undefined;
 	folder?: string | undefined;
 	category?: string | undefined;
+	/**
+	 * Exact, case-insensitive match on one label name the message carries.
+	 * Read by the per-mailbox search route only — the cross-mailbox fan-out
+	 * below deliberately ignores it, so /api/v1/search is unchanged.
+	 */
+	label?: string | undefined;
 	from?: string | undefined;
 	to?: string | undefined;
 	subject?: string | undefined;

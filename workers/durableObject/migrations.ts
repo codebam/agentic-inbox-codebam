@@ -663,4 +663,38 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_pending_uploads_created_at ON pending_uploads(created_at);
         `),
 	},
+	{
+		// Per-mailbox labels (workers/lib/labels.ts): user/agent-applied tags
+		// on messages, distinct from the AI-assigned `category` column. A
+		// name is unique per mailbox case-insensitively (the unique NOCASE
+		// index enforces it on top of the Durable Object's check), and
+		// email_labels is the many-to-many join between messages and labels.
+		// Both sides cascade and every email-delete path in the Durable
+		// Object also deletes the join rows explicitly, so no assignment can
+		// outlive the message or the label it names. The join's primary key
+		// (email_id, label_id) makes a repeated attach idempotent and covers
+		// the by-email lookup; the label_id index covers deleteLabel's sweep.
+		name: "34_add_labels",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS labels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_name_nocase
+                ON labels(name COLLATE NOCASE);
+
+            CREATE TABLE IF NOT EXISTS email_labels (
+                email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+                label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (email_id, label_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_email_labels_label_id
+                ON email_labels(label_id);
+        `),
+	},
 ];

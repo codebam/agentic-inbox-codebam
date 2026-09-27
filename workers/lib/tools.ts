@@ -1378,6 +1378,115 @@ export async function toolListTemplates(env: Env, mailboxId: string) {
 }
 
 
+// ── labels (list_labels, add_label, remove_label) ──────────────────
+
+/** One stored label row, as MailboxDO.listLabels returns it. */
+type MailboxLabelRow = Awaited<ReturnType<MailboxDO["listLabels"]>>[number];
+
+/** What attaching or detaching a label on an email answers with. */
+type MailboxLabelMutation = Awaited<ReturnType<MailboxDO["addLabelToEmail"]>>;
+
+/**
+ * The label RPCs the label tools call. Declared structurally for the same
+ * reason as the contacts and template tools: the stub's own RPC result
+ * types carry `& Disposable`, which the MCP result wrapper cannot accept.
+ */
+type MailboxLabelsStub = {
+	listLabels: () => Promise<MailboxLabelRow[]>;
+	addLabelToEmail: (emailId: string, labelId: string) => Promise<MailboxLabelMutation>;
+	removeLabelFromEmail: (emailId: string, labelId: string) => Promise<MailboxLabelMutation>;
+};
+
+function mailboxLabelsStub(env: Env, mailboxId: string): MailboxLabelsStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * Find one of the mailbox's labels by id or by name, case-insensitively —
+ * how add_label and remove_label resolve their `label` argument.
+ */
+function findLabel(labels: MailboxLabelRow[], wanted: string): MailboxLabelRow | null {
+	const query = wanted.trim();
+	if (!query) return null;
+	const byId = labels.find((label) => label.id === query);
+	if (byId) return byId;
+	const lower = query.toLowerCase();
+	return labels.find((label) => label.name.toLowerCase() === lower) ?? null;
+}
+
+/**
+ * The mailbox's labels, ordered by name (case-insensitive), each with its
+ * id, name, color and created_at. Read-only: this tool changes nothing —
+ * labels are created or deleted by the operator in the app — and nothing
+ * here sends mail. Use a label's name (or id) with add_label/remove_label
+ * to tag a message.
+ */
+export async function toolListLabels(env: Env, mailboxId: string) {
+	const labels = await mailboxLabelsStub(env, mailboxId).listLabels();
+	return {
+		mailboxId,
+		labels: labels.map((label) => ({
+			id: label.id,
+			name: label.name,
+			color: label.color,
+			created_at: label.created_at,
+		})),
+		note:
+			"Read-only: labels are created and removed by the operator in the app. Use a label's name (or id) with add_label or remove_label to tag a message — unlike the AI-assigned category, a label is only ever set by an explicit action.",
+	};
+}
+
+/**
+ * Attach one label to one message. `label` is a label name (matched
+ * case-insensitively) or its id; the label must already exist — labels are
+ * created by the operator in the app. Answers the message's labels after
+ * the change, or an error when the message or the label is missing.
+ */
+export async function toolAddLabel(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	label: string,
+) {
+	const stub = mailboxLabelsStub(env, mailboxId);
+	const existing = findLabel(await stub.listLabels(), label);
+	if (!existing) return { error: "Label not found" };
+	const result = await stub.addLabelToEmail(emailId, existing.id);
+	if (!result.ok) return { error: result.error };
+	return {
+		status: "updated",
+		emailId,
+		label: { id: existing.id, name: existing.name, color: existing.color },
+		labels: result.labels,
+	};
+}
+
+/**
+ * Detach one label from one message. `label` is a label name (matched
+ * case-insensitively) or its id; detaching a label the message does not
+ * carry is a no-op. Answers the message's labels after the change, or an
+ * error when the message or the label is missing.
+ */
+export async function toolRemoveLabel(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	label: string,
+) {
+	const stub = mailboxLabelsStub(env, mailboxId);
+	const existing = findLabel(await stub.listLabels(), label);
+	if (!existing) return { error: "Label not found" };
+	const result = await stub.removeLabelFromEmail(emailId, existing.id);
+	if (!result.ok) return { error: result.error };
+	return {
+		status: "updated",
+		emailId,
+		label: { id: existing.id, name: existing.name, color: existing.color },
+		labels: result.labels,
+	};
+}
+
+
 // ── items (list_items) ─────────────────────────────────────────────
 
 /** One stored item, as MailboxDO.listItems returns it. */
