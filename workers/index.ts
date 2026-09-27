@@ -2600,6 +2600,39 @@ app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppCon
 	return c.json({ status: "marked_read" });
 });
 
+/**
+ * Thread muting: new mail in a muted thread is skipped by the push and
+ * webhook notification fan-outs (workers/lib/webpush.ts,
+ * workers/lib/webhook.ts). The mute is a row keyed by the thread id alone,
+ * so muting an id that has no messages is allowed — a thread can be muted
+ * before its first message arrives. Notification bookkeeping only: nothing
+ * here sends mail and nothing is deleted.
+ *
+ * GET answers the current state, POST mutes and DELETE unmutes; both
+ * mutators answer the same `{ muted }` object, so the caller never has to
+ * guess what the server did.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId/mute", async (c: AppContext) => {
+	const muted = await c.var.mailboxStub.isThreadMuted(c.req.param("threadId")!);
+	return c.json({ muted });
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/mute", async (c: AppContext) => {
+	const threadId = (c.req.param("threadId") ?? "").trim();
+	// Mirrors MailboxDO.muteThread's bound, so an id it would reject answers
+	// 400 here instead of a rebuilt RPC failure surfacing as a 500.
+	if (threadId.length < 1 || threadId.length > 320) {
+		return c.json({ error: "threadId must be 1 to 320 characters" }, 400);
+	}
+	await c.var.mailboxStub.muteThread(threadId);
+	return c.json({ muted: true });
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/threads/:threadId/mute", async (c: AppContext) => {
+	await c.var.mailboxStub.unmuteThread(c.req.param("threadId")!);
+	return c.json({ muted: false });
+});
+
 // -- Reply / Forward ------------------------------------------------
 
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/reply", handleReplyEmail);
@@ -3678,6 +3711,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			ctx.waitUntil(notifyPushSubscriptions(env, mailboxId, {
 				sender: (parsedEmail.from?.address || "").toLowerCase(),
 				subject: parsedEmail.subject || "",
+				threadId,
 			}));
 		} catch (e) {
 			console.error("Web push notification failed:", (e as Error).message);
@@ -3713,6 +3747,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			recipient: allRecipients.join(", "),
 			date: new Date().toISOString(), // receive time, like the stored row
 			folder: destinationFolder,
+			threadId,
 			category: ruleResult.mutation.category ?? classification?.category ?? null,
 			body: parsedEmail.html || parsedEmail.text || "",
 		}, mailboxSettings));

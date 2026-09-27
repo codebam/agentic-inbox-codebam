@@ -4632,6 +4632,68 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 
+	// ── Muted threads (the push and webhook fan-outs skip these) ───────
+
+	/**
+	 * Mute one thread: new mail in it raises no push and no webhook
+	 * notification, because both fan-outs check this table before they send
+	 * anything (workers/lib/webpush.ts, workers/lib/webhook.ts). The id is
+	 * trimmed and must be 1 to 320 characters; anything else throws, so a
+	 * route can answer 400 instead of storing a junk key. Muting an id that
+	 * has no messages is allowed — it is just a row, so a thread can be muted
+	 * before its first message arrives. INSERT OR REPLACE makes the write an
+	 * upsert that refreshes created_at, so muting twice is idempotent.
+	 * Notification bookkeeping only: nothing here sends mail.
+	 */
+	muteThread(threadId: string): boolean {
+		const id = typeof threadId === "string" ? threadId.trim() : "";
+		// Longest id a mute row accepts; the mute routes mirror the bound so a
+		// too-long id answers 400 there instead of a rebuilt RPC failure.
+		if (id.length < 1 || id.length > 320) {
+			throw new Error("threadId must be 1 to 320 characters");
+		}
+		this.ctx.storage.sql.exec(
+			`INSERT OR REPLACE INTO muted_threads (thread_id, created_at) VALUES (?1, ?2)`,
+			id,
+			new Date().toISOString(),
+		);
+		return true;
+	}
+
+	/**
+	 * Unmute one thread. Answers whether a row was actually deleted, so the
+	 * route can answer an idempotent `muted: false` for a thread that was
+	 * already unmuted; an id that trims to nothing matches no row, so it is
+	 * false rather than an error.
+	 */
+	unmuteThread(threadId: string): boolean {
+		const id = typeof threadId === "string" ? threadId.trim() : "";
+		if (!id) return false;
+		const cursor = this.ctx.storage.sql.exec(
+			`DELETE FROM muted_threads WHERE thread_id = ?1`,
+			id,
+		);
+		return cursor.rowsWritten > 0;
+	}
+
+	/**
+	 * Whether one thread is muted. The notification fan-outs call this for
+	 * every arrival that carries a thread id, and a failure there is
+	 * deliberately non-fatal (they log it and send anyway), so this stays a
+	 * plain lookup: an unknown or blank id is simply not muted.
+	 */
+	isThreadMuted(threadId: string): boolean {
+		const id = typeof threadId === "string" ? threadId.trim() : "";
+		if (!id) return false;
+		const row = this.db
+			.select({ thread_id: schema.mutedThreads.thread_id })
+			.from(schema.mutedThreads)
+			.where(eq(schema.mutedThreads.thread_id, id))
+			.get();
+		return !!row;
+	}
+
+
 	// ── Morning digest (built for the cron sweep and the digest route) ──
 
 	/**

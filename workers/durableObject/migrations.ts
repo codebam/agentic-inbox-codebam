@@ -801,4 +801,21 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at);
         `),
 	},
+	{
+		// Muted threads (workers/durableObject/index.ts muteThread): the thread
+		// ids whose new mail the push and webhook notification fan-outs skip
+		// (workers/lib/webpush.ts, workers/lib/webhook.ts). One row per muted
+		// thread, keyed by the thread id, so re-muting refreshes created_at
+		// instead of adding a row. Notification bookkeeping only — never
+		// message content — and deliberately no foreign key: a thread id is an
+		// id over `emails`, and muting an id with no messages is allowed, so a
+		// thread can be muted before its first message arrives.
+		name: "38_add_muted_threads",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS muted_threads (
+                thread_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
+        `),
+	},
 ];
