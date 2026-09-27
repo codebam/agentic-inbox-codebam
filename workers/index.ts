@@ -3150,6 +3150,8 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		} catch (e) {
 			console.error("Web push notification failed:", (e as Error).message);
 		}
+	} else if (isSpam || ruleMarkedSpam) {
+		console.log(`Push skipped for ${mailboxId}: message is spam`);
 	}
 
 	// Do not auto-draft replies to spam: neither AI-classified spam, mail a

@@ -454,6 +454,9 @@ export async function notifyPushSubscriptions(
 				`Push for ${mailboxId} failed: ${result.error ?? "unknown error"}`,
 			);
 		}
+		console.log(
+			`Push fan-out for ${mailboxId}: ${subscriptions.length} subscription(s), delivered ${delivered}, pruned ${pruned}, failed ${failed}`,
+		);
 		return { attempted: batch.length, delivered, pruned, failed, skipped: false };
 	} catch (e) {
 		console.error("Web push notification failed:", (e as Error).message);
