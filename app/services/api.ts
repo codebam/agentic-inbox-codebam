@@ -198,7 +198,13 @@ const api = {
 	getPushConfig: () => get<PushConfig>("/api/v1/push/config"),
 	/** Register this browser's push subscription for a mailbox. */
 	subscribePush: (mailboxId: string, subscription: PushSubscriptionInput) =>
-		post<{ ok: boolean; endpoint: string }>(`/api/v1/mailboxes/${mailboxId}/push/subscribe`, subscription),
+		post<{ ok: boolean; endpoint: string }>(`/api/v1/mailboxes/${mailboxId}/push/subscribe`, {
+			// The route reads PushSubscription.toJSON()'s nested shape; posting
+			// the flat storage shape ({ endpoint, p256dh, auth }) 400s with
+			// "Subscription keys are required".
+			endpoint: subscription.endpoint,
+			keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+		}),
 	/** Remove this browser's push subscription from a mailbox. */
 	unsubscribePush: (mailboxId: string, endpoint: string) =>
 		post<{ ok: boolean; removed: boolean }>(`/api/v1/mailboxes/${mailboxId}/push/unsubscribe`, { endpoint }),

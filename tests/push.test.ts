@@ -27,6 +27,7 @@ import {
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
+import api from "../app/services/api";
 import { SPAM_CATEGORY_ID } from "../shared/categories";
 import { Folders } from "../shared/folders";
 import {
@@ -511,6 +512,50 @@ describe("push routes", () => {
 
 		// Removing an endpoint that was never stored is idempotent, not an error.
 		expect(await stubFor(mailbox).deletePushSubscription("https://push.example.com/other")).toBe(false);
+	});
+
+	it("accepts the body the client actually posts", async () => {
+		// The card hands the API layer the flat storage shape
+		// ({ endpoint, p256dh, auth }); the wire body has to be the browser's
+		// nested toJSON() shape or the route answers 400 "Subscription keys
+		// are required" and the row is never stored — the browser keeps its
+		// subscription, so the card reads as subscribed while nothing can
+		// ever be delivered.
+		const mailbox = "push-client-body@example.com";
+		await registerMailbox(mailbox, PIPELINE_SETTINGS);
+		const subscription = await generateSubscription("https://push.example.com/client-body");
+
+		let captured: { url: string; body: unknown } | null = null;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			captured = { url: String(input), body: JSON.parse(String(init?.body)) };
+			return new Response(
+				JSON.stringify({ ok: true, endpoint: subscription.input.endpoint }),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof fetch;
+		try {
+			await api.subscribePush(mailbox, subscription.input);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+
+		expect(captured).not.toBeNull();
+		const { url, body } = captured as { url: string; body: unknown };
+		expect(url).toBe(`/api/v1/mailboxes/${mailbox}/push/subscribe`);
+		// The server's own validator is the contract; a non-null reason is
+		// the 400 the card was showing.
+		expect(validatePushSubscription(body)).toBeNull();
+
+		// Feeding that exact body to the real route stores the row.
+		const response = await postJson(`/api/v1/mailboxes/${mailbox}/push/subscribe`, body);
+		expect(response.status).toBe(200);
+		const rows = await stubFor(mailbox).listPushSubscriptions();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			endpoint: subscription.input.endpoint,
+			p256dh: subscription.input.p256dh,
+			auth: subscription.input.auth,
+		});
 	});
 });
 
