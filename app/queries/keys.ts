@@ -45,6 +45,10 @@ export const queryKeys = {
 		/** Every label for a mailbox. */
 		list: (mailboxId: string) => ["labels", mailboxId] as const,
 	},
+	savedSearches: {
+		/** Every saved search for a mailbox, newest first. */
+		list: (mailboxId: string) => ["saved-searches", mailboxId] as const,
+	},
 	items: {
 		/** One filtered page of a mailbox's extracted tasks and deadlines. */
 		list: (mailboxId: string, filters: Record<string, string>) =>

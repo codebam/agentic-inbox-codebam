@@ -781,4 +781,24 @@ export const mailboxMigrations: Migration[] = [
             END;
         `),
 	},
+	{
+		// Per-mailbox saved searches: a named query the operator re-runs
+		// from the sidebar or saves from the search page's Save button,
+		// stored so it outlives any single browser. Bounded by
+		// MAX_SAVED_SEARCHES per mailbox (createSavedSearch refuses beyond
+		// it — searches are kept, never pruned) and every stored value is
+		// trimmed to its bounds at the Durable Object boundary. The index
+		// backs the newest-first list.
+		name: "37_add_saved_searches",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS saved_searches (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at);
+        `),
+	},
 ];

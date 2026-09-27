@@ -2,8 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Loader, Pagination, Select, Tooltip } from "@cloudflare/kumo";
-import { ArrowLeftIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
+import { Badge, Button, Dialog, Input, Loader, Pagination, Select, Tooltip } from "@cloudflare/kumo";
+import { ArrowLeftIcon, BookmarkSimpleIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import MailboxSplitView from "~/components/MailboxSplitView";
@@ -11,6 +11,7 @@ import SemanticSearchToggle, { isSemanticMode } from "~/components/SemanticSearc
 import { formatListDate, getSnippetText } from "~/lib/utils";
 import { useUpdateEmail } from "~/queries/emails";
 import { useLabels } from "~/queries/labels";
+import { useCreateSavedSearch } from "~/queries/saved-searches";
 import { useSearchEmails, useSemanticSearch, SEARCH_PAGE_SIZE } from "~/queries/search";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
@@ -44,6 +45,7 @@ export default function SearchResultsRoute() {
 	const { selectedEmailId, isComposing, selectEmail, closePanel } = useUIStore();
 	const updateEmail = useUpdateEmail();
 	const urlQuery = searchParams.get("q") || "";
+	const createSavedSearch = useCreateSavedSearch();
 	const searchKey = useMemo(
 		() => `${mailboxId ?? ""}::${urlQuery}::${labelFilter}`,
 		[mailboxId, urlQuery, labelFilter],
@@ -101,6 +103,42 @@ export default function SearchResultsRoute() {
 		);
 	};
 
+	// Saving the current query under a name. The dialog's error and its typed
+	// name are set from the handlers below (never an effect), and the name is
+	// prefilled from the query the button is saving.
+	const [isSaveOpen, setIsSaveOpen] = useState(false);
+	const [saveName, setSaveName] = useState("");
+	const [saveError, setSaveError] = useState<string | null>(null);
+	const canSave = urlQuery.trim().length > 0;
+
+	const openSaveDialog = () => {
+		setSaveName(urlQuery.trim());
+		setSaveError(null);
+		setIsSaveOpen(true);
+	};
+
+	const handleSaveSearch = (e: React.FormEvent) => {
+		e.preventDefault();
+		const name = saveName.trim();
+		if (!name || !mailboxId || !canSave) return;
+		setSaveError(null);
+		createSavedSearch.mutate(
+			{ mailboxId, input: { name, query: urlQuery.trim() } },
+			{
+				onSuccess: () => {
+					setIsSaveOpen(false);
+				},
+				onError: (saveFailure) => {
+					setSaveError(
+						saveFailure instanceof Error
+							? saveFailure.message
+							: "Could not save the search",
+					);
+				},
+			},
+		);
+	};
+
 	const handleRowClick = (email: Email) => { selectEmail(email.id, mailboxId); if (!email.read && mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { read: true } }); };
 	const folderDisplayName = (name: string | null | undefined): string => { if (!name) return ""; const map: Record<string, string> = { inbox: "Inbox", sent: "Sent", draft: "Drafts", archive: "Archive", trash: "Trash" }; return map[name.toLowerCase()] || name; };
 
@@ -133,6 +171,15 @@ export default function SearchResultsRoute() {
 						</Select>
 					)}
 					<SemanticSearchToggle />
+					<Button
+						variant="secondary"
+						size="sm"
+						icon={<BookmarkSimpleIcon size={16} />}
+						onClick={openSaveDialog}
+						disabled={!canSave}
+					>
+						Save this search
+					</Button>
 				</div>
 				<div className="flex-1 overflow-y-auto">
 					{isLoading ? <div className="flex justify-center py-16"><Loader size="lg" /></div> : isError ? (
@@ -170,6 +217,48 @@ export default function SearchResultsRoute() {
 				</div>
 				{!semanticMode && totalCount > SEARCH_PAGE_SIZE && <div className="flex justify-center py-3 border-t border-kumo-line shrink-0"><Pagination page={currentPage} setPage={setPage} perPage={SEARCH_PAGE_SIZE} totalCount={totalCount} /></div>}
 			</>
+
+			{/* Save this search — names the current query so the sidebar can
+			    re-run it later. Nothing here changes how search itself works. */}
+			<Dialog.Root open={isSaveOpen} onOpenChange={setIsSaveOpen}>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="text-base font-semibold mb-4">
+						Save this search
+					</Dialog.Title>
+					<form onSubmit={handleSaveSearch} className="space-y-4">
+						{saveError && (
+							<p className="text-xs text-kumo-danger">{saveError}</p>
+						)}
+						<Input
+							label="Name"
+							placeholder="e.g. Unread invoices"
+							value={saveName}
+							onChange={(e) => setSaveName(e.target.value)}
+							required
+						/>
+						<p className="truncate text-xs text-kumo-subtle">
+							Query: {urlQuery}
+						</p>
+						<div className="flex justify-end gap-2">
+							<Dialog.Close
+								render={({ className, ...props }) => (
+									<Button {...props} {...(className ? { className } : {})} variant="secondary">
+										Cancel
+									</Button>
+								)}
+							/>
+							<Button
+								type="submit"
+								variant="primary"
+								loading={createSavedSearch.isPending}
+								disabled={!saveName.trim()}
+							>
+								Save
+							</Button>
+						</div>
+					</form>
+				</Dialog>
+			</Dialog.Root>
 		</MailboxSplitView>
 	);
 }
