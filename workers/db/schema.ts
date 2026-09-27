@@ -440,3 +440,20 @@ export const attachmentText = sqliteTable("attachment_text", {
 	text: text("text").notNull(),
 	created_at: text("created_at").notNull(),
 });
+
+
+/**
+ * Muted threads (migration 38_add_muted_threads): the thread ids whose new
+ * mail the push and webhook notification fan-outs skip — MailboxDO owns the
+ * rows (muteThread/unmuteThread/isThreadMuted) and workers/index.ts reads
+ * them off the receive path through those methods. `thread_id` is the primary
+ * key and the upsert target, so re-muting refreshes `created_at` instead of
+ * adding a row. Notification bookkeeping only — never message content — and
+ * deliberately no foreign key: a thread id is an id over `emails`, and
+ * muting an id with no messages is allowed, so a thread can be muted before
+ * its first message arrives.
+ */
+export const mutedThreads = sqliteTable("muted_threads", {
+	thread_id: text("thread_id").primaryKey(),
+	created_at: text("created_at").notNull(),
+});

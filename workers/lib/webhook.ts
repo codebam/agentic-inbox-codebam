@@ -23,6 +23,11 @@
  *     and mail stamped with the spam category are skipped, matching the
  *     auto-draft rules: a spam endpoint would otherwise be told about every
  *     piece of junk the mailbox receives.
+ *   - A muted thread is skipped too: when the arrival carries a threadId the
+ *     mailbox has muted (MailboxDO.isThreadMuted), nothing is POSTed and one
+ *     line is logged. That check fails OPEN — a lookup failure is logged and
+ *     the notification goes out anyway, because a notification is not a
+ *     guardrail and a broken mute table must never silence a webhook.
  */
 
 
@@ -32,7 +37,7 @@ import {
 	validateWebhookUrl,
 } from "../../shared/webhook";
 import type { Env } from "../types";
-import { stripHtmlToText } from "./email-helpers";
+import { getMailboxStub, stripHtmlToText } from "./email-helpers";
 import { readMailboxSettings } from "./mailbox-settings";
 
 
@@ -56,6 +61,8 @@ export interface WebhookEmail {
 	category?: string | null;
 	/** Full body; the payload carries a truncated plain-text preview of it. */
 	body?: string | null;
+	/** Thread the message belongs to; a muted thread is not notified. */
+	threadId?: string | undefined;
 }
 
 
@@ -170,6 +177,8 @@ export function buildWebhookRequest(
  * Never throws: every failure is logged and returned in the result, so a
  * broken endpoint can never affect mail delivery. `settings` is the mailbox
  * settings JSON when the caller already has it; otherwise it is read from R2.
+ * A payload naming a muted thread is skipped outright, in one log line; that
+ * check fails open, so an unreadable mute table can never silence a webhook.
  */
 export async function notifyNewEmail(
 	env: Env,
@@ -189,6 +198,25 @@ export async function notifyNewEmail(
 		if (urlError) {
 			console.error(`Webhook for ${mailboxId} skipped: ${urlError}`);
 			return { ok: false, status: null, error: urlError, skipped: true };
+		}
+
+		// A muted thread never notifies. The check fails open: a lookup
+		// failure is logged and the POST continues, because a notification is
+		// not a guardrail and an unreadable mute table must never silence a
+		// webhook.
+		if (email.threadId) {
+			try {
+				const muted = await getMailboxStub(env, mailboxId).isThreadMuted(email.threadId);
+				if (muted) {
+					console.log(`Webhook skipped for ${mailboxId}: thread muted`);
+					return { ok: false, status: null, error: null, skipped: true };
+				}
+			} catch (e) {
+				console.error(
+					`Webhook thread-mute check failed for ${mailboxId}; sending anyway:`,
+					(e as Error).message,
+				);
+			}
 		}
 
 		const secret = normalizeWebhookSecret(mailboxSettings["notifyWebhookSecret"]);

@@ -26,6 +26,11 @@
  *     can ever loop over an unbounded number of rows.
  *   - Non-spam arrivals only — the call site in workers/index.ts skips spam,
  *     matching the auto-draft and webhook rules.
+ *   - A muted thread is skipped: when the payload carries a threadId and its
+ *     mailbox has muted it (MailboxDO.isThreadMuted), nothing is sent and one
+ *     line is logged. That check fails OPEN — a lookup failure is logged and
+ *     the push goes out anyway, because a notification is not a guardrail and
+ *     a broken mute table must never silence mail.
  *   - The push-service fetch is injectable (`fetchImpl`), so tests can assert
  *     the exact request without a network, the same contract guardedFetch
  *     uses. Requests go through the SSRF guard: https only, no redirects,
@@ -40,6 +45,7 @@ import {
 	type PushSubscriptionInput,
 } from "../../shared/push";
 import type { Env } from "../types";
+import { getMailboxStub } from "./email-helpers";
 import { guardedFetch } from "./ssrf-guard";
 
 
@@ -403,12 +409,14 @@ export interface PushNotifyResult {
  * rows to MAX_PUSH_SUBSCRIPTIONS and the list is read newest-first, so at
  * most MAX_PUSH_FANOUT requests are ever made for one arrival. A 404/410
  * answer prunes the dead endpoint instead of retrying it forever; a success
- * records `last_ok_at`. `fetchImpl` is injectable for tests.
+ * records `last_ok_at`. `fetchImpl` is injectable for tests. A payload that
+ * names a muted thread is skipped outright, in one log line; that check fails
+ * open, so an unreadable mute table can never silence a notification.
  */
 export async function notifyPushSubscriptions(
 	env: Env,
 	mailboxId: string,
-	email: { sender: string; subject: string },
+	email: { sender: string; subject: string; threadId?: string | undefined },
 	fetchImpl: typeof fetch = fetch,
 ): Promise<PushNotifyResult> {
 	const skipped: PushNotifyResult = {
@@ -421,6 +429,25 @@ export async function notifyPushSubscriptions(
 	try {
 		const config = resolveVapidConfig(env);
 		if (!config) return skipped;
+
+		// A muted thread never raises a notification. The check fails open: a
+		// lookup failure is logged and the fan-out continues, because a
+		// notification is not a guardrail and an unreadable mute table must
+		// never silence mail.
+		if (email.threadId) {
+			try {
+				const muted = await getMailboxStub(env, mailboxId).isThreadMuted(email.threadId);
+				if (muted) {
+					console.log(`Push skipped for ${mailboxId}: thread muted`);
+					return skipped;
+				}
+			} catch (e) {
+				console.error(
+					`Push thread-mute check failed for ${mailboxId}; sending anyway:`,
+					(e as Error).message,
+				);
+			}
+		}
 
 		const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 		const subscriptions = await stub.listPushSubscriptions();
