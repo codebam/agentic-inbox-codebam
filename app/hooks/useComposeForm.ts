@@ -567,8 +567,18 @@ export function useComposeForm(mailboxId?: string) {
 			fromName && fromName !== currentMailbox?.email
 				? { email: currentMailbox?.email, name: fromName }
 				: currentMailbox?.email;
-		const attachmentPayloads = toAttachmentPayloads(attachments);
-		const linkedAttachmentPayloads = toLinkedAttachmentPayloads(linkedAttachments);
+		// Files ride the queue by id when they were uploaded first: their
+		// bytes are already in R2 and the fire path resolves them from
+		// `upload_ids`, so the queued payload must NOT carry them inline as
+		// well. The queue route refuses a request with `attachments` outright
+		// (it stores parameters, never bytes) and a payload carrying both
+		// would deliver each file twice. The direct send path passes no ids,
+		// so it keeps the inline payloads.
+		const filesRideTheQueue = uploadIds.length > 0;
+		const attachmentPayloads = filesRideTheQueue ? [] : toAttachmentPayloads(attachments);
+		const linkedAttachmentPayloads = filesRideTheQueue
+			? []
+			: toLinkedAttachmentPayloads(linkedAttachments);
 		const inReplyTo =
 			composeOptions.originalEmail?.id ||
 			composeOptions.draftEmail?.in_reply_to ||
