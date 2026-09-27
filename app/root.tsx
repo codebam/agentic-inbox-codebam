@@ -53,6 +53,18 @@ const SYSTEM_THEME_SCRIPT = `
 				var href = dark ? link.getAttribute("data-dark") : link.getAttribute("data-light");
 				if (href && link.getAttribute("href") !== href) link.setAttribute("href", href);
 			}
+			// The standalone window's title bar takes its colour from
+			// theme-color, which a manifest cannot vary per scheme: point the
+			// metas at the active one, media query included, so the window
+			// chrome meets the app header instead of staying white.
+			var metas = document.querySelectorAll("meta[data-theme-color]");
+			for (var j = 0; j < metas.length; j++) {
+				var meta = metas[j];
+				var color = dark ? meta.getAttribute("data-dark") : meta.getAttribute("data-light");
+				if (color && meta.getAttribute("content") !== color) meta.setAttribute("content", color);
+				var media = dark ? "(prefers-color-scheme: dark)" : "(prefers-color-scheme: light)";
+				if (meta.getAttribute("media") !== media) meta.setAttribute("media", media);
+			}
 		};
 		apply(mql);
 		if (mql.addEventListener) mql.addEventListener("change", apply);
@@ -160,6 +172,30 @@ export function Layout({ children }: { children: React.ReactNode }) {
 				/>
 				<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 				<meta name="apple-mobile-web-app-title" content="Inbox" />
+				{/* PWA chrome: the standalone window's title bar is painted with
+				    theme-color, and the manifest can only give one value for it —
+				    hence this per-scheme pair, kept in step by SYSTEM_THEME_SCRIPT
+				    exactly like the favicon links. Both match the app header
+				    (bg-kumo-base: #ffffff in light, #0f0f0f in dark), so the title
+				    bar meets the header without a seam. */}
+				<meta
+					name="theme-color"
+					media="(prefers-color-scheme: light)"
+					content="#ffffff"
+					data-theme-color
+					data-light="#ffffff"
+					data-dark="#0f0f0f"
+					suppressHydrationWarning
+				/>
+				<meta
+					name="theme-color"
+					media="(prefers-color-scheme: dark)"
+					content="#0f0f0f"
+					data-theme-color
+					data-light="#ffffff"
+					data-dark="#0f0f0f"
+					suppressHydrationWarning
+				/>
 				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />
 				<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 				<title>Agentic Inbox Codebam</title>

@@ -81,6 +81,16 @@ describe("PWA manifest", () => {
 		expect(rootSource).toContain('crossOrigin="use-credentials"');
 	});
 
+	it("carries per-scheme theme-color metas for the standalone window", () => {
+		// The manifest can only give one theme_color, so the installed app's
+		// title bar would stay white in dark mode without these; the script
+		// re-points them the way it re-points the favicons.
+		expect(rootSource).toContain('name="theme-color"');
+		expect(rootSource).toContain("data-theme-color");
+		expect(rootSource).toContain("#0f0f0f");
+		expect(rootSource).toContain("meta[data-theme-color]");
+	});
+
 	it("ships a service worker with a real fetch handler, registered on load", () => {
 		// Chromium on Android will not mint a WebAPK without one, and an empty
 		// listener does not count.
