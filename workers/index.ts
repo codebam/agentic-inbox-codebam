@@ -7,7 +7,7 @@ import { cors } from "hono/cors";
 import PostalMime from "postal-mime";
 import { z, ZodError } from "zod";
 import { sendEmail } from "./email-sender";
-import { storeAttachments, attachmentR2Key, type StoredAttachment } from "./lib/attachments";
+import { storeAttachments, attachmentR2Key, decodeBase64Bytes, sanitizeAttachmentFilename, type StoredAttachment } from "./lib/attachments";
 import { encodeBinaryParts } from "./lib/mime-binary";
 import { repairBase64Attachment } from "./lib/attachment-content";
 import {
@@ -31,6 +31,7 @@ import {
 	ApplyRuleSchema,
 	SendEmailRequestSchema,
 	ScheduleSendRequestSchema,
+	UploadFileRequestSchema,
 	BulkEmailActionSchema,
 	CreateRuleSchema,
 	CreateTemplateSchema,
@@ -54,6 +55,7 @@ import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
 import { normalizeItemsSettings } from "../shared/items";
 import { normalizeSemanticSearchSettings, SEMANTIC_SEARCH_LIMIT_MAX } from "../shared/semantic";
+import { DEFAULT_ATTACHMENT_TYPE } from "../app/lib/attachments";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -68,6 +70,11 @@ import {
 	serializeScheduledSendPayload,
 	type ScheduleSendInput,
 } from "./lib/scheduled-sends";
+import {
+	pendingUploadR2Key,
+	type CreatePendingUploadInput,
+	type PendingUploadRow,
+} from "./lib/pending-uploads";
 import {
 	searchAllMailboxes,
 	type MailboxSearchRow,
@@ -1113,10 +1120,12 @@ function scheduledSendsStub(c: AppContext): MailboxScheduledSendsStub {
  *
  * The body is the send route's body plus `send_at`; the same sender
  * validation and rate limit run here, and `send_at` must be in the future.
- * Attachments are rejected: a queued send stores its parameters only, never
- * attachment bytes. Nothing is sent by this route — the mailbox's alarm (or
- * the cron sweep) fires the send when it comes due, re-running the send
- * guards at that point. Answers 201 with the stored row.
+ * Attachment bytes are rejected: a queued send stores its parameters only.
+ * Files ride the queue by id instead — each `upload_ids` entry names a
+ * pending upload (POST .../uploads) whose bytes the fire path resolves when
+ * the send comes due. Nothing is sent by this route — the mailbox's alarm
+ * (or the cron sweep) fires the send, re-running the send guards at that
+ * point. Answers 201 with the stored row.
  */
 app.post("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
@@ -1135,6 +1144,7 @@ app.post("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) =
 		html,
 		text,
 		attachments,
+		upload_ids,
 		in_reply_to,
 		references,
 		thread_id,
@@ -1179,6 +1189,7 @@ app.post("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) =
 		subject,
 		html,
 		text,
+		upload_ids,
 		in_reply_to,
 		references,
 		thread_id,
@@ -1191,6 +1202,110 @@ app.post("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) =
 		...(draft_id ? { draft_id } : {}),
 	});
 	return c.json(send, 201);
+});
+
+/**
+ * The pending-upload RPCs the upload routes call: `createPendingUpload`
+ * records a file whose bytes the route has just stored, and
+ * `getPendingUpload`/`deletePendingUpload` back the delete route. No RPC
+ * here sends mail.
+ */
+type MailboxPendingUploadsStub = {
+	createPendingUpload: (input: CreatePendingUploadInput) => Promise<PendingUploadRow>;
+	getPendingUpload: (id: string) => Promise<PendingUploadRow | null>;
+	deletePendingUpload: (id: string) => Promise<boolean>;
+};
+
+/** The mailbox stub, narrowed to the pending-upload RPCs the routes use. */
+function pendingUploadsStub(c: AppContext): MailboxPendingUploadsStub {
+	return c.var.mailboxStub;
+}
+
+/**
+ * Store one file's bytes ahead of a queued send.
+ *
+ * The composer uploads each file here before it queues a message that
+ * carries it: a queued send's stored payload holds ids, never bytes, so the
+ * bytes go to R2 (`uploads/{mailboxId}/{uploadId}/{filename}`) and the row
+ * the mailbox's Durable Object records is what the fire path resolves the id
+ * back to. The caps are the linked-attachment caps exactly — the same
+ * numbers and the same error text (workers/lib/attachment-links.ts) — so a
+ * file the linked path would refuse is refused here too. Answers 201 with
+ * the stored metadata; the file is dropped by the DELETE route below, by
+ * the send that consumes it, or by the daily sweep once it is stale.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/uploads", async (c: AppContext) => {
+	const parsed = UploadFileRequestSchema.safeParse(
+		await c.req.json().catch(() => null),
+	);
+	if (!parsed.success) return c.json({ error: "Invalid upload request" }, 400);
+	const { content, filename, type, mimetype, size } = parsed.data;
+
+	// The caps are the linked path's, checked before anything is written;
+	// the stored bytes are checked again below, so a caller cannot get past
+	// the caps by lying about `size`.
+	const declaredCapError = linkedAttachmentCapError([
+		linkedAttachmentSize({ filename, size, content }),
+	]);
+	if (declaredCapError) return c.json({ error: declaredCapError }, 400);
+
+	const bytes = decodeBase64Bytes(content);
+	const uploadId = crypto.randomUUID();
+	const safeFilename = sanitizeAttachmentFilename(filename);
+	const storedCapError = linkedAttachmentCapError([
+		{ filename: safeFilename, size: bytes.byteLength },
+	]);
+	if (storedCapError) return c.json({ error: storedCapError }, 400);
+
+	const r2Key = pendingUploadR2Key({
+		mailboxId: c.req.param("mailboxId")!,
+		id: uploadId,
+		filename: safeFilename,
+	});
+	await c.env.BUCKET.put(r2Key, bytes);
+	const stub = pendingUploadsStub(c);
+	let upload: PendingUploadRow;
+	try {
+		upload = await stub.createPendingUpload({
+			id: uploadId,
+			filename: safeFilename,
+			mimetype: type || mimetype || DEFAULT_ATTACHMENT_TYPE,
+			size: bytes.byteLength,
+			r2Key,
+		});
+	} catch (e) {
+		// The bytes are stored but the row is not: drop them again rather
+		// than leave an object no row (and so no sweep) can ever reach.
+		await c.env.BUCKET.delete(r2Key);
+		throw e;
+	}
+	return c.json(
+		{
+			id: upload.id,
+			filename: upload.filename,
+			mimetype: upload.mimetype,
+			size: upload.size,
+		},
+		201,
+	);
+});
+
+/**
+ * Drop one pending upload: its row and its R2 object.
+ *
+ * Used when a queued message's files are discarded, and by the tests; a send
+ * that consumed the file has already deleted it. Answers 404 for an unknown
+ * id. The row goes first, so a fire that races this cannot resolve a row
+ * whose bytes are already gone — it records a legible failure instead.
+ */
+app.delete("/api/v1/mailboxes/:mailboxId/uploads/:uploadId", async (c: AppContext) => {
+	const stub = pendingUploadsStub(c);
+	const uploadId = c.req.param("uploadId")!;
+	const upload = await stub.getPendingUpload(uploadId);
+	if (!upload) return c.json({ error: "Upload not found" }, 404);
+	await stub.deletePendingUpload(uploadId);
+	await c.env.BUCKET.delete(upload.r2_key);
+	return c.json({ status: "deleted" });
 });
 
 /**

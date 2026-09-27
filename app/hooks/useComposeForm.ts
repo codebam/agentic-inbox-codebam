@@ -20,6 +20,7 @@ import { ensureMessageBody } from "shared/compose-body";
 import {
 	blobToBase64,
 	createPendingAttachment,
+	DEFAULT_ATTACHMENT_TYPE,
 	describeAttachmentSummary,
 	describeLinkedAttachmentSummary,
 	isLinkableAttachment,
@@ -281,9 +282,8 @@ export function useComposeForm(mailboxId?: string) {
 
 	/**
 	 * Why the Send action is unavailable, or null when it can go ahead: a
-	 * recipient and a subject are required. Files are not a blocker — a
-	 * message carrying files is posted straight to the send route, because
-	 * the queue's stored payload cannot carry file bytes.
+	 * recipient and a subject are required. Files are not a blocker — the
+	 * composer uploads them first and the queue carries them by id.
 	 */
 	const sendBlockReason = useMemo(() => {
 		const missing: string[] = [];
@@ -295,20 +295,17 @@ export function useComposeForm(mailboxId?: string) {
 
 	/**
 	 * Why the scheduling affordances are unavailable, or null when they are
-	 * usable. Rendered next to the buttons so the reason stays visible —
-	 * queued sends never carry attachments, and a recipient and subject are
-	 * required.
+	 * usable. Rendered next to the buttons so the reason stays visible — a
+	 * recipient and a subject are required. Files are not a blocker either:
+	 * the composer uploads them first and the queue carries them by id.
 	 */
 	const scheduleBlockReason = useMemo(() => {
-		if (attachments.length > 0 || linkedAttachments.length > 0) {
-			return "Send later can't carry attachments — send it now, or remove them.";
-		}
 		const missing: string[] = [];
 		if (splitEmailList(to).length === 0) missing.push("a recipient");
 		if (!subject.trim()) missing.push("a subject");
 		if (missing.length === 0) return null;
 		return `Add ${missing.join(" and ")} to schedule this send.`;
-	}, [attachments, linkedAttachments, to, subject]);
+	}, [to, subject]);
 
 	useEffect(() => {
 		if (lastInitializedOptionsRef.current === composeOptions) return;
@@ -561,7 +558,7 @@ export function useComposeForm(mailboxId?: string) {
 	 * Built when a handler runs, so the form state and the clock are read at
 	 * click time — never during render.
 	 */
-	const buildOutgoingPayload = () => {
+	const buildOutgoingPayload = (uploadIds: string[] = []) => {
 		const toRecipients = splitEmailList(to);
 		const ccRecipients = splitEmailList(cc);
 		const bccRecipients = splitEmailList(bcc);
@@ -593,6 +590,9 @@ export function useComposeForm(mailboxId?: string) {
 			...(linkedAttachmentPayloads.length > 0
 				? { linked_attachments: linkedAttachmentPayloads }
 				: {}),
+			// The files themselves are already in R2 (uploadPendingFiles);
+			// their ids travel here so the fire path can resolve them.
+			...(uploadIds.length > 0 ? { upload_ids: uploadIds } : {}),
 			// The queue owns the draft from here on, so its id travels with
 			// the payload instead of the draft being deleted on send.
 			...(composeOptions.draftEmail ? { draft_id: composeOptions.draftEmail.id } : {}),
@@ -602,36 +602,75 @@ export function useComposeForm(mailboxId?: string) {
 	};
 
 	/**
+	 * Upload the composer's files so a queued send can carry them by id: the
+	 * bytes go to R2 (POST .../uploads) and the queued payload stores only
+	 * the ids. Returns the ids in file order, or null when an upload failed —
+	 * the caller then falls back to the direct send path, and the ids already
+	 * stored are dropped again. Each file is capped exactly like a direct
+	 * send's, so a file the send route would refuse is refused here too.
+	 */
+	const uploadPendingFiles = async (): Promise<string[] | null> => {
+		if (!mailboxId) return null;
+		const files = [...attachments, ...linkedAttachments].filter(
+			(file) => file.content.length > 0,
+		);
+		const ids: string[] = [];
+		for (const file of files) {
+			try {
+				const uploaded = await api.uploadPendingFile(mailboxId, {
+					content: file.content,
+					filename: file.filename,
+					type: file.type || DEFAULT_ATTACHMENT_TYPE,
+				});
+				ids.push(uploaded.id);
+			} catch (err: unknown) {
+				// Best-effort cleanup: uploads already stored are of no use
+				// to a send that will not be queued from them.
+				await Promise.allSettled(
+					ids.map((id) => api.deletePendingUpload(mailboxId, id)),
+				);
+				const message = (err instanceof Error ? err.message : null) || "Could not upload the attachments.";
+				setError(message);
+				toastManager.add({ title: message, variant: "error" });
+				return null;
+			}
+		}
+		return ids;
+	};
+
+	/**
 	 * Queue the composed message for `sendAt`. The composer no longer sends
 	 * directly: the server's queue fires the message, and everything said
 	 * about it says "scheduled" — never "sent" — until it actually has been.
 	 *
-	 * `toastTimeoutMs` keeps the Undo toast alive for the whole undo window
-	 * when the queue is about to fire (the Send action); toasts otherwise
-	 * dismiss at the provider's default.
+	 * `uploadIds` are the composer's files, already uploaded; the stored
+	 * payload carries their ids and the server resolves them to bytes when
+	 * the send fires. `toastTimeoutMs` keeps the Undo toast alive for the
+	 * whole undo window when the queue is about to fire (the Send action);
+	 * toasts otherwise dismiss at the provider's default.
 	 */
 	const queueMessage = async (
 		sendAt: string,
 		onClose: () => void,
 		description: string,
 		toastTimeoutMs?: number,
-	) => {
-		if (isScheduling) return;
+		uploadIds: string[] = [],
+	): Promise<boolean> => {
+		if (isScheduling) return false;
 		setError(null);
-		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return; }
-		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
-		if (attachments.length > 0 || linkedAttachments.length > 0) {
-			// Belt and braces: the scheduling affordances are already
-			// disabled, with a visible reason, while the composer holds
-			// files — the queue's stored payload cannot carry file bytes.
-			setError("Send later can't carry attachments — send it now, or remove them.");
-			return;
+		if (isEncodingAttachments) { setError("Wait for the attachments to finish loading."); return false; }
+		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return false; }
+		if ((attachments.length > 0 || linkedAttachments.length > 0) && uploadIds.length === 0) {
+			// Belt and braces: the caller uploads the files first and passes
+			// their ids — a queued payload without them would lose the files.
+			setError("The attachments could not be uploaded — try sending again.");
+			return false;
 		}
 		setIsScheduling(true);
 		try {
 			const scheduled = await scheduleSendMutation.mutateAsync({
 				mailboxId,
-				payload: buildOutgoingPayload(),
+				payload: buildOutgoingPayload(uploadIds),
 				sendAt,
 			});
 			// The manager's overloads widen the return to `any`; the id is a string.
@@ -664,19 +703,21 @@ export function useComposeForm(mailboxId?: string) {
 				],
 			}) as string;
 			onClose();
+			return true;
 		} catch (err: unknown) {
 			const message = (err instanceof Error ? err.message : null) || "Failed to schedule the send.";
 			setError(message);
 			toastManager.add({ title: message, variant: "error" });
+			return false;
 		}
 		finally { setIsScheduling(false); }
 	};
 
 	/**
-	 * The direct send path, used when the message carries files. The queue's
-	 * stored payload cannot carry file bytes, so a message with attachments
-	 * (or a linked large file) is posted straight to the send route instead:
-	 * there is no undo window on this path.
+	 * The direct send path: the fallback for a message whose files could not
+	 * be uploaded for the queue. The queue now carries files by id, so this
+	 * path is only reached when an upload failed — and it stays exactly as it
+	 * was, so a send is never blocked. There is no undo window here.
 	 */
 	const sendWithFiles = async (onClose: () => void) => {
 		if (isSending) return;
@@ -703,8 +744,10 @@ export function useComposeForm(mailboxId?: string) {
 
 	/**
 	 * The form's Send action. A message with no files is queued for ten
-	 * seconds ahead and the toast's Undo cancels it before it goes out; a
-	 * message carrying files cannot ride the queue, so it is sent directly.
+	 * seconds ahead and the toast's Undo cancels it before it goes out. A
+	 * message carrying files uploads them first and then rides the same
+	 * queue; an upload that fails falls back to the direct send path, so a
+	 * send is never blocked.
 	 */
 	const handleSend = async (e: FormEvent, onClose: () => void) => {
 		e.preventDefault();
@@ -713,11 +756,32 @@ export function useComposeForm(mailboxId?: string) {
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
 		if (!bodyHasContent && warnedBody !== body) { setWarnedBody(body); return; }
+		const sendAt = new Date(Date.now() + SEND_QUEUE_DELAY_MS).toISOString();
 		if (attachments.length > 0 || linkedAttachments.length > 0) {
+			setIsSending(true);
+			try {
+				const uploadIds = await uploadPendingFiles();
+				if (uploadIds !== null) {
+					// The toast lives exactly as long as the undo window:
+					// once the queue fires the send there is nothing left to
+					// cancel.
+					const queued = await queueMessage(
+						sendAt,
+						onClose,
+						"Sending in 10 seconds — Undo cancels it.",
+						SEND_QUEUE_DELAY_MS,
+						uploadIds,
+					);
+					if (queued) return;
+				}
+			} finally {
+				setIsSending(false);
+			}
+			// The files could not ride the queue (an upload or the queue
+			// itself failed): fall back to the direct send path.
 			await sendWithFiles(onClose);
 			return;
 		}
-		const sendAt = new Date(Date.now() + SEND_QUEUE_DELAY_MS).toISOString();
 		// The toast lives exactly as long as the undo window: once the queue
 		// fires the send there is nothing left to cancel.
 		await queueMessage(
@@ -728,7 +792,12 @@ export function useComposeForm(mailboxId?: string) {
 		);
 	};
 
-	/** Queue the composed message for the instant picked in Send later. */
+	/**
+	 * Queue the composed message for the instant picked in Send later. Files
+	 * are uploaded first, exactly like the Send action; an upload that fails
+	 * reports the failure and queues nothing, because sending now would be
+	 * the wrong message.
+	 */
 	const handleSendLater = async (iso: string, onClose: () => void) => {
 		if (isScheduling) return;
 		setError(null);
@@ -736,7 +805,19 @@ export function useComposeForm(mailboxId?: string) {
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		if (splitEmailList(to).length === 0) { setError("Add at least one recipient."); return; }
 		if (!bodyHasContent && warnedBody !== body) { setWarnedBody(body); return; }
-		await queueMessage(iso, onClose, `Scheduled for ${formatSnoozeTime(iso)} — Undo cancels it.`);
+		const description = `Scheduled for ${formatSnoozeTime(iso)} — Undo cancels it.`;
+		if (attachments.length > 0 || linkedAttachments.length > 0) {
+			setIsScheduling(true);
+			try {
+				const uploadIds = await uploadPendingFiles();
+				if (uploadIds === null) return;
+				await queueMessage(iso, onClose, description, undefined, uploadIds);
+			} finally {
+				setIsScheduling(false);
+			}
+			return;
+		}
+		await queueMessage(iso, onClose, description);
 	};
 
 	return {

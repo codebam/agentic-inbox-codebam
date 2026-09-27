@@ -638,4 +638,29 @@ export const mailboxMigrations: Migration[] = [
 		name: "32_add_send_message_id",
 		sql: txn(`ALTER TABLE emails ADD COLUMN send_message_id TEXT;`),
 	},
+	{
+		// Files uploaded ahead of a queued send (workers/lib/pending-uploads.ts).
+		// A scheduled send's stored payload holds ids, never bytes, so the
+		// composer uploads each file first: the bytes live in R2 at
+		// `uploads/{mailbox_id}/{id}/{filename}` and this row is what the fire
+		// path resolves an `upload_ids` entry back to. `consumed` is stamped
+		// once a send has used the bytes, so the daily sweep — which deletes
+		// unconsumed rows older than PENDING_UPLOAD_TTL_DAYS, with their
+		// objects — can never take a file out from under a send in flight.
+		// The index backs that sweep's cutoff lookup.
+		name: "33_add_pending_uploads",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS pending_uploads (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                mimetype TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                r2_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                consumed INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pending_uploads_created_at ON pending_uploads(created_at);
+        `),
+	},
 ];

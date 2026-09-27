@@ -32,6 +32,8 @@ import {
 	MAX_TEMPLATE_NAME_LENGTH,
 	MAX_TEMPLATE_SUBJECT_LENGTH,
 } from "./templates";
+import { MAX_UPLOAD_ID_CHARS } from "./pending-uploads";
+import { MAX_SCHEDULED_UPLOADS } from "./scheduled-sends";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -142,16 +144,40 @@ export const SendEmailRequestSchema = z
 /**
  * Body for POST /api/v1/mailboxes/:mailboxId/scheduled-sends: the send
  * route's body plus the instant the send becomes due. The route rejects
- * attachments — a queued send stores parameters only, never attachment
- * bytes — and requires `send_at` to be a future ISO 8601 timestamp.
- * `draft_id` is optional provenance: the draft this send was queued from.
+ * attachment bytes — a queued send stores parameters only — and requires
+ * `send_at` to be a future ISO 8601 timestamp. Files ride the queue by id
+ * instead: `upload_ids` names pending uploads (POST .../uploads) whose bytes
+ * the fire path resolves when the send comes due. `draft_id` is optional
+ * provenance: the draft this send was queued from.
  */
 export const ScheduleSendRequestSchema = SendEmailRequestSchema.and(
 	z.object({
 		send_at: z.string(),
 		draft_id: z.string().optional(),
+		// One message's files, bounded like a send's own: up to MAX_FILES
+		// inline plus MAX_LINKED_FILES shared as links — MAX_SCHEDULED_UPLOADS
+		// in workers/lib/scheduled-sends.ts, which re-checks the count too.
+		upload_ids: z
+			.array(z.string().min(1).max(MAX_UPLOAD_ID_CHARS))
+			.max(MAX_SCHEDULED_UPLOADS)
+			.optional(),
 	}),
 );
+
+/**
+ * Body for POST /api/v1/mailboxes/:mailboxId/uploads: one file's bytes ahead
+ * of a queued send. The same entry shape `attachments[]` takes — `mimetype`
+ * is accepted as an alias for `type` — plus the declared `size` the cap
+ * check reads before anything is stored. The caps themselves are the
+ * linked-attachment caps (workers/lib/attachment-links.ts).
+ */
+export const UploadFileRequestSchema = z.object({
+	content: z.string(), // base64 encoded
+	filename: z.string(),
+	type: z.string().optional(),
+	mimetype: z.string().optional(),
+	size: z.number().nonnegative().optional(),
+});
 
 export const SendEmailResponseSchema = z.object({
 	id: z.string(),

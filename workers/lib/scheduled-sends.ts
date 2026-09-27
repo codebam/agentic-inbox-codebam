@@ -27,7 +27,9 @@
  */
 
 import { sendEmail, type SendEmailParams } from "../email-sender";
+import { MAX_FILES, MAX_LINKED_FILES } from "../../app/lib/attachments";
 import { buildThreadingHeaders } from "./email-helpers";
+import { MAX_UPLOAD_ID_CHARS } from "./pending-uploads";
 
 
 /** The statuses a scheduled send row can hold. */
@@ -59,6 +61,15 @@ export const MAX_SCHEDULED_SUBJECT_CHARS = 1_000;
 export const MAX_SCHEDULED_RECIPIENTS = 50;
 
 /**
+ * Hard cap on the upload ids one stored send may reference: one message's
+ * files — up to MAX_FILES inline plus MAX_LINKED_FILES shared as links
+ * (app/lib/attachments.ts). The ids name pending uploads
+ * (workers/lib/pending-uploads.ts); the fire path resolves them back to
+ * bytes, because a stored payload can never hold them.
+ */
+export const MAX_SCHEDULED_UPLOADS = MAX_FILES + MAX_LINKED_FILES;
+
+/**
  * Error text shared by the Durable Object and the routes for an unknown
  * scheduled send id, so the route can answer 404 without re-reading the row.
  */
@@ -81,6 +92,13 @@ export interface ScheduledSendPayload {
 	in_reply_to?: string;
 	references?: string[];
 	thread_id?: string;
+	/**
+	 * Ids of the pending uploads this send carries (workers/lib/pending-uploads.ts).
+	 * The bytes live in R2 and travel by id, because a stored payload cannot
+	 * hold them; the fire path resolves each id back to bytes immediately
+	 * before the send call.
+	 */
+	upload_ids?: string[];
 }
 
 /**
@@ -99,6 +117,7 @@ export interface ScheduledSendPayloadInput {
 	in_reply_to?: string | undefined;
 	references?: string[] | undefined;
 	thread_id?: string | undefined;
+	upload_ids?: string[] | undefined;
 }
 
 /** The stored columns of one `scheduled_sends` row, as the table holds them. */
@@ -191,6 +210,24 @@ export function serializeScheduledSendPayload(
 			return overLimit(label, MAX_SCHEDULED_RECIPIENTS);
 		}
 	}
+	if (input.upload_ids !== undefined) {
+		if (input.upload_ids.length > MAX_SCHEDULED_UPLOADS) {
+			return {
+				error:
+					`A scheduled send can carry up to ${MAX_SCHEDULED_UPLOADS} ` +
+					"files — remove some before scheduling.",
+			};
+		}
+		const malformed = input.upload_ids.some(
+			(id) =>
+				typeof id !== "string" ||
+				id.length === 0 ||
+				id.length > MAX_UPLOAD_ID_CHARS,
+		);
+		if (malformed) {
+			return { error: "An upload id is malformed — reattach the file and try again." };
+		}
+	}
 
 	// Only the known fields are stored, and only when present: an absent
 	// optional field must stay absent (exactOptionalPropertyTypes), and a
@@ -209,6 +246,9 @@ export function serializeScheduledSendPayload(
 		payload.references = input.references;
 	}
 	if (input.thread_id) payload.thread_id = input.thread_id;
+	if (input.upload_ids && input.upload_ids.length > 0) {
+		payload.upload_ids = [...input.upload_ids];
+	}
 
 	const json = JSON.stringify(payload);
 	if (json.length > MAX_SCHEDULED_PAYLOAD_CHARS) {
@@ -284,6 +324,16 @@ export function parseScheduledSendPayload(
 	}
 	const threadId = record["thread_id"];
 	if (typeof threadId === "string" && threadId) payload.thread_id = threadId;
+	const uploadIds = record["upload_ids"];
+	if (Array.isArray(uploadIds)) {
+		const ids = uploadIds.filter(
+			(entry): entry is string =>
+				typeof entry === "string" &&
+				entry.length > 0 &&
+				entry.length <= MAX_UPLOAD_ID_CHARS,
+		);
+		if (ids.length > 0) payload.upload_ids = ids.slice(0, MAX_SCHEDULED_UPLOADS);
+	}
 	return payload;
 }
 
