@@ -2672,6 +2672,94 @@ export class MailboxDO extends DurableObject<Env> {
 		}));
 	}
 
+	// ── Semantic search bookkeeping (raw SQL) ──────────────────────
+
+	/**
+	 * Record that one message's embedding is stored in the vector index.
+	 *
+	 * Upserts the one bookkeeping row per message (migration
+	 * 31_add_message_embeddings) and answers false when the message no longer
+	 * exists, so an ingest that lost a race with a delete never leaves a row
+	 * behind. `model` is the embedding model id the vector was made with and
+	 * `contentHash` the hash of the text that was embedded (empty for a
+	 * message with nothing embeddable). Metadata only — never message
+	 * content.
+	 */
+	markMessageEmbedded(emailId: string, model: string, contentHash: string): boolean {
+		const exists = [
+			...this.ctx.storage.sql.exec(`SELECT 1 FROM emails WHERE id = ?1`, emailId),
+		].length > 0;
+		if (!exists) return false;
+
+		this.ctx.storage.sql.exec(
+			`INSERT OR REPLACE INTO message_embeddings (email_id, model, content_hash, created_at)
+			 VALUES (?1, ?2, ?3, ?4)`,
+			emailId,
+			model,
+			contentHash,
+			new Date().toISOString(),
+		);
+		return true;
+	}
+
+	/**
+	 * The newest messages that have no embedding row yet, newest first and
+	 * bounded to `limit` — the reindex route passes one batch
+	 * (SEMANTIC_REINDEX_BATCH_MAX, workers/lib/semantic.ts; clamped again here
+	 * for direct Durable Object callers). Bodies are clipped to 12000
+	 * characters: more than enough for the embedding text (6000 plain-text
+	 * characters) without shipping whole bodies over the RPC.
+	 */
+	listUnembeddedMessages(limit: number = 20): Array<{
+		id: string;
+		subject: string | null;
+		sender: string | null;
+		date: string | null;
+		body_text: string | null;
+		body: string | null;
+	}> {
+		const boundedLimit = Number.isFinite(limit)
+			? Math.min(Math.max(Math.trunc(limit), 1), 100)
+			: 20;
+
+		return [
+			...this.ctx.storage.sql.exec(
+				`SELECT e.id, e.subject, e.sender, e.date,
+				        SUBSTR(e.body_text, 1, 12000) AS body_text,
+				        SUBSTR(e.body, 1, 12000) AS body
+				 FROM emails e
+				 LEFT JOIN message_embeddings me ON me.email_id = e.id
+				 WHERE me.email_id IS NULL
+				 ORDER BY e.date DESC
+				 LIMIT ?1`,
+				boundedLimit,
+			),
+		] as unknown as Array<{
+			id: string;
+			subject: string | null;
+			sender: string | null;
+			date: string | null;
+			body_text: string | null;
+			body: string | null;
+		}>;
+	}
+
+	/**
+	 * How much of this mailbox's mail is embedded: `embedded` counts the
+	 * bookkeeping rows (one per message, cascading away with its message) and
+	 * `total` every stored message. The reindex route answers with both so a
+	 * caller can loop until nothing remains.
+	 */
+	countEmbeddings(): { embedded: number; total: number } {
+		const embedded = [
+			...this.ctx.storage.sql.exec(`SELECT COUNT(*) AS total FROM message_embeddings`),
+		][0] as { total: number } | undefined;
+		const total = [
+			...this.ctx.storage.sql.exec(`SELECT COUNT(*) AS total FROM emails`),
+		][0] as { total: number } | undefined;
+		return { embedded: embedded?.total ?? 0, total: total?.total ?? 0 };
+	}
+
 	/**
 	 * Count total search results matching the given filters (for pagination).
 	 */

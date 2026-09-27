@@ -13,6 +13,7 @@ import {
 	toolGetThread,
 	toolSearchEmails,
 	toolSearchAllMailboxes,
+	toolSemanticSearch,
 	toolDraftReply,
 	toolDraftEmail,
 	toolUpdateDraft,
@@ -50,6 +51,7 @@ import {
 	MAX_CONTACT_SEARCH_LIMIT,
 } from "../lib/contacts";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
+import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
 import type { Env } from "../types";
 
 /** Wrap a plain result object into MCP content format. */
@@ -323,6 +325,35 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			async (filters) => {
 				const result = await toolSearchAllMailboxes(env, filters);
 				return mcpText(result);
+			},
+		);
+
+		// ── semantic_search ────────────────────────────────────────
+		this.server.tool(
+			"semantic_search",
+			"Semantic (meaning-based) search over one mailbox's stored mail. Use it when the exact words are unknown — it finds messages by what they are about rather than by keyword. Read-only: it reads the mailbox, changes nothing and sends nothing. It needs the mailbox's semantic index (Settings → Semantic search) and reports a not-configured message when the deployment has none.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				query: z
+					.string()
+					.min(1)
+					.describe(
+						"What to look for, in natural language — a phrase, a topic or a question.",
+					),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(SEMANTIC_SEARCH_LIMIT_MAX)
+					.optional()
+					.describe(
+						`How many results to return (default ${SEMANTIC_SEARCH_LIMIT_MAX}, max ${SEMANTIC_SEARCH_LIMIT_MAX})`,
+					),
+			},
+			async ({ mailboxId, query, limit }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolSemanticSearch(env, mailboxId, { query, limit }));
 			},
 		);
 

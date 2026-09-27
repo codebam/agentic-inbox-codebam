@@ -302,3 +302,24 @@ export const pushSubscriptions = sqliteTable("push_subscriptions", {
 	created_at: text("created_at").notNull(),
 	last_ok_at: text("last_ok_at"),
 });
+
+/**
+ * Semantic search bookkeeping (migration 31_add_message_embeddings): one row
+ * per message whose embedding is stored in the Vectorize index, written by
+ * workers/lib/semantic.ts at ingest and by the reindex route. `model` is the
+ * embedding model id the vector was made with and `content_hash` the SHA-256
+ * of the embedded text (empty when the message had nothing embeddable), so a
+ * future re-embed can tell which rows predate a model change. The email_id
+ * primary key plus its unique index make a second write for the same message
+ * rewrite the row, and the foreign key cascades the row away with its
+ * message. Metadata only — never message content, and the index itself lives
+ * in Vectorize, not here.
+ */
+export const messageEmbeddings = sqliteTable("message_embeddings", {
+	email_id: text("email_id")
+		.primaryKey()
+		.references(() => emails.id, { onDelete: "cascade" }),
+	model: text("model").notNull(),
+	content_hash: text("content_hash").notNull(),
+	created_at: text("created_at").notNull(),
+});

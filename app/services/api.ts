@@ -17,6 +17,7 @@ import type {
 	RulePreviewResult,
 } from "workers/lib/rules";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
+import type { SemanticReindexProgress } from "workers/lib/semantic";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
 import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
 import type { AgentAction, BulkEmailAction, Contact, Digest, Email, ExtractedItem, Folder, Mailbox, ScheduledSend } from "~/types";
@@ -431,6 +432,15 @@ const api = {
 	/** Aggregated search across every mailbox; rows carry their mailboxId. */
 	searchAllMailboxes: (params: Record<string, string>, opts?: { signal?: AbortSignal }) =>
 		get<EmailListResponse>(`/api/v1/search`, { params, signal: opts?.signal }),
+	/** Semantic (vector) search over one mailbox's stored mail; ranked hits. */
+	semanticSearch: (mailboxId: string, query: string, limit?: number) =>
+		post<{ results: Email[] }>(`/api/v1/mailboxes/${mailboxId}/semantic-search`, {
+			query,
+			...(limit ? { limit } : {}),
+		}),
+	/** Embed one bounded batch of the mailbox's unembedded messages. */
+	semanticReindex: (mailboxId: string) =>
+		post<SemanticReindexProgress>(`/api/v1/mailboxes/${mailboxId}/semantic/reindex`),
 };
 
 export default api;

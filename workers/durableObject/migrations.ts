@@ -603,4 +603,29 @@ export const mailboxMigrations: Migration[] = [
             );
         `),
 	},
+	{
+		// Semantic search bookkeeping (workers/lib/semantic.ts): one row per
+		// message whose embedding is stored in the Vectorize index, so the
+		// reindex route can list what is missing and count progress without
+		// touching the index. `model` is the embedding model id the vector was
+		// made with and `content_hash` the SHA-256 of the embedded text (empty
+		// when the message had nothing embeddable) — both kept so a future
+		// re-embed can tell which rows predate a model change. The email_id
+		// primary key plus its unique index make a second write for the same
+		// message rewrite the row instead of adding one, and the foreign key
+		// cascades the row away with its message. Metadata only — never
+		// message content.
+		name: "31_add_message_embeddings",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS message_embeddings (
+                email_id TEXT PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE,
+                model TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_message_embeddings_email_id
+                ON message_embeddings(email_id);
+        `),
+	},
 ];

@@ -35,6 +35,9 @@ export function defaultMailboxSettings(name: string) {
 		digestEnabled: false,
 		// Task/deadline extraction from new mail; on unless switched off.
 		items: { enabled: true },
+		// Opt-in: embed and index new mail so it can be found by meaning.
+		// Off by default — it spends one embedding call per message at ingest.
+		semanticSearch: { enabled: false },
 	};
 }
 
