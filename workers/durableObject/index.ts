@@ -111,6 +111,17 @@ import {
 	type ScheduleSendInput,
 } from "../lib/scheduled-sends";
 import {
+	PENDING_UPLOAD_SWEEP_BATCH,
+	resolveScheduledSendUploads,
+	scheduledUploadInlineAttachments,
+	scheduledUploadLinkedSection,
+	scheduledUploadSentAttachments,
+	scheduledUploadSentCopies,
+	type CreatePendingUploadInput,
+	type PendingUploadRow,
+	type ResolvedScheduledUpload,
+} from "../lib/pending-uploads";
+import {
 	DIGEST_CATEGORY_LIMIT,
 	DIGEST_ITEM_LIMIT,
 	DIGEST_NEEDS_REPLY_LIMIT,
@@ -2104,6 +2115,36 @@ export class MailboxDO extends DurableObject<Env> {
 		if (html !== undefined) verified.html = html;
 		if (text !== undefined) verified.text = text;
 		const params = buildScheduledSendParams(verified);
+		// The queued files, resolved to bytes now — immediately before the
+		// send call — so a message never goes out without them. The bytes
+		// live in R2 and the row records what they are; one id that is
+		// missing, expired or already consumed fails the row here instead.
+		const uploadIds = payload.upload_ids ?? [];
+		let uploads: ResolvedScheduledUpload[] = [];
+		if (uploadIds.length > 0) {
+			const resolved = await resolveScheduledSendUploads(
+				this.env.BUCKET,
+				(id) => this.#pendingUploadById(id),
+				uploadIds,
+			);
+			if (!resolved.ok) {
+				markFailed(resolved.error);
+				return;
+			}
+			uploads = resolved.uploads;
+			// Files at or above the link threshold follow the send route's
+			// linked rule unchanged: they never travel in the message. Their
+			// bytes stay in R2 behind a fresh download link and the body
+			// gains the link section, exactly as the immediate path builds
+			// it (buildLinkedAttachmentSection / buildLinkedAttachmentText).
+			if (uploads.some((upload) => upload.link)) {
+				const section = scheduledUploadLinkedSection(uploads, mailboxId);
+				if (params.html !== undefined) params.html = `${params.html}${section.html}`;
+				if (params.text !== undefined) params.text = `${params.text}${section.text}`;
+			}
+			const inline = scheduledUploadInlineAttachments(uploads);
+			if (inline.length > 0) params.attachments = inline;
+		}
 
 		try {
 			await sender.send(params);
@@ -2111,12 +2152,24 @@ export class MailboxDO extends DurableObject<Env> {
 			markFailed(`Send failed: ${(e as Error).message}`);
 			return;
 		}
+		// The message is out, so every queued file is consumed. Stamped
+		// before the Sent copy below, so the daily sweep cannot delete a row
+		// whose bytes are still being copied into that copy.
+		for (const upload of uploads) {
+			this.markPendingUploadConsumed(upload.row.id);
+		}
 
 		// Store the Sent copy exactly as the immediate path does. Best-effort
 		// on purpose: the message has already gone out, so a storage failure
 		// must not flip the row to `failed` and let a retry send it twice.
 		const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 		try {
+			// The queued files land in the Sent copy exactly like an
+			// immediate send's: each one's bytes are copied to the attachment
+			// key the download routes read, before the row that names them.
+			for (const copy of scheduledUploadSentCopies(uploads, messageId)) {
+				await this.env.BUCKET.put(copy.key, copy.bytes);
+			}
 			this.createEmail(
 				Folders.SENT,
 				{
@@ -2131,7 +2184,7 @@ export class MailboxDO extends DurableObject<Env> {
 						? (Array.isArray(payload.bcc) ? payload.bcc.join(", ") : payload.bcc).toLowerCase()
 						: null,
 					date: new Date().toISOString(),
-					body: html || text || "",
+					body: params.html || params.text || "",
 					in_reply_to: payload.in_reply_to ?? null,
 					email_references: payload.references
 						? JSON.stringify(payload.references)
@@ -2175,7 +2228,7 @@ export class MailboxDO extends DurableObject<Env> {
 						{ key: "message-id", value: `<${outgoingMessageId}>` },
 					]),
 				},
-				[],
+				scheduledUploadSentAttachments(uploads, messageId),
 			);
 		} catch (e) {
 			console.error(
@@ -2189,6 +2242,23 @@ export class MailboxDO extends DurableObject<Env> {
 			now,
 			row.id,
 		);
+
+		// Drop each consumed upload's row and its object: the files have
+		// gone out with the message and nothing references them any more.
+		// Best-effort — the send has already succeeded, so a cleanup failure
+		// must not flip the row to `failed`, and the daily sweep is the
+		// backstop for anything left behind.
+		for (const upload of uploads) {
+			try {
+				await this.env.BUCKET.delete(upload.row.r2_key);
+			} catch (e) {
+				console.error(
+					`Deleting the bytes of upload ${upload.row.id} failed:`,
+					(e as Error).message,
+				);
+			}
+			this.deletePendingUpload(upload.row.id);
+		}
 	}
 
 	/** One stored row of the queue, or null when the id is unknown. */
@@ -3322,6 +3392,115 @@ export class MailboxDO extends DurableObject<Env> {
 			scanned: rows.length,
 			scan_limit: RULE_PREVIEW_SCAN_LIMIT,
 		};
+	}
+	// ── Pending uploads (files a queued send carries) ──────────────
+
+	/**
+	 * Record one file the composer uploaded ahead of a queued send. The
+	 * bytes are already in R2 (pendingUploadR2Key owns the key shape); this
+	 * row is what the fire path resolves an `upload_ids` entry back to.
+	 * Nothing is sent here and no bytes travel: the row is deleted with its
+	 * object once a send has used it, or by the daily sweep once it has
+	 * gone stale. The caller deletes the object again when this throws, so
+	 * stored bytes are never left without a row.
+	 */
+	createPendingUpload(input: CreatePendingUploadInput): PendingUploadRow {
+		this.db
+			.insert(schema.pendingUploads)
+			.values({
+				id: input.id,
+				filename: input.filename,
+				mimetype: input.mimetype,
+				size: input.size,
+				r2_key: input.r2Key,
+				created_at: input.createdAt ?? new Date().toISOString(),
+				consumed: 0,
+			})
+			.run();
+		const stored = this.#pendingUploadById(input.id);
+		if (!stored) {
+			throw new Error(
+				"createPendingUpload: the inserted row could not be read back.",
+			);
+		}
+		return stored;
+	}
+
+	/** One pending upload by id, or null when it is unknown (or already gone). */
+	getPendingUpload(id: string): PendingUploadRow | null {
+		return this.#pendingUploadById(id);
+	}
+
+	/**
+	 * Unconsumed uploads older than `cutoff`, oldest first — the rows the
+	 * daily sweep deletes with their R2 objects. Bounded to one batch so a
+	 * backlog cannot stall the sweep; a consumed row is never listed, so a
+	 * file a send is using (or has just used) is never swept.
+	 */
+	listPendingUploadsBefore(
+		cutoff: string,
+		limit: number = PENDING_UPLOAD_SWEEP_BATCH,
+	): PendingUploadRow[] {
+		const capped = Math.min(
+			Math.max(Math.trunc(limit), 1),
+			PENDING_UPLOAD_SWEEP_BATCH,
+		);
+		return this.db
+			.select()
+			.from(schema.pendingUploads)
+			.where(
+				and(
+					eq(schema.pendingUploads.consumed, 0),
+					lt(schema.pendingUploads.created_at, cutoff),
+				),
+			)
+			.orderBy(asc(schema.pendingUploads.created_at))
+			.limit(capped)
+			.all();
+	}
+
+	/**
+	 * Delete one pending upload's row. Returns false when the id was already
+	 * gone. The R2 object is the caller's to delete: the sweep and the
+	 * DELETE route drop it around this call, and the fire path drops it
+	 * after a successful send.
+	 */
+	deletePendingUpload(id: string): boolean {
+		const existing = this.#pendingUploadById(id);
+		if (!existing) return false;
+		this.db
+			.delete(schema.pendingUploads)
+			.where(eq(schema.pendingUploads.id, id))
+			.run();
+		return true;
+	}
+
+	/**
+	 * Stamp an upload as consumed: a send has used its bytes, so the sweep
+	 * must not touch it. The fire path stamps this right after the message
+	 * goes out and deletes the row moments later; the stamp is what covers
+	 * the window in between.
+	 */
+	markPendingUploadConsumed(id: string): boolean {
+		const existing = this.#pendingUploadById(id);
+		if (!existing) return false;
+		this.db
+			.update(schema.pendingUploads)
+			.set({ consumed: 1 })
+			.where(eq(schema.pendingUploads.id, id))
+			.run();
+		return true;
+	}
+
+	/** One stored pending upload, or null when the id is unknown. */
+	#pendingUploadById(id: string): PendingUploadRow | null {
+		return (
+			this.db
+				.select()
+				.from(schema.pendingUploads)
+				.where(eq(schema.pendingUploads.id, id))
+				.get() ?? null
+		);
 	}
 
 

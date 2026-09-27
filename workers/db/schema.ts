@@ -283,3 +283,26 @@ export const calendarInvites = sqliteTable("calendar_invites", {
 	response: text("response").$type<CalendarResponse>(),
 	created_at: text("created_at").notNull(),
 });
+
+/**
+ * Files uploaded ahead of a queued send (migration 33_add_pending_uploads,
+ * workers/lib/pending-uploads.ts). A scheduled send's stored payload holds
+ * ids, never bytes: the composer uploads each file first, the bytes live in
+ * R2 at `uploads/{mailbox_id}/{id}/{filename}`, and `r2_key` is the exact
+ * object the fire path reads. `consumed` is stamped once a send has used the
+ * bytes; the daily sweep deletes unconsumed rows (with their objects) older
+ * than PENDING_UPLOAD_TTL_DAYS, and the fire path deletes a row and its
+ * object after a successful send. Metadata only — the bytes never enter the
+ * Durable Object's SQLite.
+ */
+export const pendingUploads = sqliteTable("pending_uploads", {
+	id: text("id").primaryKey(),
+	filename: text("filename").notNull(),
+	mimetype: text("mimetype").notNull(),
+	size: integer("size").notNull(),
+	/** R2 key of the bytes (`uploads/{mailbox_id}/{id}/{filename}`). */
+	r2_key: text("r2_key").notNull(),
+	created_at: text("created_at").notNull(),
+	/** 1 once a send has used the bytes; such a row is never swept. */
+	consumed: integer("consumed").notNull().default(0),
+});

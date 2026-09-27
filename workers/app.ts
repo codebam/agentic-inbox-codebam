@@ -15,6 +15,7 @@ import { DIGEST_CRON, sweepDigests } from "./lib/digest-sweep";
 import { sweepImageProxyCache } from "./lib/image-proxy";
 import { sweepTrash } from "./lib/trash-retention";
 import { sweepAttachmentLinks } from "./lib/attachment-links";
+import { sweepPendingUploads } from "./lib/pending-uploads";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
@@ -271,8 +272,9 @@ export default {
 	 * `triggers` block in wrangler.jsonc): the morning-digest cron builds and
 	 * delivers every opted-in mailbox's digest, and every other trigger runs
 	 * the housekeeping sweeps — automatic Trash retention, the remote-image
-	 * proxy cache sweep, expired attachment-link cleanup and the due-mail
-	 * backstop (snoozes, reminders and scheduled sends). Every sweep logs its
+	 * proxy cache sweep, expired attachment-link cleanup, stale pending-upload
+	 * cleanup and the due-mail backstop (snoozes, reminders and scheduled
+	 * sends). Every sweep logs its
 	 * own summary and tolerates a single failure; the extra catch only guards
 	 * its own listing. They run as separate waitUntils so a failure in one
 	 * never delays or cancels the others.
@@ -306,6 +308,11 @@ export default {
 		ctx.waitUntil(
 			sweepAttachmentLinks(env).catch((e) =>
 				console.error("Attachment link sweep failed:", (e as Error).message),
+			),
+		);
+		ctx.waitUntil(
+			sweepPendingUploads(env).catch((e) =>
+				console.error("Pending upload sweep failed:", (e as Error).message),
 			),
 		);
 		// Mailboxes fire their own snoozes, reminders and scheduled sends via

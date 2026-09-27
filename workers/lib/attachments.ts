@@ -63,6 +63,35 @@ export function decodeBase64Bytes(content: string): Uint8Array {
 	throw new Error("No native base64 decoder is available in this runtime");
 }
 
+/**
+ * Encode bytes to base64 with the runtime's native encoder — the mirror of
+ * decodeBase64Bytes, and native for the same reason: a queued send's fire
+ * path re-encodes every file it carries (workers/lib/pending-uploads.ts),
+ * and a per-byte loop over a multi-megabyte file is exactly the CPU-budget
+ * blowup the decoder's comment warns about.
+ */
+export function encodeBase64Bytes(bytes: Uint8Array): string {
+	const toBase64 = (bytes as unknown as { toBase64?: () => string }).toBase64;
+	if (typeof toBase64 === "function") return toBase64.call(bytes);
+	const buffer = (globalThis as unknown as {
+		Buffer?: { from(value: Uint8Array): { toString(encoding: string): string } };
+	}).Buffer;
+	if (buffer) return buffer.from(bytes).toString("base64");
+	throw new Error("No native base64 encoder is available in this runtime");
+}
+
+/**
+ * Sanitize a filename for use as an R2 key segment: path separators, the
+ * characters that break a URL or a header, and every control character
+ * become `_`; an empty name becomes "untitled". This is exactly the
+ * substitution storeAttachments applies to an attachment's filename — the
+ * same regex, so the upload key shape and the attachment key shape sanitize
+ * identically.
+ */
+export function sanitizeAttachmentFilename(filename: string): string {
+	return (filename || "untitled").replace(/[/\\:*?"<>|\p{Cc}]/gu, "_");
+}
+
 export interface StoreAttachmentOptions {
 	/**
 	 * Store the files as public download links: each row gets a fresh
