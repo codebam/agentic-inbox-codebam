@@ -57,6 +57,21 @@ function usePreviewSrc(previewImage: PreviewImage | null) {
 					);
 				}
 				const blob = await res.blob();
+				// A fetch can succeed and the bytes still not be an image — a
+				// stored attachment that is not what its type claims. Decoding
+				// here turns that into a sentence instead of a broken icon.
+				try {
+					const bitmap = await createImageBitmap(blob);
+					bitmap.close();
+				} catch {
+					const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+					const hex = Array.from(head)
+						.map((b) => b.toString(16).padStart(2, "0"))
+						.join(" ");
+					throw new Error(
+						`The stored file is not a decodable image — ${blob.type || "no type"}, ${blob.size} bytes, starting ${hex}`,
+					);
+				}
 				const objectUrl = URL.createObjectURL(blob);
 				if (cancelled) {
 					URL.revokeObjectURL(objectUrl);

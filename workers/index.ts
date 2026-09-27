@@ -8,6 +8,7 @@ import PostalMime from "postal-mime";
 import { z, ZodError } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, attachmentR2Key, type StoredAttachment } from "./lib/attachments";
+import { encodeBinaryParts } from "./lib/mime-binary";
 import {
 	validateSender,
 	SenderValidationError,
@@ -2278,7 +2279,9 @@ function extractDeliveryReport(
 
 async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
-	const parsedEmail = await new PostalMime().parse(rawEmail);
+	// Parts sent without base64/quoted-printable lose their CR bytes inside the
+	// parser's pass-through decoder; re-encoding them first keeps binaries whole.
+	const parsedEmail = await new PostalMime().parse(encodeBinaryParts(rawEmail));
 
 	const parsedToRecipients = (parsedEmail.to || [])
 		.map((recipient) => normalizeEmailAddress(recipient.address))
