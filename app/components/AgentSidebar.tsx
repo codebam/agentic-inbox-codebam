@@ -5,6 +5,7 @@
 import { Loader } from "@cloudflare/kumo";
 import { PlugsIcon, RobotIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
+import { useConfig } from "~/queries/config";
 import MCPPanel from "./MCPPanel";
 
 function LazyAgentPanel() {
@@ -41,43 +42,68 @@ function LazyAgentPanel() {
 }
 
 export default function AgentSidebar() {
-	const [activeTab, setActiveTab] = useState<"agent" | "mcp">("agent");
+	const { data: config } = useConfig();
+	// Default to enabled while config loads, so the first paint matches
+	// today's behaviour and nothing flashes in or out.
+	const agentEnabled = config?.agentEnabled ?? true;
+	const mcpEnabled = config?.mcpEnabled ?? true;
+	const [requestedTab, setRequestedTab] = useState<"agent" | "mcp">("agent");
+
+	// Derived during render rather than stored: a requested tab whose flag is
+	// off falls back to the other enabled tab, and with exactly one surface
+	// enabled that surface is the active tab.
+	const activeTab =
+		requestedTab === "agent" && !agentEnabled
+			? "mcp"
+			: requestedTab === "mcp" && !mcpEnabled
+				? "agent"
+				: requestedTab;
+
+	// With neither surface available the route still mounts the panel; render
+	// nothing rather than an empty tab bar.
+	if (!agentEnabled && !mcpEnabled) return null;
 
 	return (
 		<div className="flex flex-col h-full">
-			{/* Tab bar */}
+			{/* Tab bar — only the surfaces this deployment enabled */}
 			<div className="flex items-center border-b border-kumo-line shrink-0">
-				<button
-					type="button"
-					onClick={() => setActiveTab("agent")}
-					className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 bg-transparent cursor-pointer ${
-						activeTab === "agent"
-							? "border-kumo-brand text-kumo-default"
-							: "border-transparent text-kumo-subtle hover:text-kumo-default"
-					}`}
-				>
-					<RobotIcon size={14} weight={activeTab === "agent" ? "fill" : "regular"} />
-					Agent
-				</button>
-				<button
-					type="button"
-					onClick={() => setActiveTab("mcp")}
-					className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 bg-transparent cursor-pointer ${
-						activeTab === "mcp"
-							? "border-kumo-brand text-kumo-default"
-							: "border-transparent text-kumo-subtle hover:text-kumo-default"
-					}`}
-				>
-					<PlugsIcon size={14} weight={activeTab === "mcp" ? "fill" : "regular"} />
-					MCP
-				</button>
+				{agentEnabled && (
+					<button
+						type="button"
+						onClick={() => setRequestedTab("agent")}
+						className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 bg-transparent cursor-pointer ${
+							activeTab === "agent"
+								? "border-kumo-brand text-kumo-default"
+								: "border-transparent text-kumo-subtle hover:text-kumo-default"
+						}`}
+					>
+						<RobotIcon size={14} weight={activeTab === "agent" ? "fill" : "regular"} />
+						Agent
+					</button>
+				)}
+				{mcpEnabled && (
+					<button
+						type="button"
+						onClick={() => setRequestedTab("mcp")}
+						className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 bg-transparent cursor-pointer ${
+							activeTab === "mcp"
+								? "border-kumo-brand text-kumo-default"
+								: "border-transparent text-kumo-subtle hover:text-kumo-default"
+						}`}
+					>
+						<PlugsIcon size={14} weight={activeTab === "mcp" ? "fill" : "regular"} />
+						MCP
+					</button>
+				)}
 			</div>
 
 			{/* Tab content — keep agent mounted so chat isn't lost */}
 			<div className="flex-1 min-h-0 overflow-hidden">
-				<div className={activeTab === "agent" ? "h-full" : "hidden"}>
-					<LazyAgentPanel />
-				</div>
+				{agentEnabled && (
+					<div className={activeTab === "agent" ? "h-full" : "hidden"}>
+						<LazyAgentPanel />
+					</div>
+				)}
 				{activeTab === "mcp" && <MCPPanel />}
 			</div>
 		</div>

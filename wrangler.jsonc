@@ -38,7 +38,13 @@
 		// file. Push answers "not configured" until all three are set.
 		"VAPID_PUBLIC_KEY": "BDOIKOAtiJfaKQ5baSD0-WvPZaSM2HEB-MbmNEejlkvm38ubfHxKB99nkGbWvv7MoPObg9TGgpegCWV4uAHNFH0",
 		"VAPID_SUBJECT": "mailto:push@seanbehan.ca",
-		"name": "EMAIL_ADDRESSES"
+		"name": "EMAIL_ADDRESSES",
+		// The AI surfaces are opt-out: unset means enabled, and only "false"
+		// or "0" (trimmed, any case) disables one. ENABLE_AI_AGENT gates
+		// /agents/*, the agent panels and auto-draft; ENABLE_MCP gates the
+		// /mcp server. A disabled surface answers 404.
+		"ENABLE_AI_AGENT": "true",
+		"ENABLE_MCP": "true"
 	},
 	"send_email": [
 		{

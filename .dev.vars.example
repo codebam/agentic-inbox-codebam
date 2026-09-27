@@ -15,3 +15,11 @@ TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 # or CATCH_ALL_MAILBOX="" to disable catch-all capture.
 # CATCH_ALL_MAILBOXES=catch-all@example.com,catch-all@example.org
 # CATCH_ALL_MAILBOX=all@example.com
+
+# Optional: AI surface switches. Both are opt-out — unset means enabled, so
+# set one only to disable it. "false" and "0" (trimmed, any case) turn a
+# surface off; every other value keeps it on. ENABLE_AI_AGENT gates
+# /agents/*, the agent panels and auto-draft; ENABLE_MCP gates the /mcp
+# server. A disabled surface answers 404.
+# ENABLE_AI_AGENT=false
+# ENABLE_MCP=false

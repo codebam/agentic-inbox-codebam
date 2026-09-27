@@ -56,6 +56,7 @@ import { modelConfigErrors, normalizeModelConfig } from "../shared/models";
 import { emailViewSettingError, normalizeEmailViewMode } from "../shared/email-view";
 import { normalizeTrashRetentionDays } from "../shared/trash-retention";
 import { normalizeImageAllowlist } from "../shared/remote-images";
+import { isAiAgentEnabled, isMcpEnabled } from "../shared/agent-flags";
 import { normalizeAutoDraft } from "../shared/auto-draft";
 import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
@@ -323,6 +324,8 @@ app.get("/api/v1/config", (c) => {
 		emailAddresses,
 		catchAllMailbox: normalizeEmailAddress(c.env.CATCH_ALL_MAILBOX),
 		catchAllMailboxes,
+		agentEnabled: isAiAgentEnabled(c.env),
+		mcpEnabled: isMcpEnabled(c.env),
 	});
 });
 
@@ -3724,7 +3727,13 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// rule filed in Spam or stamped with the spam category, nor mail from a
 	// blocked sender (senderDecision.autoDraft). A discard rule has already
 	// returned above. The mailbox switch turns this off entirely.
-	if (normalizeAutoDraft(mailboxSettings["autoDraft"]) && senderDecision.autoDraft && !isSpam && !ruleMarkedSpam) {
+	if (
+		isAiAgentEnabled(env) &&
+		normalizeAutoDraft(mailboxSettings["autoDraft"]) &&
+		senderDecision.autoDraft &&
+		!isSpam &&
+		!ruleMarkedSpam
+	) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 			method: "POST", headers: { "Content-Type": "application/json" },
