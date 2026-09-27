@@ -7,6 +7,7 @@ import type { AttachmentPayload } from "~/lib/attachments";
 import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import api from "~/services/api";
 import type { BulkEmailAction, BulkEmailTarget, Email } from "~/types";
+import type { ThreadSummary } from "workers/lib/thread-summary";
 import {
 	invalidateCoalesced,
 	isEmailListQuery,
@@ -111,6 +112,28 @@ export function useThreadReplies(
 			return emails;
 		},
 		enabled: !!mailboxId && !!threadId,
+	});
+}
+
+/**
+ * On-demand AI summary of one thread — the message panel's card. Nothing
+ * is requested until `options.enabled` turns true (the Summarize button),
+ * and the server recomputes the summary per request (never stored, never
+ * sent), so the answer is fetched on click rather than prefetched.
+ */
+export function useThreadSummary(
+	mailboxId: string | undefined,
+	threadId: string | undefined | null,
+	options?: { enabled?: boolean },
+) {
+	return useQuery<ThreadSummary>({
+		queryKey:
+			mailboxId && threadId
+				? ["emails", mailboxId, "thread-summary", threadId]
+				: ["emails", "_disabled_thread_summary"],
+		queryFn: async ({ signal }) =>
+			(await api.getThreadSummary(mailboxId!, threadId!, { signal })).summary,
+		enabled: !!mailboxId && !!threadId && (options?.enabled ?? false),
 	});
 }
 

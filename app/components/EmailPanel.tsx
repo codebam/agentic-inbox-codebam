@@ -24,6 +24,7 @@ import EmailViewToggle from "~/components/EmailViewToggle";
 import LabelChips from "~/components/LabelChips";
 import LabelPicker from "~/components/LabelPicker";
 import SenderPolicyActions from "~/components/SenderPolicyActions";
+import ThreadSummaryCard from "~/components/ThreadSummaryCard";
 import {
 	blobToBase64,
 	pendingAttachmentFromStored,
@@ -459,6 +460,16 @@ export default function EmailPanel({
 			<UnsubscribeBanner email={email} mailboxId={mailboxId} />
 
 			<div className="flex-1 overflow-y-auto">
+				{/* The summary strip belongs to the thread, above its replies;
+				    it hides itself for single-message threads and until the
+				    replies are loaded. */}
+				{hasThread && (
+					<ThreadSummaryCard
+						mailboxId={mailboxId}
+						threadId={email.thread_id}
+						messageCount={threadRepliesRaw?.length ?? 0}
+					/>
+				)}
 				{hasThread ? (
 					allMessages.map((msg, idx) => {
 						const isDraft = draftMessageIds.has(msg.id);
