@@ -12,6 +12,7 @@ import {
 	ArrowLeftIcon,
 	ArrowUUpLeftIcon,
 	BellRingingIcon,
+	BellSlashIcon,
 	ChatCircleIcon,
 	ClockCounterClockwiseIcon,
 	CodeIcon,
@@ -27,6 +28,7 @@ import {
 import EmailPanelOverflowMenu from "~/components/email-panel/EmailPanelOverflowMenu";
 import SnoozeMenu from "~/components/email-panel/SnoozeMenu";
 import { formatSnoozeTime } from "~/lib/snooze";
+import { useMuteThread, useThreadMuted, useUnmuteThread } from "~/queries/thread-mute";
 import type { Folder, Email } from "~/types";
 
 
@@ -249,6 +251,9 @@ export default function EmailPanelToolbar({
 							</button>
 						</Badge>
 					)}
+					{/* Thread muting: a muted thread's new mail raises no push
+					    or webhook notification. */}
+					<ThreadMuteButton mailboxId={mailboxId} threadId={email.thread_id} />
 				</>
 			)}
 
@@ -355,3 +360,53 @@ function MoveToFolderMenu({ folders, onMove }: { folders: Folder[]; onMove: (id:
 	);
 }
 
+/**
+ * Mute or unmute the message's whole thread: new mail in a muted thread
+ * raises no push and no webhook notification.
+ *
+ * The state is the server's (useThreadMuted) and it is never flipped ahead of
+ * the server — the mutations invalidate the mute query on success, and the
+ * refetched state is what changes the icon. While the query is still loading
+ * the button reads as unmuted, and a toggle only ever runs from an explicit
+ * click. A failed call is logged and the state is left exactly as the server
+ * last reported it.
+ */
+function ThreadMuteButton({
+	mailboxId,
+	threadId,
+}: {
+	mailboxId: string | undefined;
+	threadId: string | null | undefined;
+}) {
+	const { data } = useThreadMuted(mailboxId, threadId);
+	const mute = useMuteThread();
+	const unmute = useUnmuteThread();
+	const muted = data?.muted ?? false;
+
+	const onToggle = () => {
+		if (!mailboxId || !threadId) return;
+		const onError = (error: unknown) =>
+			console.error("Thread mute toggle failed:", (error as Error).message);
+		if (muted) unmute.mutate({ mailboxId, threadId }, { onError });
+		else mute.mutate({ mailboxId, threadId }, { onError });
+	};
+
+	return (
+		<Tooltip content={muted ? "Unmute thread" : "Mute thread"} side="bottom" asChild>
+			<Button
+				variant="ghost"
+				shape="square"
+				size="sm"
+				icon={
+					<BellSlashIcon
+						size={18}
+						weight={muted ? "fill" : "regular"}
+						className={muted ? "text-kumo-warning" : ""}
+					/>
+				}
+				onClick={onToggle}
+				aria-label={muted ? "Unmute thread" : "Mute thread"}
+			/>
+		</Tooltip>
+	);
+}

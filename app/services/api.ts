@@ -449,6 +449,19 @@ const api = {
 			`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/summary`,
 			{ signal: opts?.signal },
 		),
+	// Thread muting: new mail in a muted thread raises no push and no webhook
+	// notification. The mute is a row keyed by the thread id alone, so a
+	// thread can be muted before its first message arrives. Notification
+	// bookkeeping only — nothing here sends mail.
+	/** Whether one thread is muted; answers `{ muted }`. */
+	getThreadMute: (mailboxId: string, threadId: string) =>
+		get<{ muted: boolean }>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/mute`),
+	/** Mute one thread; answers `{ muted: true }`. */
+	muteThread: (mailboxId: string, threadId: string) =>
+		post<{ muted: boolean }>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/mute`),
+	/** Unmute one thread; answers `{ muted: false }`. */
+	unmuteThread: (mailboxId: string, threadId: string) =>
+		del<{ muted: boolean }>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/mute`),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
 	// The composer prefills the signature client-side, so it never sends
