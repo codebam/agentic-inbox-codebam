@@ -143,6 +143,18 @@ interface ItemListResponse {
 	limit: number;
 }
 
+/**
+ * A mailbox-scoped label, as the labels routes answer it. Declared here —
+ * the one local place — until the labels-core branch merges; the parent
+ * repoints this type at the shared one afterwards.
+ */
+export interface Label {
+	id: string;
+	name: string;
+	color: string | null;
+	created_at: string;
+}
+
 // ---------- API client ----------
 
 const api = {
@@ -351,6 +363,35 @@ const api = {
 	/** Remove one snippet. */
 	deleteTemplate: (mailboxId: string, templateId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}/templates/${templateId}`),
+
+	// Labels — mailbox-scoped tags on messages, applied by hand (unlike the
+	// classifier's category). The chips row, the message picker and the
+	// search filter all read through these methods.
+	/** Every label for the mailbox. */
+	listLabels: (mailboxId: string) =>
+		get<{ labels: Label[] }>(`/api/v1/mailboxes/${mailboxId}/labels`),
+	/** Create a label; `color` is optional. */
+	createLabel: (mailboxId: string, label: { name: string; color?: string }) =>
+		post<Label>(`/api/v1/mailboxes/${mailboxId}/labels`, label),
+	/**
+	 * Partial update: name and/or color. Labels are the first PATCH route, so
+	 * this calls the shared request helper directly — there is no patch()
+	 * sibling of put()/del() above.
+	 */
+	updateLabel: (mailboxId: string, labelId: string, patch: { name?: string; color?: string }) =>
+		request<Label>(`/api/v1/mailboxes/${mailboxId}/labels/${labelId}`, {
+			method: "PATCH",
+			body: JSON.stringify(patch),
+		}),
+	/** Remove one label; it detaches from every message. */
+	deleteLabel: (mailboxId: string, labelId: string) =>
+		del<{ ok: boolean }>(`/api/v1/mailboxes/${mailboxId}/labels/${labelId}`),
+	/** Attach one label to a message; answers the message's labels. */
+	addLabelToEmail: (mailboxId: string, emailId: string, labelId: string) =>
+		post<{ labels: Label[] }>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/labels/${labelId}`),
+	/** Detach one label from a message; answers the message's labels. */
+	removeLabelFromEmail: (mailboxId: string, emailId: string, labelId: string) =>
+		del<{ labels: Label[] }>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/labels/${labelId}`),
 	// Tasks and deadlines extracted from inbound mail. Read-only apart from
 	// the status change: nothing here creates an item or sends mail.
 	/** One filtered page of items, newest first (`status`, `due`, `page`, `limit`). */

@@ -41,6 +41,10 @@ export const queryKeys = {
 		/** Every snippet for a mailbox, in the order the API returns them. */
 		list: (mailboxId: string) => ["templates", mailboxId] as const,
 	},
+	labels: {
+		/** Every label for a mailbox. */
+		list: (mailboxId: string) => ["labels", mailboxId] as const,
+	},
 	items: {
 		/** One filtered page of a mailbox's extracted tasks and deadlines. */
 		list: (mailboxId: string, filters: Record<string, string>) =>
@@ -63,8 +67,8 @@ export const queryKeys = {
 			["all-emails", params] as const,
 	},
 	search: {
-		results: (mailboxId: string, query: string, page: number) =>
-			["search", mailboxId, query, page] as const,
+		results: (mailboxId: string, query: string, page: number, label: string) =>
+			["search", mailboxId, query, page, label] as const,
 		all: (query: string, page: number) =>
 			["search", "all-mailboxes", query, page] as const,
 		/** One semantic (vector) search over a mailbox, ranked by similarity. */

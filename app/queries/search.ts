@@ -14,10 +14,11 @@ export function useSearchEmails(
 	mailboxId: string | undefined,
 	query: string,
 	page: number,
+	label?: string,
 ) {
 	return useQuery<{ results: Email[]; totalCount: number }>({
 		queryKey: mailboxId && query
-			? queryKeys.search.results(mailboxId, query, page)
+			? queryKeys.search.results(mailboxId, query, page, label ?? "")
 			: ["search", "_disabled"],
 		queryFn: async () => {
 			const parsed = parseSearchQuery(query);
@@ -37,6 +38,8 @@ export function useSearchEmails(
 			if (parsed.is_starred !== undefined)
 				params["is_starred"] = String(parsed.is_starred);
 			if (parsed.has_attachment) params["has_attachment"] = "true";
+			// The server matches a label by its name, case-insensitively.
+			if (label) params["label"] = label;
 
 			const data = await api.searchEmails(mailboxId!, params);
 			if (data && typeof data === "object" && "emails" in data) {
