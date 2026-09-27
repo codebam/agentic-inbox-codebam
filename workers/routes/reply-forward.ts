@@ -14,6 +14,7 @@ import {
 	buildThreadingHeaders,
 	resolveOriginalEmail,
 } from "../lib/email-helpers";
+import { captureSendMessageId } from "../lib/delivery-match";
 import { SendEmailRequestSchema } from "../lib/schemas";
 import { Folders } from "../../shared/folders";
 import type { MailboxContext } from "../lib/mailbox";
@@ -113,9 +114,13 @@ export async function handleReplyEmail(c: AppContext) {
 				contentId: att.contentId,
 			})),
 			headers: buildThreadingHeaders(originalMsgId, references),
-		}).catch((e) => {
-			console.error("Deferred reply delivery failed:", (e as Error).message);
-		}),
+		})
+			// Best-effort: the id the binding returned, on the Sent copy, so a
+			// bounce can be matched to it (workers/lib/delivery-match.ts).
+			.then((result) => captureSendMessageId(stub, messageId, result))
+			.catch((e) => {
+				console.error("Deferred reply delivery failed:", (e as Error).message);
+			}),
 	);
 
 	return c.json({ id: messageId, status: "sent" }, 202);
@@ -207,9 +212,13 @@ export async function handleForwardEmail(c: AppContext) {
 				disposition: att.disposition,
 				contentId: att.contentId,
 			})),
-		}).catch((e) => {
-			console.error("Deferred forward delivery failed:", (e as Error).message);
-		}),
+		})
+			// Best-effort: the id the binding returned, on the Sent copy, so a
+			// bounce can be matched to it (workers/lib/delivery-match.ts).
+			.then((result) => captureSendMessageId(stub, messageId, result))
+			.catch((e) => {
+				console.error("Deferred forward delivery failed:", (e as Error).message);
+			}),
 	);
 
 	return c.json({ id: messageId, status: "sent" }, 202);

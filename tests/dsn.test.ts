@@ -23,6 +23,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
 import { receiveEmail, type InboundEmailEvent } from "../workers/index";
+import { captureSendMessageId } from "../workers/lib/delivery-match";
 
 
 /** Settings that keep the ingest path deterministic (no AI call). */
@@ -41,6 +42,7 @@ function stubFor(mailbox: string) {
 interface DeliveryRow {
 	id: string;
 	message_id: string | null;
+	send_message_id: string | null;
 	delivery_status: string | null;
 	delivery_detail: string | null;
 	delivery_updated_at: string | null;
@@ -80,6 +82,39 @@ async function seedEmail(
 }
 
 
+/**
+ * Seed one Sent copy for the send-id and fallback tests: an explicit subject,
+ * recipient and date, so the bounded matching window can be targeted.
+ */
+async function seedSentCopy(
+	stub: Stub,
+	id: string,
+	fields: {
+		subject: string;
+		recipient: string;
+		messageId?: string | null;
+		date?: string;
+	},
+) {
+	await stub.createEmail(
+		Folders.SENT,
+		{
+			id,
+			subject: fields.subject,
+			sender: "box@example.com",
+			recipient: fields.recipient,
+			date: fields.date ?? new Date().toISOString(),
+			body: "<p>body</p>",
+			in_reply_to: null,
+			email_references: null,
+			thread_id: id,
+			message_id: fields.messageId ?? null,
+		},
+		[],
+	);
+}
+
+
 /** Push one raw message through the real receiveEmail path. */
 async function deliver(mailbox: string, raw: string) {
 	const bytes = new TextEncoder().encode(raw);
@@ -103,6 +138,8 @@ interface ReportFields {
 interface ReportOptions {
 	/** The Message-ID the embedded original-message part carries. */
 	originalMessageId?: string;
+	/** The Subject the embedded original-message part carries (fallback matching). */
+	originalSubject?: string;
 	/** Which part carries the original: an embedded message, its headers, or none. */
 	part?: "rfc822" | "rfc822-headers" | "none";
 	/** Headers on the report itself, for the In-Reply-To / References fallbacks. */
@@ -148,7 +185,7 @@ function dsnMessage(
 			"",
 			"From: box@example.com",
 			"To: missing@example.net",
-			"Subject: Original",
+			`Subject: ${options.originalSubject ?? "Original"}`,
 			`Message-ID: <${options.originalMessageId ?? ""}>`,
 			"Date: Tue, 23 Sep 2026 02:00:00 +0000",
 			...(part === "rfc822" ? ["", "original body"] : []),
@@ -429,5 +466,195 @@ describe("MailboxDO.applyDeliveryReport", () => {
 			.toBe("delivered");
 		expect(((await stub.getEmail("sent-old")) as DeliveryRow | null)?.delivery_status)
 			.toBeNull();
+	});
+});
+
+
+describe("send_message_id capture and fallback matching", () => {
+	it("matches a report against the id the send binding returned", async () => {
+		const mailbox = "dsn-send-id@example.com";
+		await registerMailbox(mailbox);
+		const stub = stubFor(mailbox);
+		// The platform sets the wire Message-ID itself, so the stored
+		// message_id and the id the report names differ: only the captured
+		// send_message_id can match here.
+		await seedSentCopy(stub, "sent-send-id", {
+			subject: "Subject sent-send-id",
+			recipient: "missing@example.net",
+			messageId: "stored-send-id@example.com",
+		});
+		await stub.setSendMessageId("sent-send-id", "binding-id@example.org");
+
+		await deliver(
+			mailbox,
+			dsnMessage(
+				mailbox,
+				{ action: "failed", status: "5.1.1", diagnostic: "smtp; 550 5.1.1 gone" },
+				{ originalMessageId: "binding-id@example.org" },
+			),
+		);
+
+		const sent = (await stub.getEmail("sent-send-id")) as DeliveryRow | null;
+		expect(sent?.delivery_status).toBe("failed");
+		expect(sent?.delivery_detail).toBe("550 5.1.1 gone");
+		expect(sent?.send_message_id).toBe("binding-id@example.org");
+	});
+
+	it("still matches by the stored message_id", async () => {
+		const mailbox = "dsn-stored-id@example.com";
+		await registerMailbox(mailbox);
+		const stub = stubFor(mailbox);
+		await seedSentCopy(stub, "sent-stored-id", {
+			subject: "Subject sent-stored-id",
+			recipient: "missing@example.net",
+			messageId: "stored-only@example.com",
+		});
+
+		await deliver(
+			mailbox,
+			dsnMessage(
+				mailbox,
+				{ action: "failed", status: "5.1.1", diagnostic: "smtp; 550 5.1.1 gone" },
+				{ originalMessageId: "stored-only@example.com" },
+			),
+		);
+
+		const sent = (await stub.getEmail("sent-stored-id")) as DeliveryRow | null;
+		expect(sent?.delivery_status).toBe("failed");
+		expect(sent?.send_message_id).toBeNull();
+	});
+
+	it("falls back to subject + recipient when exactly one Sent copy is in the window", async () => {
+		const mailbox = "dsn-window-one@example.com";
+		await registerMailbox(mailbox);
+		const stub = stubFor(mailbox);
+		// Nothing the report names matches an id: the bounded fallback is the
+		// only path that can match, and exactly one copy is in the window.
+		await seedSentCopy(stub, "sent-window", {
+			subject: "Quarterly report",
+			recipient: "missing@example.net",
+			messageId: null,
+		});
+
+		await deliver(
+			mailbox,
+			dsnMessage(
+				mailbox,
+				{ action: "delayed", status: "4.4.1", diagnostic: "smtp; 451 4.4.1 try later" },
+				{
+					originalMessageId: "no-such-send@example.com",
+					originalSubject: "Quarterly report",
+				},
+			),
+		);
+
+		const sent = (await stub.getEmail("sent-window")) as DeliveryRow | null;
+		expect(sent?.delivery_status).toBe("delayed");
+		expect(sent?.delivery_detail).toBe("451 4.4.1 try later");
+	});
+
+	it("does not guess when two Sent copies match the fallback", async () => {
+		const mailbox = "dsn-window-ambiguous@example.com";
+		await registerMailbox(mailbox);
+		const stub = stubFor(mailbox);
+		await seedSentCopy(stub, "sent-ambiguous-a", {
+			subject: "Quarterly report",
+			recipient: "missing@example.net",
+			messageId: null,
+		});
+		await seedSentCopy(stub, "sent-ambiguous-b", {
+			subject: "Quarterly report",
+			recipient: "missing@example.net",
+			messageId: null,
+		});
+
+		await deliver(
+			mailbox,
+			dsnMessage(
+				mailbox,
+				{ action: "failed", status: "5.1.1", diagnostic: "smtp; 550 5.1.1 gone" },
+				{
+					originalMessageId: "no-such-send@example.com",
+					originalSubject: "Quarterly report",
+				},
+			),
+		);
+
+		expect(
+			((await stub.getEmail("sent-ambiguous-a")) as DeliveryRow | null)?.delivery_status,
+		).toBeNull();
+		expect(
+			((await stub.getEmail("sent-ambiguous-b")) as DeliveryRow | null)?.delivery_status,
+		).toBeNull();
+
+		// The matcher itself reports the ambiguity as a no-op.
+		expect(
+			await stub.applyDeliveryReport({
+				originalMessageId: "no-such-send@example.com",
+				status: "failed",
+				detail: null,
+				finalRecipient: "rfc822; missing@example.net",
+				originalSubject: "Quarterly report",
+			}),
+		).toBe(false);
+	});
+
+	it("stores null when the send returned no id, and still matches by message_id", async () => {
+		const mailbox = "dsn-no-returned-id@example.com";
+		await registerMailbox(mailbox);
+		const stub = stubFor(mailbox);
+		await seedSentCopy(stub, "sent-no-returned-id", {
+			subject: "Subject sent-no-returned-id",
+			recipient: "missing@example.net",
+			messageId: "still-stored@example.com",
+		});
+
+		// The binding returned no id: the capture writes nothing, silently.
+		expect(
+			await captureSendMessageId(stub, "sent-no-returned-id", { messageId: null }),
+		).toBe(false);
+		expect(
+			((await stub.getEmail("sent-no-returned-id")) as DeliveryRow | null)?.send_message_id,
+		).toBeNull();
+
+		await deliver(
+			mailbox,
+			dsnMessage(
+				mailbox,
+				{ action: "failed", status: "5.1.1", diagnostic: "smtp; 550 5.1.1 gone" },
+				{ originalMessageId: "still-stored@example.com" },
+			),
+		);
+
+		expect(
+			((await stub.getEmail("sent-no-returned-id")) as DeliveryRow | null)?.delivery_status,
+		).toBe("failed");
+	});
+
+	it("never throws when the Sent copy is missing or storage fails", async () => {
+		const stub = stubFor("dsn-capture-missing@example.com");
+
+		// No such stored copy: the write touches nothing and reports false.
+		await expect(
+			captureSendMessageId(stub, "no-such-copy", { messageId: "binding@example.org" }),
+		).resolves.toBe(false);
+
+		// A storage failure is swallowed: the send has already gone out.
+		await expect(
+			captureSendMessageId(
+				{
+					setSendMessageId() {
+						throw new Error("storage unavailable");
+					},
+				},
+				"any-copy",
+				{ messageId: "binding@example.org" },
+			),
+		).resolves.toBe(false);
+
+		// A store without the method at all is a no-op, not a crash.
+		await expect(
+			captureSendMessageId({}, "any-copy", { messageId: "binding@example.org" }),
+		).resolves.toBe(false);
 	});
 });

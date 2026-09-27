@@ -628,4 +628,14 @@ export const mailboxMigrations: Migration[] = [
                 ON message_embeddings(email_id);
         `),
 	},
+	{
+		// The id the email binding returned for a Sent copy
+		// (workers/lib/delivery-match.ts captureSendMessageId). The platform
+		// sets the wire Message-ID itself, so this returned id is the only
+		// id a bounce can name; every send path stores it on the copy it
+		// creates, best-effort. NULL when the send returned no id or the
+		// capture failed — the stored `message_id` still matches those.
+		name: "32_add_send_message_id",
+		sql: txn(`ALTER TABLE emails ADD COLUMN send_message_id TEXT;`),
+	},
 ];

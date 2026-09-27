@@ -111,6 +111,12 @@ import {
 	type ScheduleSendInput,
 } from "../lib/scheduled-sends";
 import {
+	captureSendMessageId,
+	deliveryMatchWindow,
+	pickDeliveryFallbackCandidate,
+	type DeliveryMatchCandidate,
+} from "../lib/delivery-match";
+import {
 	DIGEST_CATEGORY_LIMIT,
 	DIGEST_ITEM_LIMIT,
 	DIGEST_NEEDS_REPLY_LIMIT,
@@ -1069,30 +1075,32 @@ export class MailboxDO extends DurableObject<Env> {
 	/**
 	 * Bounce/DSN bookkeeping (workers/index.ts receiveEmail): record the
 	 * delivery outcome a delivery-status notification reports for one of
-	 * this mailbox's Sent messages. Matches `message_id` among Sent copies
-	 * only — the folders table stores display names, so the lookup uses the
-	 * name-or-id fallback — and updates the newest matching row. A report
-	 * with no original id, or one that matches nothing, is a silent no-op
-	 * (false): the DSN itself is stored as ordinary mail either way.
+	 * this mailbox's Sent messages. Matches the report's original id against
+	 * the stored `message_id` first, then the binding-returned
+	 * `send_message_id` (migration 32), and finally — only when exactly one
+	 * Sent copy in a bounded window matches on normalized subject and
+	 * recipient — that copy (workers/lib/delivery-match.ts). Ambiguity is a
+	 * no-op, never a guess. The folders table stores display names, so the
+	 * lookup uses the name-or-id fallback; the newest matching row wins. A
+	 * report with no original id, or one that matches nothing, is a silent
+	 * no-op (false): the DSN itself is stored as ordinary mail either way.
 	 */
 	applyDeliveryReport(report: {
 		originalMessageId: string | null;
 		status: "failed" | "delayed" | "delivered";
 		detail: string | null;
+		/** The report's Final-Recipient, used by the bounded fallback. */
+		finalRecipient?: string | null;
+		/** The original message's Subject from the report, used by the fallback. */
+		originalSubject?: string | null;
 	}): boolean {
 		const originalMessageId = report.originalMessageId?.trim();
 		if (!originalMessageId) return false;
 
-		const match = [
-			...this.ctx.storage.sql.exec(
-				`SELECT id FROM emails
-				 WHERE message_id = ?
-				   AND folder_id = (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
-				 ORDER BY date DESC, id DESC
-				 LIMIT 1`,
-				originalMessageId,
-			),
-		][0] as { id: string } | undefined;
+		const match =
+			this.#sentCopyByStoredId("message_id", originalMessageId) ??
+			this.#sentCopyByStoredId("send_message_id", originalMessageId) ??
+			this.#deliveryFallbackMatch(report);
 		if (!match) return false;
 
 		this.ctx.storage.sql.exec(
@@ -1103,6 +1111,72 @@ export class MailboxDO extends DurableObject<Env> {
 			match.id,
 		);
 		return true;
+	}
+
+	/**
+	 * The newest Sent copy whose stored id column equals the report's
+	 * original id. The column name is one of two literals chosen here, never
+	 * caller input.
+	 */
+	#sentCopyByStoredId(
+		column: "message_id" | "send_message_id",
+		value: string,
+	): { id: string } | null {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id FROM emails
+				 WHERE ${column} = ?
+				   AND folder_id = (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
+				 ORDER BY date DESC, id DESC
+				 LIMIT 1`,
+				value,
+			),
+		][0] as { id: string } | undefined;
+		return row ?? null;
+	}
+
+	/**
+	 * The bounded fallback: the one Sent copy in the delivery-match window
+	 * whose normalized subject and recipient both match the report
+	 * (workers/lib/delivery-match.ts). No candidates, or several, mean no
+	 * match — a guess would record the outcome on the wrong message.
+	 */
+	#deliveryFallbackMatch(report: {
+		finalRecipient?: string | null;
+		originalSubject?: string | null;
+	}): { id: string } | null {
+		const window = deliveryMatchWindow(new Date());
+		const candidates = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, subject, recipient FROM emails
+				 WHERE folder_id = (SELECT id FROM folders WHERE name = 'sent' OR id = 'sent' LIMIT 1)
+				   AND date >= ?1 AND date <= ?2`,
+				window.from,
+				window.to,
+			),
+		] as unknown as DeliveryMatchCandidate[];
+		const match = pickDeliveryFallbackCandidate(candidates, {
+			subject: report.originalSubject ?? null,
+			recipient: report.finalRecipient ?? null,
+		});
+		return match ? { id: match.id } : null;
+	}
+
+	/**
+	 * Store the id the email binding returned for a Sent copy (migration
+	 * 32). Called best-effort right after every send (workers/lib/delivery-match.ts
+	 * captureSendMessageId); false when the row is gone. A delivery report
+	 * that names this id is matched even though the platform — not this
+	 * mailbox — set the wire Message-ID.
+	 */
+	setSendMessageId(id: string, sendMessageId: string): boolean {
+		if (!sendMessageId) return false;
+		const cursor = this.ctx.storage.sql.exec(
+			`UPDATE emails SET send_message_id = ?1 WHERE id = ?2`,
+			sendMessageId,
+			id,
+		);
+		return cursor.rowsWritten > 0;
 	}
 
 	/**
@@ -2110,8 +2184,9 @@ export class MailboxDO extends DurableObject<Env> {
 		if (text !== undefined) verified.text = text;
 		const params = buildScheduledSendParams(verified);
 
+		let sent: { messageId: string };
 		try {
-			await sender.send(params);
+			sent = await sender.send(params);
 		} catch (e) {
 			markFailed(`Send failed: ${(e as Error).message}`);
 			return;
@@ -2188,6 +2263,10 @@ export class MailboxDO extends DurableObject<Env> {
 				(e as Error).message,
 			);
 		}
+
+		// Best-effort: the id the binding returned, on the copy that just went
+		// in, so a bounce can be matched to it (workers/lib/delivery-match.ts).
+		await captureSendMessageId(this, messageId, sent);
 
 		this.ctx.storage.sql.exec(
 			`UPDATE scheduled_sends SET status = 'sent', sent_at = ?1, last_error = NULL WHERE id = ?2`,

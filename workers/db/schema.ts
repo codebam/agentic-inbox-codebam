@@ -62,6 +62,14 @@ export const emails = sqliteTable("emails", {
 	delivery_detail: text("delivery_detail"),
 	/** ISO 8601 time the delivery outcome was recorded. */
 	delivery_updated_at: text("delivery_updated_at"),
+	/**
+	 * The id the email binding returned for this Sent copy (migration 32).
+	 * The platform sets the wire Message-ID itself, so this is the only id a
+	 * bounce can name; delivery-report matching tries it right after the
+	 * stored `message_id` (workers/lib/delivery-match.ts). NULL when the
+	 * send returned no id or the capture failed.
+	 */
+	send_message_id: text("send_message_id"),
 });
 
 

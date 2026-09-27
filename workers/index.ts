@@ -141,6 +141,7 @@ import {
 	responseSubject,
 } from "./lib/calendar";
 import { handleInboundRuleOutbound } from "./lib/rule-outbound";
+import { captureSendMessageId } from "./lib/delivery-match";
 import {
 	extractUnsubscribeHeaders,
 	isOneClickUnsubscribe,
@@ -871,7 +872,11 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 			to, cc, bcc, from, subject, html: outgoingHtml, text: outgoingText,
 			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
 			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
-		}).catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
+		})
+			// Best-effort: the id the binding returned, on the Sent copy, so a
+			// bounce can be matched to it (workers/lib/delivery-match.ts).
+			.then((result) => captureSendMessageId(stub, messageId, result))
+			.catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
 	);
 	return c.json({ id: messageId, status: "sent" }, 202);
 });
@@ -1403,9 +1408,13 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite-response", async (
 					disposition: "attachment",
 				},
 			],
-		}).catch((e) => {
-			console.error("Deferred invite reply delivery failed:", (e as Error).message);
-		}),
+		})
+			// Best-effort: the id the binding returned, on the Sent copy, so a
+			// bounce can be matched to it (workers/lib/delivery-match.ts).
+			.then((result) => captureSendMessageId(stub, messageId, result))
+			.catch((e) => {
+				console.error("Deferred invite reply delivery failed:", (e as Error).message);
+			}),
 	);
 
 	const updated = await stub.setCalendarInviteResponse(emailId, response);
@@ -2416,8 +2425,10 @@ interface DeliveryReport {
 	originalMessageId: string | null;
 	status: "failed" | "delayed" | "delivered";
 	detail: string | null;
-	/** The Final-Recipient field, logged only — the schema stores no recipient column. */
+	/** The Final-Recipient field, logged and used by the bounded fallback matcher. */
 	finalRecipient: string | null;
+	/** The original message's Subject from the embedded part; fallback matching only. */
+	originalSubject: string | null;
 }
 
 /** The shape `new PostalMime().parse(...)` resolves to in receiveEmail. */
@@ -2559,8 +2570,9 @@ function extractDeliveryReport(
 	const originalPart = parsed.attachments.find((att) =>
 		DELIVERY_ORIGINAL_MIME_TYPES.has(att.mimeType.trim().toLowerCase()),
 	);
+	const originalText = originalPart ? deliveryPartText(originalPart.content) : null;
 	const candidates = [
-		originalPart ? rawHeaderValue(deliveryPartText(originalPart.content), "message-id") : null,
+		originalText ? rawHeaderValue(originalText, "message-id") : null,
 		parsed.inReplyTo ?? null,
 		(parsed.references ?? "").split(/\s+/).filter(Boolean)[0] ?? null,
 	];
@@ -2571,6 +2583,9 @@ function extractDeliveryReport(
 		status,
 		detail: deliveryDetail(fields),
 		finalRecipient: fields.get("final-recipient")?.trim() || null,
+		// The embedded part carries the original message's own Subject; the
+		// bounded fallback matcher compares it (workers/lib/delivery-match.ts).
+		originalSubject: originalText ? rawHeaderValue(originalText, "subject") : null,
 	};
 }
 

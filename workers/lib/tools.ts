@@ -43,6 +43,7 @@ import {
 	buildReferencesChain,
 	buildThreadingHeaders,
 } from "./email-helpers";
+import { captureSendMessageId } from "./delivery-match";
 import { verifyDraft } from "./ai";
 import { applySignatureToBody } from "../../shared/signature";
 import { loadMailboxSignature, resolveMailboxModels } from "./mailbox-settings";
@@ -1472,8 +1473,9 @@ export async function toolSendReply(
 	});
 	const fullBodyHtml = sanitizedBody + quotedBlock;
 
+	let sendResult: { messageId: string };
 	try {
-		await sendEmail(env.EMAIL, {
+		sendResult = await sendEmail(env.EMAIL, {
 			to: params.to,
 			from: mailboxId,
 			subject: params.subject,
@@ -1502,6 +1504,10 @@ export async function toolSendReply(
 		},
 		[],
 	);
+
+	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
+	// can be matched to it (workers/lib/delivery-match.ts).
+	await captureSendMessageId(stub, messageId, sendResult);
 
 	return { status: "sent", messageId, message: `Reply sent to ${params.to}` };
 }
@@ -1537,8 +1543,9 @@ export async function toolSendEmail(
 		return { error: "Draft verification failed — refusing to send unverified content. Please try again." };
 	}
 
+	let sendResult: { messageId: string };
 	try {
-		await sendEmail(env.EMAIL, {
+		sendResult = await sendEmail(env.EMAIL, {
 			to: params.to,
 			from: mailboxId,
 			subject: params.subject,
@@ -1565,6 +1572,10 @@ export async function toolSendEmail(
 		},
 		[],
 	);
+
+	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
+	// can be matched to it (workers/lib/delivery-match.ts).
+	await captureSendMessageId(stub, messageId, sendResult);
 
 	return { status: "sent", messageId, message: `Email sent to ${params.to}` };
 }
