@@ -176,6 +176,33 @@ describe("inbound attachment encodings", () => {
 		expect(delivered.stored.length).toBeLessThanOrEqual(PNG_BYTES.byteLength + 1);
 	});
 
+	it("decodes an attachment sent as base64 text with no transfer encoding", async () => {
+		// Some senders base64 the file and never say so; the parser then hands
+		// the text through as the file. The declared type plus the decoded
+		// signature is what identifies it.
+		const delivered = await deliver(rawMessage(null, PNG_BASE64));
+		expectSameBytes(delivered.stored);
+		expect(delivered.rowSize).toBe(PNG_BYTES.byteLength);
+	});
+
+	it("decodes it when the part claims 8bit as well", async () => {
+		const delivered = await deliver(rawMessage("8bit", PNG_BASE64));
+		expectSameBytes(delivered.stored);
+		expect(delivered.rowSize).toBe(PNG_BYTES.byteLength);
+	});
+
+	it("leaves a base64-shaped body alone when it is not the type it claims", async () => {
+		// Base64 text, but of plain text: it is not a PNG, so it must survive
+		// as it arrived rather than be rewritten on a guess.
+		const text = "this is not a png at all, only base64 text of plain prose.\n";
+		const body = btoa(text.repeat(4));
+		const delivered = await deliver(rawMessage(null, body));
+		expect(Array.from(delivered.stored.slice(0, body.length))).toEqual(
+			Array.from(encoder.encode(body)),
+		);
+		expect(delivered.stored.length).toBeLessThanOrEqual(body.length + 1);
+	});
+
 	it("leaves the message text readable", async () => {
 		const delivered = await deliver(rawMessage(null, PNG_BYTES));
 		expect(delivered.subject).toBe("inbound encodings");

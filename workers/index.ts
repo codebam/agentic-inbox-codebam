@@ -9,6 +9,7 @@ import { z, ZodError } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, attachmentR2Key, type StoredAttachment } from "./lib/attachments";
 import { encodeBinaryParts } from "./lib/mime-binary";
+import { repairBase64Attachment } from "./lib/attachment-content";
 import {
 	validateSender,
 	SenderValidationError,
@@ -2450,9 +2451,13 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			// Control characters and path separators are exactly what has to go.
 			// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
 			const filename = (att.filename || "untitled").replace(/[/\\:*?"<>|\x00-\x1f]/g, "_");
-			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, att.content);
+			const received = typeof att.content === "string"
+				? new TextEncoder().encode(att.content)
+				: new Uint8Array(att.content as ArrayBuffer);
+			const content = repairBase64Attachment(received, att.mimeType || "application/octet-stream");
+			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, content);
 			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
-				size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
+				size: content.byteLength,
 				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
 		}
 	}
