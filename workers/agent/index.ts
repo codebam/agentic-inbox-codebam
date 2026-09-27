@@ -31,6 +31,7 @@ import {
 	toolGetThread,
 	toolSearchEmails,
 	toolSearchAllMailboxes,
+	toolSemanticSearch,
 	toolDraftReply,
 	toolDraftEmail,
 	toolMarkEmailRead,
@@ -68,6 +69,7 @@ import {
 import type { RulePatch } from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { isAllMailboxesAgentId } from "../../shared/mailboxes";
+import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import type { Env } from "../types";
 
@@ -483,6 +485,37 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					before: args.before,
 					after: args.after,
 					page: args.page,
+					limit: args.limit,
+				});
+			},
+		}),
+
+		semantic_search: defineTool({
+			description:
+				"Semantic (meaning-based) search over one mailbox's stored mail. Use it when the exact words are unknown — it finds messages by what they are about rather than by keyword. Read-only: it reads the mailbox, changes nothing and sends nothing. It needs the mailbox's semantic index (Settings → Semantic search) and reports a not-configured message when the deployment has none.",
+			parameters: z.object({
+				...mailboxIdField,
+				query: z
+					.string()
+					.min(1)
+					.describe(
+						"What to look for, in natural language — a phrase, a topic or a question.",
+					),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(SEMANTIC_SEARCH_LIMIT_MAX)
+					.optional()
+					.describe(
+						`How many results to return (default ${SEMANTIC_SEARCH_LIMIT_MAX}, max ${SEMANTIC_SEARCH_LIMIT_MAX})`,
+					),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolSemanticSearch(env, mailboxId, {
+					query: args.query,
 					limit: args.limit,
 				});
 			},

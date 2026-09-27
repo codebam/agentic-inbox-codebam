@@ -51,6 +51,7 @@ import { Folders } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
+import { semanticSearch } from "./semantic";
 import { DEFAULT_CONTACT_SEARCH_LIMIT } from "./contacts";
 import {
 	type ItemDueFilter,
@@ -423,6 +424,27 @@ export async function toolSearchAllMailboxes(
 		page: params.page,
 		limit: params.limit,
 	});
+}
+
+// ── semantic_search ────────────────────────────────────────────────
+
+/**
+ * Semantic (vector) search over one mailbox's stored mail: the query text is
+ * embedded and the mailbox's Vectorize index answers the closest messages,
+ * ranked by similarity. Each hit carries the message id, subject, sender,
+ * date, a snippet and the score. Read-only — it reads the mailbox and writes
+ * nothing, and nothing here sends mail.
+ *
+ * A deployment without the AI + Vectorize bindings answers the
+ * not-configured result instead of throwing, so the agent and MCP surfaces
+ * report it as a plain error field rather than failing the call.
+ */
+export async function toolSemanticSearch(
+	env: Env,
+	mailboxId: string,
+	params: { query: string; limit?: number | undefined },
+) {
+	return semanticSearch(env, mailboxId, params.query, params.limit);
 }
 
 // ── draft_reply ────────────────────────────────────────────────────

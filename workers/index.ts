@@ -53,6 +53,7 @@ import { normalizeAutoDraft } from "../shared/auto-draft";
 import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
 import { normalizeItemsSettings } from "../shared/items";
+import { normalizeSemanticSearchSettings, SEMANTIC_SEARCH_LIMIT_MAX } from "../shared/semantic";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
@@ -125,6 +126,7 @@ import {
 } from "./lib/sender-policy";
 import { isTemplateValidationError } from "./lib/templates";
 import { insertExtractedItems, isItemDueFilter, isItemStatus, ITEM_LIST_LIMIT_DEFAULT, ITEM_LIST_LIMIT_MAX } from "./lib/items";
+import { embedAndIndexMessage, isSemanticConfigured, semanticReindex, semanticSearch } from "./lib/semantic";
 import {
 	buildImipReply,
 	calendarAddress,
@@ -356,6 +358,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 		autoDraft: normalizeAutoDraft(settings?.["autoDraft"]),
 		digestEnabled: normalizeDigestEnabled(settings?.["digestEnabled"]),
 		items: normalizeItemsSettings(settings?.["items"]),
+		semanticSearch: normalizeSemanticSearchSettings(settings?.["semanticSearch"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
@@ -399,6 +402,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		autoDraft: normalizeAutoDraft(settings["autoDraft"]),
 		digestEnabled: normalizeDigestEnabled(settings["digestEnabled"]),
 		items: normalizeItemsSettings(settings["items"]),
+		semanticSearch: normalizeSemanticSearchSettings(settings["semanticSearch"]),
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(normalizedSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: normalizedSettings });
@@ -1688,6 +1692,77 @@ app.put("/api/v1/mailboxes/:mailboxId/items/:itemId", async (c: AppContext) => {
 });
 
 
+// -- Semantic search -------------------------------------------------
+
+/**
+ * Body for POST /api/v1/mailboxes/:mailboxId/semantic-search: the query text
+ * to embed and search with. `limit` is optional and capped at
+ * SEMANTIC_SEARCH_LIMIT_MAX results.
+ */
+const SemanticSearchBody = z.object({
+	query: z.string().trim().min(1),
+	limit: z.number().int().min(1).max(SEMANTIC_SEARCH_LIMIT_MAX).optional(),
+});
+
+
+/** Same shape of 400 message for the semantic routes. */
+function semanticErrorMessage(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Invalid semantic search request";
+	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+	return `Invalid semantic search request — ${path}${issue.message}`;
+}
+
+
+/**
+ * Semantic (vector) search over this mailbox's stored mail: the query text is
+ * embedded, the Vectorize index answers the closest messages restricted to
+ * this mailbox, and each hit comes back in the same row shape the keyword
+ * search returns (id, subject, sender, date, a snippet and the similarity
+ * score), ranked best first and bounded to 20.
+ *
+ * Read-only: it reads the mailbox and writes nothing — no message is changed
+ * and nothing is sent. A deployment without the AI + Vectorize bindings
+ * answers 503 with a clear not-configured message instead of failing.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/semantic-search", async (c: AppContext) => {
+	const parsed = SemanticSearchBody.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json({ error: semanticErrorMessage(parsed.error) }, 400);
+	const answer = await semanticSearch(
+		c.env,
+		decodeURIComponent(c.req.param("mailboxId")!),
+		parsed.data.query,
+		parsed.data.limit,
+	);
+	if ("error" in answer) return c.json({ error: answer.error }, answer.status);
+	return c.json(answer);
+});
+
+
+/**
+ * Build the mailbox's semantic index, one bounded batch per call: it embeds
+ * the newest 20 messages that have no embedding yet and answers how many it
+ * processed and how many remain, so the Settings button can loop until
+ * nothing is left — the same idempotent shape as the retroactive rule apply.
+ * A finished index answers processed 0 and remaining 0.
+ *
+ * Operator-only (there is deliberately no agent/MCP tool for it) and local:
+ * it never sends, never deletes, and only writes the embedding bookkeeping.
+ * Unlike ingest it ignores the mailbox's semanticSearch switch, because
+ * building the index is an explicit action and the only way to index mail
+ * stored before the switch was turned on.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/semantic/reindex", async (c: AppContext) => {
+	const answer = await semanticReindex(
+		c.env,
+		decodeURIComponent(c.req.param("mailboxId")!),
+	);
+	if ("error" in answer) return c.json({ error: answer.error }, answer.status);
+	return c.json(answer);
+});
+
+
+
 // -- Trash ----------------------------------------------------------
 
 /**
@@ -2599,6 +2674,33 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		);
 		return;
 	}
+
+	// Semantic search ingest: embed and index this message when the mailbox
+	// opted in (off by default — it spends an embedding call per message) and
+	// the deployment has the AI + Vectorize bindings. Best-effort — the helper
+	// logs and swallows every failure, and the gate is wrapped too — and
+	// deliberately AFTER the duplicate check above, so a redelivery never
+	// re-embeds. The message is stored as ordinary mail either way: this step
+	// is in addition to storage and can never fail ingest.
+	try {
+		if (
+			normalizeSemanticSearchSettings(mailboxSettings["semanticSearch"]).enabled &&
+			isSemanticConfigured(env)
+		) {
+			ctx.waitUntil(embedAndIndexMessage(env, mailboxId, {
+				emailId: createResult.id,
+				subject: parsedEmail.subject || "",
+				sender: (parsedEmail.from?.address || "").toLowerCase(),
+				body: parsedEmail.html || parsedEmail.text || "",
+			}, mailboxSettings));
+		}
+	} catch (e) {
+		console.error(
+			"Semantic search ingest skipped for this message:",
+			(e as Error).message,
+		);
+	}
+
 
 	// Bounce/DSN bookkeeping: a delivery-status notification for one of this
 	// mailbox's Sent messages records its outcome on that copy. Best-effort —
