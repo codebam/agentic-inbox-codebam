@@ -19,6 +19,7 @@ import type {
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
 import type { SemanticReindexProgress } from "workers/lib/semantic";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
+import type { Label } from "workers/lib/labels";
 import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
 import type { AgentAction, BulkEmailAction, Contact, Digest, Email, ExtractedItem, Folder, Mailbox, ScheduledSend } from "~/types";
 
@@ -144,16 +145,10 @@ interface ItemListResponse {
 }
 
 /**
- * A mailbox-scoped label, as the labels routes answer it. Declared here —
- * the one local place — until the labels-core branch merges; the parent
- * repoints this type at the shared one afterwards.
+ * A mailbox-scoped label, as the labels routes answer it. The shared module
+ * is the single declaration — the UI mirrors it the way it mirrors Template.
  */
-export interface Label {
-	id: string;
-	name: string;
-	color: string | null;
-	created_at: string;
-}
+export type { Label };
 
 // ---------- API client ----------
 
