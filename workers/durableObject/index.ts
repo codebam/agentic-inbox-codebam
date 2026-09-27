@@ -1762,6 +1762,14 @@ export class MailboxDO extends DurableObject<Env> {
 			.run();
 
 
+		// The extracted attachment text goes with the messages (see
+		// deleteEmail); the FTS triggers drop the postings with the rows.
+		this.db
+			.delete(schema.attachmentText)
+			.where(inArray(schema.attachmentText.email_id, ids))
+			.run();
+
+
 		this.db
 			.delete(schema.emails)
 			.where(inArray(schema.emails.id, ids))
@@ -3296,36 +3304,38 @@ export class MailboxDO extends DurableObject<Env> {
 	 */
 	storeAttachmentText(rows: AttachmentTextInput[]): number {
 		const now = new Date().toISOString();
-		const bounded: (AttachmentTextInput & { created_at: string })[] = [];
+		let written = 0;
 		for (const row of (rows ?? []).slice(0, MAX_ATTACHMENT_TEXT_ROWS)) {
 			if (!row?.attachment_id || !row.email_id) continue;
 			const text = (row.text ?? "").replaceAll("\u0000", "").slice(0, MAX_ATTACHMENT_TEXT_CHARS);
 			if (text.length === 0) continue;
-			bounded.push({
-				attachment_id: row.attachment_id,
-				email_id: row.email_id,
-				filename: row.filename || "untitled",
-				mimetype: row.mimetype || "application/octet-stream",
-				text,
-				created_at: now,
-			});
+			// One upsert per row, like recordContacts: a multi-row INSERT would
+			// spend one bound parameter per column per row, and Durable Object
+			// SQLite caps a statement at 100 parameters.
+			this.db
+				.insert(schema.attachmentText)
+				.values({
+					attachment_id: row.attachment_id,
+					email_id: row.email_id,
+					filename: row.filename || "untitled",
+					mimetype: row.mimetype || "application/octet-stream",
+					text,
+					created_at: now,
+				})
+				.onConflictDoUpdate({
+					target: schema.attachmentText.attachment_id,
+					set: {
+						email_id: sql`excluded.email_id`,
+						filename: sql`excluded.filename`,
+						mimetype: sql`excluded.mimetype`,
+						text: sql`excluded.text`,
+						created_at: sql`excluded.created_at`,
+					},
+				})
+				.run();
+			written += 1;
 		}
-		if (bounded.length === 0) return 0;
-		this.db
-			.insert(schema.attachmentText)
-			.values(bounded)
-			.onConflictDoUpdate({
-				target: schema.attachmentText.attachment_id,
-				set: {
-					email_id: sql`excluded.email_id`,
-					filename: sql`excluded.filename`,
-					mimetype: sql`excluded.mimetype`,
-					text: sql`excluded.text`,
-					created_at: sql`excluded.created_at`,
-				},
-			})
-			.run();
-		return bounded.length;
+		return written;
 	}
 
 	// ── Contacts (mail-flow address book) ──────────────────────────
