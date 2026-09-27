@@ -419,3 +419,24 @@ export const importJobs = sqliteTable("import_jobs", {
 	created_at: text("created_at").notNull(),
 	updated_at: text("updated_at").notNull(),
 });
+
+/**
+ * Searchable text extracted from an attachment's contents (migration
+ * 36_add_attachment_text, workers/lib/attachment-text.ts): one row per
+ * attachment whose bytes decoded (or converted) to text, so mailbox search
+ * can match a message by what its files contain. `attachment_id` is the
+ * primary key and the upsert target, and `text` is bounded to
+ * MAX_ATTACHMENT_TEXT_CHARS on every write. There is deliberately no foreign
+ * key back to `attachments` — the delete hooks in MailboxDO are what keep a
+ * row from outliving its attachment. The FTS index over the `text` column
+ * (attachment_text_fts, with its sync triggers) is created by the migration
+ * and has no Drizzle mirror, exactly like emails_fts.
+ */
+export const attachmentText = sqliteTable("attachment_text", {
+	attachment_id: text("attachment_id").primaryKey(),
+	email_id: text("email_id").notNull(),
+	filename: text("filename").notNull(),
+	mimetype: text("mimetype").notNull(),
+	text: text("text").notNull(),
+	created_at: text("created_at").notNull(),
+});
