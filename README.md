@@ -52,6 +52,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending. Auto-draft is skipped for spam and refused even if the trigger is invoked directly
 - **AI categorization on arrival** — TypeSafe's Jev model (`typesafe/jev`) classifies each incoming email as spam or not-spam with a calibrated probability, and can label it with custom categories. Detected spam is filed in the Spam folder and skipped by auto-draft. Categories can be defined per mailbox, app-wide in Global Settings for every mailbox, or both; each mailbox can opt out of global categories.
 - **Full-text search** — An FTS5 trigram index over every message's subject, body and parties (substring matching kept: "arter" finds "quarterly"), with the same index backing the All Accounts search
+- **Attachment text search** — Text extracted from attachments joins the same search index: text-ish files are decoded locally, PDFs and HTML go through Workers AI's markdown conversion, and a term matches inside a file as well as the message
 - **Rules** — Deterministic per-mailbox filters (folder, category, read, star, spam) that run before the AI classifier, with "Apply to existing mail" that replays the local actions over stored mail idempotently
 - **Templates** — Per-mailbox reusable snippets the composer can insert, save from a draft, or delete
 - **Scheduled sends and undo send** — Queue outbound mail for a future time, review or cancel it in the Scheduled view, and undo a just-sent message
@@ -60,6 +61,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Trash retention and mailbox purge** — Configurable Trash cleanup (30 days by default, 0 disables) plus a full mailbox purge that removes the Durable Object state, attachment blobs and chat history
 - **Remote-image proxy** — Opt-in per sender; images load through a same-origin, R2-cached proxy with a size/type cap, never from the sender's servers
 - **Morning brief** — A trailing-24-hour digest in the app (counts, needs-reply, recent arrivals, categories, fired reminders, tasks due), optionally POSTed to the mailbox webhook each morning
+- **Thread summaries** — A one-click AI summary of a conversation — participants, decisions, open questions, action items, current state — computed on demand and never stored or sent
 - **Tasks and deadlines** — Extracted from inbound mail, listed per mailbox and in the message panel, with one-click reminders via the existing follow-up machinery
 - **Bounce and delivery status** — Delivery reports (DSNs) are detected on arrival and a Sent copy shows failed / delayed / delivered with the provider's detail
 - **Storage usage** — A per-mailbox storage card in Settings: database size, attachment count and bytes, and the stored message count
