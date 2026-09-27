@@ -22,6 +22,10 @@ import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy"
 import type { Label } from "workers/lib/labels";
 import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
 import type { AgentAction, BulkEmailAction, Contact, Digest, Email, ExtractedItem, Folder, Mailbox, ScheduledSend } from "~/types";
+import type { ImportJobRow } from "workers/lib/mbox-import";
+
+/** One mailbox import job, as the import routes return it. */
+export type ImportJob = ImportJobRow;
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -57,7 +61,11 @@ async function request<T>(
 			...options,
 			signal,
 			headers: {
-				"Content-Type": "application/json",
+				// A FormData body must keep the boundary the browser sets:
+				// forcing a JSON content type would break the parse.
+				...(options.body instanceof FormData
+					? {}
+					: { "Content-Type": "application/json" }),
 				...(options.headers as Record<string, string>),
 			},
 		});
@@ -325,6 +333,33 @@ const api = {
 		post<{ send: ScheduledSend }>(
 			`/api/v1/mailboxes/${mailboxId}/scheduled-sends/${id}/retry`,
 		),
+
+
+	// Mailbox import — the settings card stages an mbox or EML file here
+	// and the server's alarm drains it in bounded batches. The upload
+	// carries the file itself (multipart/form-data, field `file`); the list
+	// and cancel calls only ever touch job rows.
+	/**
+	 * Stage one mbox or EML file for import. Answers 202 with the job row;
+	 * the messages appear in the Inbox as the alarm drains the file.
+	 */
+	importMailboxFile: (mailboxId: string, file: File) => {
+		const form = new FormData();
+		form.append("file", file, file.name);
+		return request<{ job: ImportJob }>(`/api/v1/mailboxes/${mailboxId}/import`, {
+			method: "POST",
+			body: form,
+		});
+	},
+	/** The mailbox's import jobs, newest first (bounded page). */
+	listImportJobs: (mailboxId: string, limit?: number) =>
+		get<{ jobs: ImportJob[] }>(
+			`/api/v1/mailboxes/${mailboxId}/import`,
+			limit != null ? { params: { limit: String(limit) } } : undefined,
+		),
+	/** Cancel a pending or running import job and drop its staged bytes. */
+	cancelImportJob: (mailboxId: string, jobId: string) =>
+	del<{ job: ImportJob }>(`/api/v1/mailboxes/${mailboxId}/import/${jobId}`),
 
 	// Agent/MCP action audit log. Metadata only — never message bodies.
 	/** Recent agent/MCP actions for the mailbox, newest first (bounded page). */

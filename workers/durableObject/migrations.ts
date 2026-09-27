@@ -697,4 +697,33 @@ export const mailboxMigrations: Migration[] = [
                 ON email_labels(label_id);
         `),
 	},
+	{
+		// Uploaded mbox/EML files staged for import (workers/lib/mbox-import.ts).
+		// The bytes live in R2 at `imports/{mailbox_id}/{id}.mbox`; this row is
+		// what the mailbox's alarm drains, in bounded batches, advancing `cursor`
+		// (a byte offset into the object) and the three per-message counters as
+		// it goes. `status` is pending | running | done | failed | cancelled: a
+		// job that still has bytes left re-arms the alarm immediately, and the
+		// staged object is deleted once the job is done (or cancelled through
+		// the route). The index backs the drain's oldest-active-job lookup.
+		name: "35_add_import_jobs",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS import_jobs (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                r2_key TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                cursor INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                imported INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
+        `),
+	},
 ];

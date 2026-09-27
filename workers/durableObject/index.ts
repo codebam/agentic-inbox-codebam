@@ -50,6 +50,27 @@ import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { findDuplicateEmailId, type CreateEmailResult } from "./dedupe";
 import { likePatternsFor } from "../lib/like-terms";
+import { attachmentR2Key } from "../lib/attachments";
+import {
+	DEFAULT_IMPORT_JOB_LIMIT,
+	IMPORT_JOB_NOT_FOUND,
+	IMPORT_MAX_MESSAGES_PER_TICK,
+	IMPORT_MAX_SLICE_BYTES,
+	IMPORT_SLICE_BYTES,
+	MAX_IMPORT_JOB_LIST,
+	MAX_IMPORT_MESSAGES,
+	importJobRow,
+	isImportJobActive,
+	isMboxFramed,
+	parseImportMessage,
+	splitMboxSlice,
+	type CreateImportJobInput,
+	type ImportJobBatch,
+	type ImportJobCancelResult,
+	type ImportJobDbRow,
+	type ImportJobRow,
+	type ImportedMessage,
+} from "../lib/mbox-import";
 import { splitFtsTerms } from "../lib/fts-terms";
 import {
 	contactDeltasForEmail,
@@ -2440,20 +2461,24 @@ export class MailboxDO extends DurableObject<Env> {
 
 	/**
 	 * Durable Object alarm: drain everything that is due — snoozes first,
-	 * then reminders and scheduled sends — and re-arm for whatever is still
-	 * pending. Idempotent: a duplicate or early run finds nothing due and
-	 * leaves the alarm unset when there is nothing left to wait for.
+	 * then reminders, scheduled sends and staged imports — and re-arm for
+	 * whatever is still pending. Idempotent: a duplicate or early run finds
+	 * nothing due and leaves the alarm unset when there is nothing left to
+	 * wait for.
 	 */
 	override async alarm(): Promise<void> {
 		const now = new Date().toISOString();
 		const woken = this.wakeDueSnoozes(now);
 		const reminded = this.fireDueReminders(now);
 		const fired = await this.fireDueSends(now);
+		// A staged import drains in bounded batches here, beside the other
+		// due work; a job with bytes left re-arms for immediately.
+		const imported = await this.#drainImportJobs();
 		// One line per wake: what this alarm did, and what it re-armed for.
 		// Without it the fire path is silent and a tail shows nothing at all.
 		console.log(
 			`MailboxDO alarm ${this.ctx.id.name ?? "?"} at ${now}: ` +
-				`${woken} snooze(s), ${reminded} reminder(s), ${fired} send(s) fired; ` +
+				`${woken} snooze(s), ${reminded} reminder(s), ${fired} send(s), ${imported} import message(s) fired; ` +
 				`next due ${this.#nextDueAtMs() ?? "none"}`,
 		);
 		await this.#armAlarm();
@@ -2480,8 +2505,10 @@ export class MailboxDO extends DurableObject<Env> {
 	/**
 	 * Epoch-ms of the earliest pending due time — the soonest of a snooze, a
 	 * reminder and a scheduled send — or null when nothing is scheduled. A
-	 * MIN() per column is enough: every stored value is an ISO 8601 UTC
-	 * string, which sorts chronologically.
+	 * pending or running import job is due right now: its drain runs in
+	 * bounded batches and re-arms immediately for the next one. A MIN() per
+	 * column is enough: every stored value is an ISO 8601 UTC string, which
+	 * sorts chronologically.
 	 */
 	#nextDueAtMs(): number | null {
 		const row = [
@@ -2489,19 +2516,24 @@ export class MailboxDO extends DurableObject<Env> {
 				`SELECT
 					(SELECT MIN(snooze_until) FROM emails WHERE snooze_until IS NOT NULL) AS next_snooze,
 					(SELECT MIN(remind_at) FROM emails WHERE remind_at IS NOT NULL AND reminded_at IS NULL) AS next_reminder,
-					(SELECT MIN(send_at) FROM scheduled_sends WHERE status = 'pending') AS next_send`,
+					(SELECT MIN(send_at) FROM scheduled_sends WHERE status = 'pending') AS next_send,
+					(SELECT COUNT(*) FROM import_jobs WHERE status IN ('pending', 'running')) AS active_imports`,
 			),
 		][0] as
 			| {
 					next_snooze: string | null;
 					next_reminder: string | null;
 					next_send: string | null;
+					active_imports: number;
 			  }
 			| undefined;
 
 		const due = [row?.next_snooze, row?.next_reminder, row?.next_send]
 			.map((iso) => (typeof iso === "string" ? Date.parse(iso) : Number.NaN))
 			.filter((ms) => !Number.isNaN(ms));
+		// A staged import is due immediately; the drain is bounded and
+		// re-arms for as long as the job has bytes left.
+		if ((row?.active_imports ?? 0) > 0) due.push(Date.now());
 
 		return due.length > 0 ? Math.min(...due) : null;
 	}
@@ -4992,6 +5024,388 @@ export class MailboxDO extends DurableObject<Env> {
 			total: totalRow.count,
 			has_more: offset + rows.length < totalRow.count,
 		};
+	}
+
+
+	// ── Mailbox import (staged mbox/EML files) ─────────────────────
+
+	/**
+	 * Record one staged import job: the file's bytes are already in R2
+	 * (`imports/{mailboxId}/{jobId}.mbox`), the row starts `pending` with a
+	 * zero cursor, and the alarm is armed so the drain begins on the next
+	 * wake. Nothing is parsed here.
+	 */
+	async createImportJob(input: CreateImportJobInput): Promise<ImportJobRow> {
+		const now = input.createdAt ?? new Date().toISOString();
+		this.ctx.storage.sql.exec(
+			`INSERT INTO import_jobs
+				(id, filename, r2_key, size, cursor, status, imported, skipped, failed, last_error, created_at, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, 0, 'pending', 0, 0, 0, NULL, ?5, ?5)`,
+			input.id,
+			input.filename,
+			input.r2Key,
+			input.size,
+			now,
+		);
+		await this.#armAlarm();
+
+		const stored = this.#importJobById(input.id);
+		if (!stored) {
+			throw new Error("createImportJob: the inserted row could not be read back.");
+		}
+		return stored;
+	}
+
+	/**
+	 * The mailbox's import jobs, newest first (ties broken by insertion
+	 * order). `limit` defaults to DEFAULT_IMPORT_JOB_LIMIT and is capped at
+	 * MAX_IMPORT_JOB_LIST.
+	 */
+	listImportJobs(options: { limit?: number } = {}): ImportJobRow[] {
+		const requested = Number(options.limit);
+		const limit = Number.isFinite(requested)
+			? Math.min(Math.max(Math.trunc(requested), 1), MAX_IMPORT_JOB_LIST)
+			: DEFAULT_IMPORT_JOB_LIMIT;
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT * FROM import_jobs ORDER BY created_at DESC, rowid DESC LIMIT ?1`,
+				limit,
+			),
+		] as unknown as ImportJobDbRow[];
+		return rows.map((row) => importJobRow(row));
+	}
+
+	/**
+	 * Advance one job by a drained batch: the cursor and the three counts
+	 * move in one statement, and the job reads `running` from then on.
+	 * Returns the updated row, or null when the id is gone.
+	 */
+	claimImportBatch(id: string, batch: ImportJobBatch): ImportJobRow | null {
+		this.ctx.storage.sql.exec(
+			`UPDATE import_jobs
+			 SET cursor = ?1,
+			     imported = imported + ?2,
+			     skipped = skipped + ?3,
+			     failed = failed + ?4,
+			     status = 'running',
+			     updated_at = ?5
+			 WHERE id = ?6`,
+			Math.max(Math.trunc(batch.cursor), 0),
+			Math.max(Math.trunc(batch.imported), 0),
+			Math.max(Math.trunc(batch.skipped), 0),
+			Math.max(Math.trunc(batch.failed), 0),
+			new Date().toISOString(),
+			id,
+		);
+		return this.#importJobById(id);
+	}
+
+	/**
+	 * Mark a fully drained job `done` and clear any stale error; returns the
+	 * updated row or null when the id is gone.
+	 */
+	finishImportJob(id: string): ImportJobRow | null {
+		this.ctx.storage.sql.exec(
+			`UPDATE import_jobs SET status = 'done', last_error = NULL, updated_at = ?1 WHERE id = ?2`,
+			new Date().toISOString(),
+			id,
+		);
+		return this.#importJobById(id);
+	}
+
+	/**
+	 * Record why a job could not be imported; the row stays for the
+	 * operator to see, with the reason in `last_error`.
+	 */
+	failImportJob(id: string, reason: string): ImportJobRow | null {
+		this.ctx.storage.sql.exec(
+			`UPDATE import_jobs SET status = 'failed', last_error = ?1, updated_at = ?2 WHERE id = ?3`,
+			reason,
+			new Date().toISOString(),
+			id,
+		);
+		return this.#importJobById(id);
+	}
+
+	/**
+	 * Cancel a pending or running job: the row becomes `cancelled` and the
+	 * drain never picks it up again. Nothing is deleted here — the route
+	 * removes the staged object, and the row keeps its r2_key so the
+	 * operator can see where the bytes lived. Returns `{ ok: true, job }`
+	 * with the updated row, or `{ ok: false, error }` when the id is unknown
+	 * or the job has already finished.
+	 */
+	cancelImportJob(id: string): ImportJobCancelResult {
+		const row = this.#importJobDbRow(id);
+		if (!row) return { ok: false as const, error: IMPORT_JOB_NOT_FOUND };
+		if (!isImportJobActive(row.status)) {
+			return {
+				ok: false as const,
+				error: `Only a pending or running import can be cancelled; this one is ${row.status}.`,
+			};
+		}
+
+		this.ctx.storage.sql.exec(
+			`UPDATE import_jobs SET status = 'cancelled', updated_at = ?1 WHERE id = ?2`,
+			new Date().toISOString(),
+			id,
+		);
+
+		const cancelled = this.#importJobById(id);
+		if (!cancelled) return { ok: false as const, error: IMPORT_JOB_NOT_FOUND };
+		return { ok: true as const, job: cancelled };
+	}
+
+	/** One raw import_jobs row by id, or null. */
+	#importJobDbRow(id: string): ImportJobDbRow | null {
+		const rows = [
+			...this.ctx.storage.sql.exec(`SELECT * FROM import_jobs WHERE id = ?1`, id),
+		] as unknown as ImportJobDbRow[];
+		return rows[0] ?? null;
+	}
+
+	/** One import job in the API shape, or null when the id is unknown. */
+	#importJobById(id: string): ImportJobRow | null {
+		const row = this.#importJobDbRow(id);
+		return row ? importJobRow(row) : null;
+	}
+
+	/** The oldest job the drain should work on: pending or running. */
+	#nextImportJob(): ImportJobDbRow | null {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT * FROM import_jobs WHERE status IN ('pending', 'running') ORDER BY created_at ASC, rowid ASC LIMIT 1`,
+			),
+		] as unknown as ImportJobDbRow[];
+		return rows[0] ?? null;
+	}
+
+	/** One range read of a staged object as bytes, or null when it is gone. */
+	async #readImportRange(r2Key: string, offset: number, length: number): Promise<Uint8Array | null> {
+		const object = await this.env.BUCKET.get(r2Key, { range: { offset, length } });
+		if (!object) return null;
+		return new Uint8Array(await object.arrayBuffer());
+	}
+
+	/** Best-effort removal of a staged object; a failure only logs. */
+	async #deleteImportObject(r2Key: string): Promise<void> {
+		try {
+			await this.env.BUCKET.delete(r2Key);
+		} catch (e) {
+			console.error(
+				`Import: the staged object ${r2Key} could not be deleted:`,
+				(e as Error).message,
+			);
+		}
+	}
+
+	/**
+	 * Parse one message block and store it in the Inbox: the same decode
+	 * pipeline inbound mail uses (workers/lib/mbox-import.ts), then the same
+	 * createEmail the receive path calls. A duplicate Message-ID is skipped
+	 * before anything is uploaded, so re-importing a stored file costs no
+	 * storage; a parse or storage failure is counted failed and the batch
+	 * moves on. No rule, no classifier and no notification runs here.
+	 */
+	async #storeImportedMessage(
+		block: Uint8Array,
+		options: { mbox: boolean; mailboxId: string },
+	): Promise<"imported" | "skipped" | "failed"> {
+		// A record with nothing but framing newlines is nothing to store.
+		if (block.length === 0 || !block.some((byte) => byte !== 0x0a && byte !== 0x0d)) {
+			return "skipped";
+		}
+
+		let parsed: ImportedMessage;
+		try {
+			parsed = await parseImportMessage(block, options);
+		} catch (e) {
+			console.error(`Import: a message failed to parse:`, (e as Error).message);
+			return "failed";
+		}
+		if (parsed.email.message_id && findDuplicateEmailId(this.db, parsed.email.message_id)) {
+			return "skipped";
+		}
+
+		const messageId = crypto.randomUUID();
+		const attachments: AttachmentData[] = [];
+		try {
+			for (const attachment of parsed.attachments) {
+				const attachmentId = crypto.randomUUID();
+				await this.env.BUCKET.put(
+					attachmentR2Key({
+						email_id: messageId,
+						id: attachmentId,
+						filename: attachment.filename,
+					}),
+					attachment.content,
+				);
+				attachments.push({
+					id: attachmentId,
+					email_id: messageId,
+					filename: attachment.filename,
+					mimetype: attachment.mimetype,
+					size: attachment.content.byteLength,
+					content_id: attachment.content_id,
+					disposition: attachment.disposition,
+				});
+			}
+			// createEmail still owns the final duplicate check, so a second
+			// message with the same Message-ID inside one batch is caught too.
+			const result = this.createEmail(
+				Folders.INBOX,
+				{ id: messageId, ...parsed.email, read: false },
+				attachments,
+			);
+			return result.duplicate ? "skipped" : "imported";
+		} catch (e) {
+			console.error(`Import: a message could not be stored:`, (e as Error).message);
+			return "failed";
+		}
+	}
+
+	/**
+	 * Drain one bounded batch of the oldest pending or running import job.
+	 *
+	 * The staged bytes stay in R2 and are read in bounded slices: at most
+	 * IMPORT_SLICE_BYTES per tick, grown only while a single message does
+	 * not fit, and at most IMPORT_MAX_MESSAGES_PER_TICK messages stored.
+	 * Each slice is split on mbox framing and every message goes through
+	 * the same decode pipeline inbound mail uses before it is stored in the
+	 * Inbox. Duplicates are counted skipped, never failed. The cursor and
+	 * counts are written in one statement after the batch, and a job with
+	 * bytes left re-arms the alarm immediately. A job whose object is gone,
+	 * or whose single message exceeds the read cap, is recorded failed with
+	 * the reason. Returns how many messages this batch stored (imported +
+	 * skipped + failed), for the alarm log.
+	 */
+	async #drainImportJobs(): Promise<number> {
+		const job = this.#nextImportJob();
+		if (!job) return 0;
+
+		const processed = job.imported + job.skipped + job.failed;
+		// The per-job message cap is checked before any work: a job already
+		// at it fails outright rather than importing an unbounded file.
+		if (processed >= MAX_IMPORT_MESSAGES) {
+			this.failImportJob(
+				job.id,
+				`This import reached the ${MAX_IMPORT_MESSAGES} message cap; the rest of the file was not imported.`,
+			);
+			return 0;
+		}
+		const budget = Math.min(
+			IMPORT_MAX_MESSAGES_PER_TICK,
+			MAX_IMPORT_MESSAGES - processed,
+		);
+		const mailboxId = this.ctx.id.name ?? "";
+
+		// A job that already consumed its object (an empty file, or a
+		// resumed one that ended exactly on a boundary) is done.
+		if (job.cursor >= job.size) {
+			this.finishImportJob(job.id);
+			await this.#deleteImportObject(job.r2_key);
+			return 0;
+		}
+
+		// The framing decision is made once, from the object's first bytes:
+		// "From " means mbox records, anything else is one .eml message.
+		const probeLength = Math.min(5, job.size);
+		const probe = await this.#readImportRange(job.r2_key, 0, probeLength);
+		if (!probe) {
+			this.failImportJob(
+				job.id,
+				"The staged upload is missing from storage; nothing was imported.",
+			);
+			return 0;
+		}
+
+		let cursor = job.cursor;
+		let imported = 0;
+		let skipped = 0;
+		let failed = 0;
+
+		if (!isMboxFramed(probe)) {
+			// A single .eml message: the whole object is one message.
+			const bytes = await this.#readImportRange(job.r2_key, 0, job.size);
+			if (!bytes) {
+				this.failImportJob(
+					job.id,
+					"The staged upload is missing from storage; nothing was imported.",
+				);
+				return 0;
+			}
+			const outcome = await this.#storeImportedMessage(bytes, {
+				mbox: false,
+				mailboxId,
+			});
+			cursor = job.size;
+			if (outcome === "imported") imported += 1;
+			else if (outcome === "skipped") skipped += 1;
+			else failed += 1;
+		} else {
+			let length = Math.min(IMPORT_SLICE_BYTES, job.size - cursor);
+			let slice = await this.#readImportRange(job.r2_key, cursor, length);
+			if (!slice) {
+				this.failImportJob(
+					job.id,
+					"The staged upload is missing from storage; nothing was imported.",
+				);
+				return 0;
+			}
+			let split = splitMboxSlice(slice, cursor, job.size, budget);
+			// Grow the read while a single message spans the whole slice, up
+			// to the cap: a message larger than that fails the job below.
+			while (
+				split.partial &&
+				length < job.size - cursor &&
+				length < IMPORT_MAX_SLICE_BYTES
+			) {
+				length = Math.min(length * 2, IMPORT_MAX_SLICE_BYTES, job.size - cursor);
+				const grown = await this.#readImportRange(job.r2_key, cursor, length);
+				if (!grown) {
+					this.failImportJob(
+						job.id,
+						"The staged upload is missing from storage; nothing was imported.",
+					);
+					return 0;
+				}
+				slice = grown;
+				split = splitMboxSlice(slice, cursor, job.size, budget);
+			}
+			if (split.partial) {
+				this.failImportJob(
+					job.id,
+					`A single message in this file is larger than the ${IMPORT_MAX_SLICE_BYTES / (1024 * 1024)} MiB read cap; it was not imported.`,
+				);
+				return 0;
+			}
+			for (const block of split.messages) {
+				const outcome = await this.#storeImportedMessage(block, {
+					mbox: true,
+					mailboxId,
+				});
+				if (outcome === "imported") imported += 1;
+				else if (outcome === "skipped") skipped += 1;
+				else failed += 1;
+			}
+			cursor = split.nextCursor;
+		}
+
+		const updated = this.claimImportBatch(job.id, { cursor, imported, skipped, failed });
+		if (updated && updated.cursor >= updated.size) {
+			// Fully drained: the staged object has no further use.
+			this.finishImportJob(job.id);
+			await this.#deleteImportObject(updated.r2_key);
+		} else if (
+			updated &&
+			updated.imported + updated.skipped + updated.failed >= MAX_IMPORT_MESSAGES
+		) {
+			this.failImportJob(
+				job.id,
+				`This import reached the ${MAX_IMPORT_MESSAGES} message cap; the rest of the file was not imported.`,
+			);
+		}
+		return imported + skipped + failed;
 	}
 
 
