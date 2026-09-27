@@ -44,6 +44,7 @@ import {
 	toolAddLabel,
 	toolRemoveLabel,
 	toolListItems,
+	TOOL_ATTACHMENT_CAP_NOTE,
 	ruleToolActionsSchema,
 	ruleToolDraftShape,
 	ruleToolMatchSchema,
@@ -596,20 +597,41 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── send_email ─────────────────────────────────────────────
 		this.server.tool(
 			"send_email",
-			"Send a new email (not a reply). Only call after getting confirmation.",
+			`Send a new email (not a reply), optionally with cc, bcc and inline attachments (${TOOL_ATTACHMENT_CAP_NOTE}). Only call after the human operator has explicitly confirmed the exact recipient, subject and body.`,
 			{
 				mailboxId: z.string().describe("The mailbox email address to send from"),
 				to: z.string().email().describe("Recipient email address"),
+				cc: z
+					.union([z.string().email(), z.array(z.string().email()).min(1)])
+					.optional()
+					.describe("CC recipients: one address or a list"),
+				bcc: z
+					.union([z.string().email(), z.array(z.string().email()).min(1)])
+					.optional()
+					.describe("BCC recipients: one address or a list"),
 				subject: z.string().describe("Subject line"),
 				bodyHtml: z.string().describe("The HTML body of the email"),
+				attachments: z
+					.array(
+						z.object({
+							filename: z.string().describe("File name shown to the recipient"),
+							mimetype: z.string().describe("MIME type, e.g. application/pdf"),
+							content_base64: z.string().describe("Base64-encoded file bytes"),
+						}),
+					)
+					.optional()
+					.describe(`Inline files to attach (${TOOL_ATTACHMENT_CAP_NOTE})`),
 			},
-			async ({ mailboxId, to, subject, bodyHtml }) => {
+			async ({ mailboxId, to, cc, bcc, subject, bodyHtml, attachments }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				const result = await toolSendEmail(env, mailboxId, {
 					to,
+					cc,
+					bcc,
 					subject,
 					bodyHtml,
+					attachments,
 				});
 				if ("error" in result) {
 					if (typeof result.error === "string" && result.error.startsWith("Failed to send")) {
