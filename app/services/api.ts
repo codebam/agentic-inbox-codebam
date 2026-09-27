@@ -21,6 +21,7 @@ import type { SemanticReindexProgress } from "workers/lib/semantic";
 import type { SenderPolicy, SenderPolicyEntry } from "workers/lib/sender-policy";
 import type { Label } from "workers/lib/labels";
 import type { Template, TemplateInput, TemplatePatch } from "workers/lib/templates";
+import type { ThreadSummary } from "workers/lib/thread-summary";
 import type { AgentAction, BulkEmailAction, Contact, Digest, Email, ExtractedItem, Folder, Mailbox, ScheduledSend } from "~/types";
 import type { ImportJobRow } from "workers/lib/mbox-import";
 
@@ -442,6 +443,12 @@ const api = {
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
+	/** On-demand AI summary of one thread; computed per request, never stored. */
+	getThreadSummary: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
+		get<{ summary: ThreadSummary }>(
+			`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/summary`,
+			{ signal: opts?.signal },
+		),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
 	// The composer prefills the signature client-side, so it never sends
