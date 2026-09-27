@@ -47,7 +47,9 @@ import { captureSendMessageId } from "./delivery-match";
 import { verifyDraft } from "./ai";
 import { applySignatureToBody } from "../../shared/signature";
 import { loadMailboxSignature, resolveMailboxModels } from "./mailbox-settings";
-import { sendEmail } from "../email-sender";
+import { sendEmail, type SendEmailParams } from "../email-sender";
+import { decodeBase64Bytes, storeAttachments } from "./attachments";
+import { formatFileSize } from "../../app/lib/attachments";
 import { Folders } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
@@ -1514,6 +1516,55 @@ export async function toolSendReply(
 
 // ── send_email ─────────────────────────────────────────────────────
 
+/**
+ * One inline file a send_email tool call carries: the base64 bytes and the
+ * name/type the recipient sees. Field names match the MCP tool schema.
+ */
+export interface ToolSendEmailAttachment {
+	filename: string;
+	mimetype: string;
+	content_base64: string;
+}
+
+/**
+ * Caps a send_email tool call enforces on inline attachments, checked before
+ * anything is written or sent: at most five files and 5 MiB of decoded bytes
+ * in total. Deliberately tighter than the composer's own caps
+ * (app/lib/attachments.ts) — a tool call carries its files through the
+ * caller's context, so this surface stays bounded well below an upload.
+ */
+export const MAX_TOOL_ATTACHMENT_FILES = 5;
+export const MAX_TOOL_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/** The cap sentence the MCP tool schema and description both carry. */
+export const TOOL_ATTACHMENT_CAP_NOTE = `up to ${MAX_TOOL_ATTACHMENT_FILES} files and ${formatFileSize(MAX_TOOL_ATTACHMENT_BYTES)} of decoded bytes in total`;
+
+/**
+ * The attachment cap error for one call, or null when it is within the caps.
+ * Decoded lengths are the measure — a caller cannot get past the cap by
+ * lying about a declared size — and every entry is decoded here, so
+ * malformed base64 is refused before anything is sent.
+ */
+function toolAttachmentCapError(
+	attachments: ToolSendEmailAttachment[],
+): string | null {
+	if (attachments.length > MAX_TOOL_ATTACHMENT_FILES) {
+		return `Up to ${MAX_TOOL_ATTACHMENT_FILES} files can be attached to one email — ${attachments.length} were provided.`;
+	}
+	let totalBytes = 0;
+	for (const attachment of attachments) {
+		try {
+			totalBytes += decodeBase64Bytes(attachment.content_base64).byteLength;
+		} catch {
+			return `Attachment "${attachment.filename}" is not valid base64.`;
+		}
+	}
+	if (totalBytes > MAX_TOOL_ATTACHMENT_BYTES) {
+		return `Attachments total ${formatFileSize(totalBytes)} — over the ${formatFileSize(MAX_TOOL_ATTACHMENT_BYTES)} limit.`;
+	}
+	return null;
+}
+
 export async function toolSendEmail(
 	env: Env,
 	mailboxId: string,
@@ -1521,6 +1572,9 @@ export async function toolSendEmail(
 		to: string;
 		subject: string;
 		bodyHtml: string;
+		cc?: string | string[] | undefined;
+		bcc?: string | string[] | undefined;
+		attachments?: ToolSendEmailAttachment[] | undefined;
 	},
 ): Promise<
 	| { status: "sent"; messageId: string; message: string }
@@ -1534,6 +1588,14 @@ export async function toolSendEmail(
 		return { error: rateLimitError };
 	}
 
+	// The attachment caps are checked before anything is written or sent, so
+	// an over-cap call refuses whole instead of half-storing a message.
+	const attachments = params.attachments ?? [];
+	const attachmentCapError = toolAttachmentCapError(attachments);
+	if (attachmentCapError) {
+		return { error: attachmentCapError };
+	}
+
 	const fromDomain = mailboxId.split("@")[1];
 	if (!fromDomain) throw new Error("Invalid mailbox email address");
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
@@ -1543,18 +1605,47 @@ export async function toolSendEmail(
 		return { error: "Draft verification failed — refusing to send unverified content. Please try again." };
 	}
 
+	// The binding's own attachment shape (SendEmailParams): the stored field
+	// names the HTTP send route maps to.
+	const bindingAttachments: NonNullable<SendEmailParams["attachments"]> = attachments.map(
+		(attachment) => ({
+			content: attachment.content_base64,
+			filename: attachment.filename,
+			type: attachment.mimetype,
+			disposition: "attachment",
+		}),
+	);
+
 	let sendResult: { messageId: string };
 	try {
-		sendResult = await sendEmail(env.EMAIL, {
+		sendResult = await resolveToolSendEmailSender(env).send({
 			to: params.to,
 			from: mailboxId,
 			subject: params.subject,
 			html: sanitizedBody,
+			...(params.cc ? { cc: params.cc } : {}),
+			...(params.bcc ? { bcc: params.bcc } : {}),
+			...(bindingAttachments.length > 0
+				? { attachments: bindingAttachments }
+				: {}),
 		});
 	} catch (e) {
 		console.error("Email send failed:", (e as Error).message);
 		return { error: `Failed to send email: ${(e as Error).message}` };
 	}
+
+	// The Sent copy carries exactly what was sent: the same bytes under the
+	// route's R2 key shape, then the attachment rows createEmail stores.
+	const storedAttachments = await storeAttachments(
+		env.BUCKET,
+		messageId,
+		attachments.map((attachment) => ({
+			content: attachment.content_base64,
+			filename: attachment.filename,
+			type: attachment.mimetype,
+			disposition: "attachment",
+		})),
+	);
 
 	await stub.createEmail(
 		Folders.SENT,
@@ -1563,6 +1654,8 @@ export async function toolSendEmail(
 			subject: params.subject,
 			sender: mailboxId.toLowerCase(),
 			recipient: params.to.toLowerCase(),
+			cc: params.cc ? (Array.isArray(params.cc) ? params.cc.join(", ") : params.cc).toLowerCase() : null,
+			bcc: params.bcc ? (Array.isArray(params.bcc) ? params.bcc.join(", ") : params.bcc).toLowerCase() : null,
 			date: new Date().toISOString(),
 			body: sanitizedBody,
 			in_reply_to: null,
@@ -1570,7 +1663,7 @@ export async function toolSendEmail(
 			thread_id: messageId,
 			message_id: outgoingMessageId,
 		},
-		[],
+		storedAttachments,
 	);
 
 	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
@@ -1578,6 +1671,35 @@ export async function toolSendEmail(
 	await captureSendMessageId(stub, messageId, sendResult);
 
 	return { status: "sent", messageId, message: `Email sent to ${params.to}` };
+}
+
+// ── send_email sender seam ─────────────────────────────────────────
+
+/** Anything that can deliver one send_email tool call. Tests inject a fake. */
+export interface ToolSendEmailSender {
+	send(params: SendEmailParams): Promise<{ messageId: string }>;
+}
+
+let toolSendEmailSenderFactoryOverride: (() => ToolSendEmailSender | null) | null = null;
+
+/**
+ * Test seam: replace the sender toolSendEmail uses. Passing null restores
+ * the real Cloudflare Email Service binding path.
+ */
+export function setToolSendEmailSenderFactory(
+	factory: (() => ToolSendEmailSender | null) | null,
+): void {
+	toolSendEmailSenderFactoryOverride = factory;
+}
+
+/** The real sender: the Cloudflare Email Service binding. */
+export function createToolSendEmailSender(env: Env): ToolSendEmailSender {
+	return { send: (params: SendEmailParams) => sendEmail(env.EMAIL, params) };
+}
+
+/** The sender toolSendEmail should use (honours the test override). */
+export function resolveToolSendEmailSender(env: Env): ToolSendEmailSender {
+	return toolSendEmailSenderFactoryOverride?.() ?? createToolSendEmailSender(env);
 }
 
 
