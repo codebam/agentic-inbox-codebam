@@ -492,6 +492,46 @@ describe("attachment text search (receive path round trip)", () => {
 	});
 
 
+	it("keeps a working attachment index after the mailbox purge path", async () => {
+		const mailbox = "attachment-search-purge@example.com";
+		const stub = stubFor(mailbox);
+		const seed = async (emailId: string, attachmentId: string, text: string) => {
+			await stub.createEmail(
+				Folders.INBOX,
+				{
+					id: emailId,
+					subject: "Seeded",
+					sender: "purge@example.org",
+					recipient: mailbox,
+					date: "2026-01-02T10:00:00.000Z",
+					body: "<p>no token in this body</p>",
+					thread_id: emailId,
+				},
+				[],
+			);
+			await stub.storeAttachmentText([
+				{ attachment_id: attachmentId, email_id: emailId, filename: "notes.txt", mimetype: "text/plain", text },
+			]);
+		};
+
+		await seed("purge-email-1", "purge-att-1", "prepurgeattachtoken");
+		expect(ids(await stub.searchEmails({ query: "prepurgeattachtoken" }))).toEqual(["purge-email-1"]);
+
+		// purgeAll empties storage and re-applies mailboxMigrations: the
+		// table, its FTS index and the sync triggers have to come back with
+		// the rest of the schema, or the live instance keeps serving searches
+		// against tables that no longer exist.
+		await stub.purgeAll();
+		expect(ids(await stub.searchEmails({ query: "prepurgeattachtoken" }))).toEqual([]);
+
+		await seed("purge-email-2", "purge-att-2", "postpurgeattachtoken");
+		expect(ids(await stub.searchEmails({ query: "postpurgeattachtoken" }))).toEqual(["purge-email-2"]);
+		// The delete hook still works on the re-created schema.
+		await stub.deleteEmail("purge-email-2");
+		expect(ids(await stub.searchEmails({ query: "postpurgeattachtoken" }))).toEqual([]);
+	});
+
+
 	it("bulkDeleteEmails drops attachment text with the deleted messages", async () => {
 		const mailbox = "attachment-search-bulk@example.com";
 		const stub = stubFor(mailbox);
