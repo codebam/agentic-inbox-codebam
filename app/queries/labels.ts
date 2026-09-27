@@ -80,3 +80,48 @@ export function useDetachLabel() {
 		}) => api.removeLabelFromEmail(mailboxId, emailId, labelId),
 	});
 }
+
+
+/**
+ * Rename and/or recolour one label. Both fields are optional — the route
+ * patches only what it is sent. The cached list is invalidated on success so
+ * the picker and the search filter show the new name without a reload.
+ */
+export function useUpdateLabel() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			labelId,
+			patch,
+		}: {
+			mailboxId: string;
+			labelId: string;
+			patch: { name?: string; color?: string };
+		}) => api.updateLabel(mailboxId, labelId, patch),
+		onSuccess: (_updated, { mailboxId }) => {
+			void qc.invalidateQueries({ queryKey: queryKeys.labels.list(mailboxId) });
+		},
+	});
+}
+
+/**
+ * Delete one label. The route drops the label from every message that
+ * carries it, so nothing on an email row keeps the name: no cached email
+ * payload embeds labels, and the labels list is the only cache to refresh.
+ */
+export function useDeleteLabel() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			labelId,
+		}: {
+			mailboxId: string;
+			labelId: string;
+		}) => api.deleteLabel(mailboxId, labelId),
+		onSuccess: (_result, { mailboxId }) => {
+			void qc.invalidateQueries({ queryKey: queryKeys.labels.list(mailboxId) });
+		},
+	});
+}
