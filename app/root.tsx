@@ -12,7 +12,7 @@ import {
 } from "@cloudflare/kumo";
 import { WarningIcon } from "@phosphor-icons/react";
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { forwardRef, useState } from "react";
+import { forwardRef, useEffect, useState } from "react";
 import {
 	isRouteErrorResponse,
 	Links,
@@ -114,6 +114,15 @@ const KumoLink = forwardRef<
 });
 
 export function Layout({ children }: { children: React.ReactNode }) {
+	// Register the service worker for every visitor. Chromium on Android will
+	// not offer a real install ("Install app" → WebAPK) without a service
+	// worker that has a fetch handler — public/sw.js passes every request
+	// straight through and caches nothing. The push card registers the same
+	// worker again on subscribe; registration is idempotent.
+	useEffect(() => {
+		if (!("serviceWorker" in navigator)) return;
+		void navigator.serviceWorker.register("/sw.js").catch(() => {});
+	}, []);
 	return (
 		<html lang="en" suppressHydrationWarning>
 			<head>
@@ -141,8 +150,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 				{/* PWA install: name, colours and icons for the standalone app.
 				    Chromium will not offer the install until the manifest carries a
 				    192px and a 512px icon; the apple-touch-icon is what iOS puts on
-				    the home screen. */}
-				<link rel="manifest" href="/manifest.webmanifest" />
+				    the home screen. `use-credentials` matters because this app sits
+				    behind Cloudflare Access: without it Chromium fetches the manifest
+				    without cookies and gets the Access sign-in page instead. */}
+				<link
+					rel="manifest"
+					href="/manifest.webmanifest"
+					crossOrigin="use-credentials"
+				/>
 				<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 				<meta name="apple-mobile-web-app-title" content="Inbox" />
 				<script dangerouslySetInnerHTML={{ __html: SYSTEM_THEME_SCRIPT }} />

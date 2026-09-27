@@ -20,6 +20,7 @@
 import { describe, expect, it } from "vitest";
 import manifestSource from "../public/manifest.webmanifest?raw";
 import rootSource from "../app/root.tsx?raw";
+import swSource from "../public/sw.js?raw";
 
 interface ManifestIcon {
 	src: string;
@@ -72,8 +73,19 @@ describe("PWA manifest", () => {
 		expect(rootSource).toContain('rel="apple-touch-icon"');
 	});
 
-	it("links the manifest from the document head", () => {
+	it("links the manifest from the document head, with credentials", () => {
 		expect(rootSource).toContain('rel="manifest"');
 		expect(rootSource).toContain("/manifest.webmanifest");
+		// Behind Cloudflare Access an uncredentialed manifest fetch returns the
+		// sign-in page, and Chromium then has no manifest to install from.
+		expect(rootSource).toContain('crossOrigin="use-credentials"');
+	});
+
+	it("ships a service worker with a real fetch handler, registered on load", () => {
+		// Chromium on Android will not mint a WebAPK without one, and an empty
+		// listener does not count.
+		expect(swSource).toContain('addEventListener("fetch"');
+		expect(swSource).toContain("respondWith");
+		expect(rootSource).toContain("serviceWorker.register");
 	});
 });

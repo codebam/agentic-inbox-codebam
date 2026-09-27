@@ -1,17 +1,30 @@
 /*
- * Agentic Inbox service worker — web push only.
+ * Agentic Inbox service worker — web push, plus the pass-through fetch
+ * handler Chromium requires before it will install the app on Android.
  *
- * It handles exactly two events: `push` (show the notification the Worker
- * sent) and `notificationclick` (focus the app or open the deep link). The
- * payload is JSON: { title, body, url } — the sender, the subject clamped to
- * 120 characters and the mailbox URL, never a message body.
+ * It handles three events: `push` (show the notification the Worker sent),
+ * `notificationclick` (focus the app or open the deep link) and `fetch`. The
+ * push payload is JSON: { title, body, url } — the sender, the subject clamped
+ * to 120 characters and the mailbox URL, never a message body.
  *
- * There is deliberately NO `fetch` handler and no caches: mail must never be
- * served from a stale cache, so every request goes straight to the network
- * and this worker never intercepts one.
+ * The `fetch` handler exists because Chromium on Android will not mint a
+ * WebAPK ("Install app") for an app whose service worker has no fetch handler,
+ * and an empty listener does not count. It is a straight pass-through: nothing
+ * is cached and nothing is rewritten, so mail is never served from a stale
+ * cache and every request reaches the network exactly as it would without this
+ * worker.
  */
 
-/* global self, URL */
+/* global fetch, self, URL */
+
+self.addEventListener("fetch", (event) => {
+	const request = event.request;
+	// Same-origin GETs only; POSTs and cross-origin requests are left to the
+	// browser, untouched.
+	if (request.method !== "GET") return;
+	if (new URL(request.url).origin !== self.location.origin) return;
+	event.respondWith(fetch(request));
+});
 
 const DEFAULT_TITLE = "New mail";
 
