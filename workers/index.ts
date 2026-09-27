@@ -11,6 +11,12 @@ import { storeAttachments, attachmentR2Key, decodeBase64Bytes, sanitizeAttachmen
 import { encodeBinaryParts } from "./lib/mime-binary";
 import { repairBase64Attachment } from "./lib/attachment-content";
 import {
+	extractAttachmentText,
+	extractAttachmentTextViaAi,
+	needsMarkdownConversion,
+	type AttachmentTextInput,
+} from "./lib/attachment-text";
+import {
 	validateSender,
 	SenderValidationError,
 	generateMessageId,
@@ -3191,6 +3197,15 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 
 	const messageId = crypto.randomUUID();
 	const attachmentData: StoredAttachment[] = [];
+	// Bytes of every attachment, kept only until the message is stored: the
+	// text extracted from them goes into the mailbox's search index (below).
+	const attachmentTextSources: {
+		attachment_id: string;
+		email_id: string;
+		filename: string;
+		mimetype: string;
+		bytes: Uint8Array;
+	}[] = [];
 	if (parsedEmail.attachments) {
 		for (const att of parsedEmail.attachments) {
 			const attId = crypto.randomUUID();
@@ -3205,6 +3220,54 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
 				size: content.byteLength,
 				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
+			attachmentTextSources.push({
+				attachment_id: attId,
+				email_id: messageId,
+				filename,
+				mimetype: att.mimeType || "application/octet-stream",
+				bytes: content,
+			});
+		}
+	}
+
+	// Attachment text for mailbox search (workers/lib/attachment-text.ts):
+	// local extraction for every attachment, plus the Workers AI conversion
+	// for the rich types (application/pdf, text/html), which is free for most
+	// formats. The conversion is deliberately best-effort — it logs and
+	// answers null on any failure — and extraction happens before createEmail
+	// while the rows are stored only AFTER it (below), so a duplicate
+	// delivery never leaves searchable text behind. Sent copies are skipped
+	// by design: the send path is latency- and guardrail-sensitive, and v1
+	// indexes received and imported mail.
+	const attachmentTextRows: AttachmentTextInput[] = [];
+	for (const source of attachmentTextSources) {
+		try {
+			let text = extractAttachmentText(source.mimetype, source.filename, source.bytes);
+			if (needsMarkdownConversion(source.mimetype)) {
+				const converted = await extractAttachmentTextViaAi(
+					env,
+					source.filename,
+					source.bytes,
+					source.mimetype,
+				);
+				if (converted) text = converted;
+			}
+			if (text) {
+				attachmentTextRows.push({
+					attachment_id: source.attachment_id,
+					email_id: source.email_id,
+					filename: source.filename,
+					mimetype: source.mimetype,
+					text,
+				});
+			}
+		} catch (e) {
+			// Extraction must never fail the delivery: the message is stored
+			// either way, only this file misses the search index.
+			console.error(
+				`Attachment text extraction failed for ${source.filename}; it will not be searchable:`,
+				(e as Error).message,
+			);
 		}
 	}
 
@@ -3344,6 +3407,21 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			`Skipping duplicate inbound email for ${mailboxId}: message_id ${originalMessageId} already stored as ${createResult.id}`,
 		);
 		return;
+	}
+
+	// Attachment text for mailbox search is stored only now, after the
+	// duplicate check: a redelivered message never leaves text behind. The
+	// message itself is stored either way — this step is in addition to
+	// storage and can never fail ingest.
+	if (attachmentTextRows.length > 0) {
+		try {
+			await stub.storeAttachmentText(attachmentTextRows);
+		} catch (e) {
+			console.error(
+				`Attachment text could not be stored for ${mailboxId}; the message itself is stored:`,
+				(e as Error).message,
+			);
+		}
 	}
 
 	// Semantic search ingest: embed and index this message when the mailbox

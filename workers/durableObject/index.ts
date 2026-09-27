@@ -73,6 +73,12 @@ import {
 } from "../lib/mbox-import";
 import { splitFtsTerms } from "../lib/fts-terms";
 import {
+	MAX_ATTACHMENT_TEXT_CHARS,
+	MAX_ATTACHMENT_TEXT_ROWS,
+	extractAttachmentText,
+	type AttachmentTextInput,
+} from "../lib/attachment-text";
+import {
 	contactDeltasForEmail,
 	normalizeContactAddress,
 	normalizeContactName,
@@ -1127,6 +1133,14 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.emailLabels.email_id, id))
 			.run();
 
+		// The extracted attachment text (migration 36) goes with the message
+		// for the same reason: no text may outlive its attachment. The FTS
+		// triggers drop the index postings with the rows.
+		this.db
+			.delete(schema.attachmentText)
+			.where(eq(schema.attachmentText.email_id, id))
+			.run();
+
 		this.db
 			.delete(schema.emails)
 			.where(eq(schema.emails.id, id))
@@ -1529,6 +1543,13 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(inArray(schema.emailLabels.email_id, ids))
 			.run();
 
+		// The extracted attachment text goes with the messages (see
+		// deleteEmail); the FTS triggers drop the postings with the rows.
+		this.db
+			.delete(schema.attachmentText)
+			.where(inArray(schema.attachmentText.email_id, ids))
+			.run();
+
 		this.db
 			.delete(schema.emails)
 			.where(inArray(schema.emails.id, ids))
@@ -1643,6 +1664,14 @@ export class MailboxDO extends DurableObject<Env> {
 			.run();
 
 
+		// The extracted attachment text goes with the messages (see
+		// deleteEmail); the FTS triggers drop the postings with the rows.
+		this.db
+			.delete(schema.attachmentText)
+			.where(inArray(schema.attachmentText.email_id, ids))
+			.run();
+
+
 		this.db
 			.delete(schema.emails)
 			.where(inArray(schema.emails.id, ids))
@@ -1730,6 +1759,14 @@ export class MailboxDO extends DurableObject<Env> {
 		this.db
 			.delete(schema.emailLabels)
 			.where(inArray(schema.emailLabels.email_id, ids))
+			.run();
+
+
+		// The extracted attachment text goes with the messages (see
+		// deleteEmail); the FTS triggers drop the postings with the rows.
+		this.db
+			.delete(schema.attachmentText)
+			.where(inArray(schema.attachmentText.email_id, ids))
 			.run();
 
 
@@ -2881,10 +2918,22 @@ export class MailboxDO extends DurableObject<Env> {
 		// external-content, so its `rowid` is the `emails` rowid, and the
 		// subquery is prefixed like any other column so the builder works with
 		// and without a table alias (countSearchResults passes none).
+		// A term also matches the text extracted from the message's
+		// attachments (attachment_text_fts, migration 36): the second
+		// subquery joins that index back to the message by email_id,
+		// prefixed like the label filter below so the builder works with and
+		// without a table alias, and it shares the one bound phrase with the
+		// message index. Only the FTS path sees attachment text — the
+		// one- and two-character LIKE path stays message-columns-only.
 		const { ftsPhrases, shortTerms } = splitFtsTerms(query);
 		for (const phrase of ftsPhrases) {
 			const p = addParam(phrase);
-			conditions.push(`${prefix}rowid IN (SELECT rowid FROM emails_fts WHERE emails_fts MATCH ${p})`);
+			conditions.push(
+				`(${prefix}rowid IN (SELECT rowid FROM emails_fts WHERE emails_fts MATCH ${p})` +
+					` OR ${prefix}id IN (SELECT at.email_id FROM attachment_text at` +
+					` JOIN attachment_text_fts ON attachment_text_fts.rowid = at.rowid` +
+					` WHERE attachment_text_fts MATCH ${p}))`,
+			);
 		}
 		// One- and two-character terms have no trigram to match, so they keep
 		// the LIKE path over the same columns.
@@ -3235,6 +3284,58 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 
 		return { id: email.id, duplicate: false };
+	}
+
+	// ── Attachment text (search index) ─────────────────────────────
+
+	/**
+	 * Store the searchable text extracted from a message's attachments
+	 * (workers/lib/attachment-text.ts, migration 36). Rows are upserted by
+	 * attachment_id, so a second write for the same attachment replaces its
+	 * text, and both the batch size and the text length are clamped again
+	 * here — a direct RPC caller cannot write an unbounded batch. The
+	 * attachment_text_fts triggers keep the search index in step with every
+	 * insert and update, so this method never touches FTS directly.
+	 *
+	 * Callers store text only for attachments they have just stored, and
+	 * only once the message itself is stored: every email-delete path
+	 * deletes the message's attachment_text rows alongside it, so a row can
+	 * never outlive its attachment.
+	 */
+	storeAttachmentText(rows: AttachmentTextInput[]): number {
+		const now = new Date().toISOString();
+		let written = 0;
+		for (const row of (rows ?? []).slice(0, MAX_ATTACHMENT_TEXT_ROWS)) {
+			if (!row?.attachment_id || !row.email_id) continue;
+			const text = (row.text ?? "").replaceAll("\u0000", "").slice(0, MAX_ATTACHMENT_TEXT_CHARS);
+			if (text.length === 0) continue;
+			// One upsert per row, like recordContacts: a multi-row INSERT would
+			// spend one bound parameter per column per row, and Durable Object
+			// SQLite caps a statement at 100 parameters.
+			this.db
+				.insert(schema.attachmentText)
+				.values({
+					attachment_id: row.attachment_id,
+					email_id: row.email_id,
+					filename: row.filename || "untitled",
+					mimetype: row.mimetype || "application/octet-stream",
+					text,
+					created_at: now,
+				})
+				.onConflictDoUpdate({
+					target: schema.attachmentText.attachment_id,
+					set: {
+						email_id: sql`excluded.email_id`,
+						filename: sql`excluded.filename`,
+						mimetype: sql`excluded.mimetype`,
+						text: sql`excluded.text`,
+						created_at: sql`excluded.created_at`,
+					},
+				})
+				.run();
+			written += 1;
+		}
+		return written;
 	}
 
 	// ── Contacts (mail-flow address book) ──────────────────────────
@@ -5229,6 +5330,16 @@ export class MailboxDO extends DurableObject<Env> {
 
 		const messageId = crypto.randomUUID();
 		const attachments: AttachmentData[] = [];
+		// Searchable text for this message's attachments, extracted locally
+		// once the message is stored (workers/lib/attachment-text.ts). The
+		// import path is storage-only: it never calls the AI conversion.
+		const attachmentTextSources: {
+			attachment_id: string;
+			email_id: string;
+			filename: string;
+			mimetype: string;
+			bytes: Uint8Array;
+		}[] = [];
 		try {
 			for (const attachment of parsed.attachments) {
 				const attachmentId = crypto.randomUUID();
@@ -5249,6 +5360,13 @@ export class MailboxDO extends DurableObject<Env> {
 					content_id: attachment.content_id,
 					disposition: attachment.disposition,
 				});
+				attachmentTextSources.push({
+					attachment_id: attachmentId,
+					email_id: messageId,
+					filename: attachment.filename,
+					mimetype: attachment.mimetype,
+					bytes: attachment.content,
+				});
 			}
 			// createEmail still owns the final duplicate check, so a second
 			// message with the same Message-ID inside one batch is caught too.
@@ -5257,7 +5375,32 @@ export class MailboxDO extends DurableObject<Env> {
 				{ id: messageId, ...parsed.email, read: false },
 				attachments,
 			);
-			return result.duplicate ? "skipped" : "imported";
+			if (result.duplicate) return "skipped";
+
+			// Attachment text for mailbox search is extracted locally (never
+			// through AI — this path is storage-only) and stored only once the
+			// message itself is stored, so a skipped duplicate never leaves
+			// text behind. Best-effort: a text failure must not flip an
+			// imported message to failed.
+			try {
+				const textRows: AttachmentTextInput[] = [];
+				for (const source of attachmentTextSources) {
+					const text = extractAttachmentText(source.mimetype, source.filename, source.bytes);
+					if (text) {
+						textRows.push({
+							attachment_id: source.attachment_id,
+							email_id: source.email_id,
+							filename: source.filename,
+							mimetype: source.mimetype,
+							text,
+						});
+					}
+				}
+				if (textRows.length > 0) this.storeAttachmentText(textRows);
+			} catch (e) {
+				console.error(`Import: attachment text could not be stored:`, (e as Error).message);
+			}
+			return "imported";
 		} catch (e) {
 			console.error(`Import: a message could not be stored:`, (e as Error).message);
 			return "failed";

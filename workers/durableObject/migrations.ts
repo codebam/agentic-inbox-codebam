@@ -726,4 +726,59 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
         `),
 	},
+	{
+		// Searchable text extracted from an attachment's contents
+		// (workers/lib/attachment-text.ts): one row per attachment whose bytes
+		// decoded (or converted) to text, so mailbox search can match a message
+		// by what its files contain. `text` is bounded to
+		// MAX_ATTACHMENT_TEXT_CHARS on every write, rows are upserted by
+		// attachment_id, and every email-delete path in the Durable Object
+		// deletes the message's rows alongside it — there is deliberately no
+		// foreign key back to `attachments`, the delete hooks are what keep a
+		// row from outliving its attachment regardless of foreign-key
+		// enforcement.
+		//
+		// attachment_text_fts is external-content over the single `text`
+		// column — the same shape as emails_fts (migration 23): the virtual
+		// table stores only the inverted index and reads the column back from
+		// `attachment_text` by rowid, so no second copy of every file's text is
+		// written. The trigram tokenizer keeps the substring and
+		// case-insensitive semantics the message index has. The three triggers
+		// mirror every write to `attachment_text` into the index, so the store
+		// method and the delete hooks never touch FTS directly; 'rebuild'
+		// derives the index from the table, which matters when this migration
+		// is re-applied after a mailbox purge.
+		name: "36_add_attachment_text",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS attachment_text (
+                attachment_id TEXT PRIMARY KEY,
+                email_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mimetype TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_text_email_id ON attachment_text(email_id);
+
+            CREATE VIRTUAL TABLE attachment_text_fts USING fts5(
+                text, content='attachment_text', content_rowid='rowid', tokenize='trigram'
+            );
+
+            INSERT INTO attachment_text_fts(attachment_text_fts) VALUES('rebuild');
+
+            CREATE TRIGGER attachment_text_fts_ai AFTER INSERT ON attachment_text BEGIN
+                INSERT INTO attachment_text_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+
+            CREATE TRIGGER attachment_text_fts_ad AFTER DELETE ON attachment_text BEGIN
+                INSERT INTO attachment_text_fts(attachment_text_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+            END;
+
+            CREATE TRIGGER attachment_text_fts_au AFTER UPDATE OF text ON attachment_text BEGIN
+                INSERT INTO attachment_text_fts(attachment_text_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+                INSERT INTO attachment_text_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+        `),
+	},
 ];
