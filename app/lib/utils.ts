@@ -10,6 +10,7 @@
  */
 import DOMPurify from "dompurify";
 import { formatQuotedDate } from "shared/dates";
+import { htmlToPlainText as htmlToPlainTextWithoutDom } from "shared/email-view";
 import type { Attachment } from "~/types";
 
 export {
@@ -52,10 +53,27 @@ export function toEmailListValue(addresses: string[]): string | string[] | undef
 }
 
 /**
+ * Whether DOMPurify can sanitise in this environment. Server renders have no
+ * document, and DOMPurify's default export is then its "unsupported" stub —
+ * it has no `sanitize` method at all, so calling it throws
+ * "…sanitize is not a function".
+ */
+function canSanitizeWithDom(): boolean {
+	return typeof document !== "undefined" && DOMPurify.isSupported;
+}
+
+/**
  * Convert HTML content to plain text.
- * Uses DOM APIs so must only be called client-side.
+ *
+ * Prefers the DOM (accurate textContent extraction, sanitised before the
+ * innerHTML assignment). A server render has no document, so it falls back to
+ * the DOM-free extractor the worker itself uses — the composer hook calls
+ * this on every render, and without the fallback every hard page load
+ * answered with the error boundary.
  */
 export function htmlToPlainText(html: string): string {
+	if (!canSanitizeWithDom()) return htmlToPlainTextWithoutDom(html);
+
 	// Sanitize with DOMPurify before DOM parsing to prevent XSS during innerHTML assignment.
 	// DOMPurify strips all dangerous content (scripts, event handlers, etc.)
 	// while preserving structural HTML for text extraction.
@@ -140,8 +158,13 @@ export function getSignatureBlock(settings?: {
 		// Sanitize HTML signatures with DOMPurify to allow safe formatting
 		// (bold, italic, links, etc.) while stripping scripts and event handlers.
 		// Text signatures are HTML-escaped since they have no formatting.
+		// A server render cannot sanitise (no DOM, see canSanitizeWithDom), so
+		// it escapes the HTML instead: unformatted but safe, and the composer
+		// that consumes this block is client-side anyway.
 		const content = sig.html
-			? DOMPurify.sanitize(sig.html)
+			? canSanitizeWithDom()
+				? DOMPurify.sanitize(sig.html)
+				: escapeHtml(sig.html)
 			: escapeHtml(sig.text || "");
 		return `<div style="border-top: 1px solid #ccc; margin-top: 16px; padding-top: 12px;">${content}</div>`;
 	}
