@@ -95,6 +95,8 @@ import type {
 	CalendarResponse,
 } from "../lib/calendar";
 import { verifyDraft } from "../lib/ai";
+import { resolveMailboxModels } from "../lib/mailbox-settings";
+import { DEFAULT_MODELS } from "../../shared/models";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import {
 	DEFAULT_SCHEDULED_SEND_LIMIT,
@@ -2166,21 +2168,43 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 
 		// Guard 4: verifyDraft, exactly like the agent/MCP send paths — the
-		// body that goes out is the verified one.
+		// body that goes out is the verified one. The mailbox's resolved
+		// draft-verifier model is used here too, so a Settings override is
+		// honoured on the queued path the same as on every other send path.
+		let verifyModel: string = DEFAULT_MODELS.draftVerify;
+		try {
+			verifyModel = (await resolveMailboxModels(this.env, mailboxId)).draftVerify;
+		} catch {
+			/* settings unreadable: keep the built-in default */
+		}
 		let html = payload.html;
 		let text = payload.text;
+		const hadContent = (html ?? text ?? "").trim().length > 0;
+		// Only the part that is actually sent is verified, and only that part
+		// has to survive: the composer sends html plus a derived plain-text
+		// alternative, and an empty alternative (an image-only or blank body
+		// has no plain text) is not a verification failure. An empty part that
+		// is not the body must never refuse the send.
+		let verifiedBody: string | undefined;
 		if (html !== undefined) {
-			html = await verifyDraft(this.env.AI, html);
+			html = await verifyDraft(this.env.AI, html, verifyModel);
+			verifiedBody = html;
 		} else if (text !== undefined) {
-			text = await verifyDraft(this.env.AI, text);
+			text = await verifyDraft(this.env.AI, text, verifyModel);
+			verifiedBody = text;
 		}
-		if (html === undefined && text === undefined) {
+		if (verifiedBody === undefined) {
 			markFailed("The stored send has no body; nothing was sent.");
 			return;
 		}
-		if (html === "" || text === "") {
+		if (verifiedBody === "") {
+			// An empty result for a body that had content means the verifier
+			// could not run — verifyDraft returns "" when the AI call throws —
+			// so say that instead of the generic refusal.
 			markFailed(
-				"Draft verification failed — refusing to send unverified content. Please try again.",
+				hadContent
+					? "Draft verification failed — the verifier could not run (the AI call failed), so nothing was sent. Retry, or set a different draft-verifier model in Settings."
+					: "Draft verification failed — refusing to send unverified content. Please try again.",
 			);
 			return;
 		}

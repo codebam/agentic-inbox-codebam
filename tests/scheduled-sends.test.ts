@@ -803,3 +803,64 @@ describe("scheduled-send sweep", () => {
 		expect((await readSendRow(stub, send.id))?.status).toBe("sent");
 	});
 });
+
+
+describe("scheduled-send verification", () => {
+	it("sends when the payload's plain-text alternative is empty", async () => {
+		// The composer sends html plus a derived text part; an image-only or
+		// blank body legitimately has no plain text, and that empty
+		// alternative must not refuse the send.
+		const mailbox = "schedule-text-part@example.com";
+		const stub = stubFor(mailbox);
+		const payload = sendPayloadJson({ from: mailbox, text: "" });
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(60 * 60 * 1000),
+			payload,
+		})) as ScheduledSendRow;
+		await forceDue(stub, send.id, isoIn(-60 * 1000));
+
+		const { sender, sent } = fakeSender();
+		setScheduledSendSenderFactory(() => sender);
+		try {
+			expect(await stub.fireDueSends(new Date().toISOString())).toBe(1);
+		} finally {
+			setScheduledSendSenderFactory(null);
+		}
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.html).toBe("<p>hi</p>");
+		expect((await readSendRow(stub, send.id))?.status).toBe("sent");
+	});
+
+
+	it("names an AI failure as a verifier failure, not a refusal", async () => {
+		// A body long enough to reach the verifier (>= 20 chars of reply
+		// text). The pool's AI binding cannot run remotely, so verifyDraft
+		// throws and returns "" — exactly the live failure — and the row must
+		// say the verifier could not run rather than the generic refusal.
+		const mailbox = "schedule-verifier-down@example.com";
+		const stub = stubFor(mailbox);
+		const payload = sendPayloadJson({
+			from: mailbox,
+			html: "<p>This body is comfortably longer than twenty characters.</p>",
+		});
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(60 * 60 * 1000),
+			payload,
+		})) as ScheduledSendRow;
+		await forceDue(stub, send.id, isoIn(-60 * 1000));
+
+		const { sender, sent } = fakeSender();
+		setScheduledSendSenderFactory(() => sender);
+		try {
+			expect(await stub.fireDueSends(new Date().toISOString())).toBe(1);
+		} finally {
+			setScheduledSendSenderFactory(null);
+		}
+
+		expect(sent).toHaveLength(0);
+		const row = await readSendRow(stub, send.id);
+		expect(row?.status).toBe("failed");
+		expect(row?.last_error).toContain("verifier could not run");
+	});
+});
