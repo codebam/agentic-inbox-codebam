@@ -138,7 +138,10 @@ export default function LabelPicker({
 	/** Enter or Save: an unchanged or whitespace-only name just cancels. */
 	const handleRename = async (label: Label) => {
 		const trimmed = editingName.trim();
-		if (!mailboxId || !trimmed || trimmed === label.name || updateLabel.isPending) {
+		// A second Enter or Save while the first update is in flight is
+		// ignored — the row leaves edit mode when the answer lands.
+		if (updateLabel.isPending) return;
+		if (!mailboxId || !trimmed || trimmed === label.name) {
 			cancelEdit();
 			return;
 		}

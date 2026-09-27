@@ -428,25 +428,27 @@ export default function EmailPanel({
 				categoryLabel={category}
 				categoryConfidence={email.category_confidence}
 				isSpam={email.category === SPAM_CATEGORY_ID}
-			/>
-
-			{/* The message's labels sit with the subject line, under the
-			    category badge, beside the picker that adds and removes them.
-			    An empty set is a normal state — only the trigger shows. */}
-			<div className="flex flex-wrap items-center gap-2 px-4 pt-2 md:px-6">
-				<LabelChips
-					labels={emailLabels}
-					onRemove={(label) => { void handleToggleLabel(label, true); }}
-					removingId={pendingLabelId}
-				/>
-				<LabelPicker
-					mailboxId={mailboxId}
-					disabled={!mailboxId}
-					attached={emailLabels}
-					onToggle={(label, attached) => { void handleToggleLabel(label, attached); }}
-					pendingLabelId={pendingLabelId}
-				/>
-			</div>
+			>
+				{/* The message's labels now sit inside the header block, under the
+				    category badge and beside the picker that adds and removes them.
+				    The header carries the horizontal padding, so the row itself only
+				    adds a top gap. An empty set is a normal state — only the
+				    trigger shows. */}
+				<div className="mt-2 flex flex-wrap items-center gap-2">
+					<LabelChips
+						labels={emailLabels}
+						onRemove={(label) => { void handleToggleLabel(label, true); }}
+						removingId={pendingLabelId}
+					/>
+					<LabelPicker
+						mailboxId={mailboxId}
+						disabled={!mailboxId}
+						attached={emailLabels}
+						onToggle={(label, attached) => { void handleToggleLabel(label, attached); }}
+						pendingLabelId={pendingLabelId}
+					/>
+				</div>
+			</EmailPanelHeader>
 
 			<div className="flex justify-end px-4 pt-3 md:px-6"><EmailViewToggle value={viewMode} onChange={setSessionEmailViewMode} /></div>
 

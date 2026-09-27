@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Badge } from "@cloudflare/kumo";
+import type { ReactNode } from "react";
 
 interface EmailPanelHeaderProps {
 	subject: string;
@@ -12,6 +13,8 @@ interface EmailPanelHeaderProps {
 	categoryLabel?: string | null;
 	categoryConfidence?: number | null | undefined;
 	isSpam?: boolean;
+	/** Extra rows that belong inside the header block, e.g. the label chips. */
+	children?: ReactNode;
 }
 
 export default function EmailPanelHeader({
@@ -21,6 +24,7 @@ export default function EmailPanelHeader({
 	categoryLabel,
 	categoryConfidence,
 	isSpam,
+	children,
 }: EmailPanelHeaderProps) {
 	return (
 		<div className="px-4 py-3 border-b border-kumo-line shrink-0 md:px-6">
@@ -44,6 +48,7 @@ export default function EmailPanelHeader({
 					Categorized with {Math.round(categoryConfidence * 100)}% confidence
 				</span>
 			)}
+			{children}
 		</div>
 	);
 }
