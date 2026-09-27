@@ -24,6 +24,7 @@ import {
 	TrashIcon,
 	XIcon,
 } from "@phosphor-icons/react";
+import EmailPanelOverflowMenu from "~/components/email-panel/EmailPanelOverflowMenu";
 import SnoozeMenu from "~/components/email-panel/SnoozeMenu";
 import { formatSnoozeTime } from "~/lib/snooze";
 import type { Folder, Email } from "~/types";
@@ -63,6 +64,7 @@ interface EmailPanelToolbarProps {
 
 export default function EmailPanelToolbar({
 	email,
+	mailboxId,
 	isDraftFolder,
 	isTrash,
 	isSending,
@@ -299,6 +301,7 @@ export default function EmailPanelToolbar({
 						className="hidden md:inline-flex"
 					/>
 				</Tooltip>
+				{mailboxId && <EmailPanelOverflowMenu mailboxId={mailboxId} emailId={email.id} />}
 			</div>
 		</div>
 	);
