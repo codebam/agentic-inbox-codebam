@@ -21,6 +21,8 @@ import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
 import UnsubscribeBanner from "~/components/email-panel/UnsubscribeBanner";
 import EmailViewToggle from "~/components/EmailViewToggle";
+import LabelChips from "~/components/LabelChips";
+import LabelPicker from "~/components/LabelPicker";
 import SenderPolicyActions from "~/components/SenderPolicyActions";
 import {
 	blobToBase64,
@@ -30,9 +32,10 @@ import {
 import { getNonInlineAttachments, splitEmailList, toEmailListValue } from "~/lib/utils";
 import { useSessionEmailViewMode, setSessionEmailViewMode } from "~/lib/email-view-mode";
 import { formatSnoozeTime, SNOOZE_FOLDER_ID } from "~/lib/snooze";
-import api from "~/services/api";
+import api, { type Label } from "~/services/api";
 import { useClearReminder, useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useRestoreEmail, useSendEmail, useSetReminder, useSnoozeEmail, useThreadReplies, useUnsnoozeEmail, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
+import { useAttachLabel, useDetachLabel } from "~/queries/labels";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
 import { useGlobalEmailView } from "~/queries/email-view";
@@ -83,10 +86,18 @@ export default function EmailPanel({
 	const sessionViewMode = useSessionEmailViewMode();
 	const { closePanel, startCompose } = useUIStore();
 	const toastManager = useKumoToastManager();
+	const attachLabelMut = useAttachLabel();
+	const detachLabelMut = useDetachLabel();
 	const [isSending, setIsSending] = useState(false);
 	const [sourceViewEmail, setSourceViewEmail] = useState<Email | null>(null);
 	const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
+	// The server answers every attach/detach with the message's full label
+	// set; that answer is the freshest copy, so it outranks the email row's
+	// own `labels` until the panel moves to another message. Keyed by email
+	// id so the override derives away in the render body instead of being
+	// reset from an effect.
+	const [labelOverride, setLabelOverride] = useState<{ emailId: string; labels: Label[] } | null>(null);
 	// In the All Accounts view there is no folder route param, so fall back to
 	// the selected email's own folder when deciding draft behaviour.
 	const isDraftFolder =
@@ -158,6 +169,16 @@ export default function EmailPanel({
 
 	if (!email) return <EmailPanelSkeleton />;
 
+	// The email row carries its labels once the server half merges; until
+	// then the field is absent and the chips render nothing.
+	const emailLabels = labelOverride?.emailId === email.id
+		? labelOverride.labels
+		: ((email as Email & { labels?: Label[] | undefined }).labels ?? []);
+	const pendingLabelId =
+		attachLabelMut.isPending || detachLabelMut.isPending
+			? (attachLabelMut.variables?.labelId ?? detachLabelMut.variables?.labelId ?? null)
+			: null;
+
 	const toggleStar = () => { if (mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { starred: !email.starred } }); };
 	const handleMove = (folderId: string) => { if (mailboxId) { moveEmailMut.mutate({ mailboxId, id: email.id, folderId }); closePanel(); } };
 	const handleDelete = () => {
@@ -186,6 +207,24 @@ export default function EmailPanel({
 			},
 		);
 		closePanel();
+	};
+
+	/** Attach or detach one label; the answer replaces the message's set. */
+	const handleToggleLabel = async (label: Label, attached: boolean) => {
+		if (!mailboxId) return;
+		try {
+			const answer = attached
+				? await detachLabelMut.mutateAsync({ mailboxId, emailId: email.id, labelId: label.id })
+				: await attachLabelMut.mutateAsync({ mailboxId, emailId: email.id, labelId: label.id });
+			setLabelOverride({ emailId: email.id, labels: answer.labels ?? [] });
+		} catch (err) {
+			toastManager.add({
+				title:
+					(err instanceof Error ? err.message : null) ||
+					`Could not ${attached ? "remove" : "add"} the label.`,
+				variant: "error",
+			});
+		}
 	};
 
 	const handleSnooze = (untilIso: string) => {
@@ -389,6 +428,24 @@ export default function EmailPanel({
 				categoryConfidence={email.category_confidence}
 				isSpam={email.category === SPAM_CATEGORY_ID}
 			/>
+
+			{/* The message's labels sit with the subject line, under the
+			    category badge, beside the picker that adds and removes them.
+			    An empty set is a normal state — only the trigger shows. */}
+			<div className="flex flex-wrap items-center gap-2 px-4 pt-2 md:px-6">
+				<LabelChips
+					labels={emailLabels}
+					onRemove={(label) => { void handleToggleLabel(label, true); }}
+					removingId={pendingLabelId}
+				/>
+				<LabelPicker
+					mailboxId={mailboxId}
+					disabled={!mailboxId}
+					attached={emailLabels}
+					onToggle={(label, attached) => { void handleToggleLabel(label, attached); }}
+					pendingLabelId={pendingLabelId}
+				/>
+			</div>
 
 			<div className="flex justify-end px-4 pt-3 md:px-6"><EmailViewToggle value={viewMode} onChange={setSessionEmailViewMode} /></div>
 

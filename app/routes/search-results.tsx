@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Loader, Pagination, Tooltip } from "@cloudflare/kumo";
+import { Badge, Button, Loader, Pagination, Select, Tooltip } from "@cloudflare/kumo";
 import { ArrowLeftIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
@@ -10,6 +10,7 @@ import MailboxSplitView from "~/components/MailboxSplitView";
 import SemanticSearchToggle, { isSemanticMode } from "~/components/SemanticSearchToggle";
 import { formatListDate, getSnippetText } from "~/lib/utils";
 import { useUpdateEmail } from "~/queries/emails";
+import { useLabels } from "~/queries/labels";
 import { useSearchEmails, useSemanticSearch, SEARCH_PAGE_SIZE } from "~/queries/search";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
@@ -30,16 +31,22 @@ function highlightTerms(text: string, query: string): React.ReactNode {
 	} catch { return text; }
 }
 
+/** URL param that narrows a search to one label (matched by name). */
+const LABEL_FILTER_PARAM = "label";
+/** Select sentinel for "no label filter"; never sent to the server. */
+const LABEL_FILTER_ALL = "__all_labels__";
+
 export default function SearchResultsRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
-	const [searchParams] = useSearchParams();
+	const [searchParams, setSearchParams] = useSearchParams();
+	const labelFilter = searchParams.get(LABEL_FILTER_PARAM) ?? "";
 	const navigate = useNavigate();
 	const { selectedEmailId, isComposing, selectEmail, closePanel } = useUIStore();
 	const updateEmail = useUpdateEmail();
 	const urlQuery = searchParams.get("q") || "";
 	const searchKey = useMemo(
-		() => `${mailboxId ?? ""}::${urlQuery}`,
-		[mailboxId, urlQuery],
+		() => `${mailboxId ?? ""}::${urlQuery}::${labelFilter}`,
+		[mailboxId, urlQuery, labelFilter],
 	);
 	// Page state is keyed by the search it belongs to, so a new query renders
 	// as page 1 without resetting state from an effect.
@@ -64,7 +71,12 @@ export default function SearchResultsRoute() {
 	// Semantic mode searches the vector index instead of the keyword route;
 	// the idle hook keeps the same result shape while the mode is off.
 	const semanticMode = isSemanticMode(searchParams);
-	const keywordSearch = useSearchEmails(mailboxId, urlQuery, currentPage);
+	const keywordSearch = useSearchEmails(
+		mailboxId,
+		urlQuery,
+		currentPage,
+		labelFilter || undefined,
+	);
 	const semanticSearch = useSemanticSearch(mailboxId, semanticMode ? urlQuery : "");
 	const { data: searchData, isLoading, isError, error, refetch } = semanticMode
 		? semanticSearch
@@ -72,6 +84,22 @@ export default function SearchResultsRoute() {
 	const results = searchData?.results ?? [];
 	const totalCount = searchData?.totalCount ?? 0;
 	const isPanelOpen = selectedEmailId !== null || isComposing;
+
+	// The label filter narrows the keyword search by label name; an empty or
+	// failed labels load just hides the control.
+	const { data: labelsData } = useLabels(mailboxId);
+	const labels = labelsData?.labels ?? [];
+	const setLabelFilter = (next: string) => {
+		setSearchParams(
+			(prev) => {
+				const params = new URLSearchParams(prev);
+				if (next) params.set(LABEL_FILTER_PARAM, next);
+				else params.delete(LABEL_FILTER_PARAM);
+				return params;
+			},
+			{ replace: true },
+		);
+	};
 
 	const handleRowClick = (email: Email) => { selectEmail(email.id, mailboxId); if (!email.read && mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { read: true } }); };
 	const folderDisplayName = (name: string | null | undefined): string => { if (!name) return ""; const map: Record<string, string> = { inbox: "Inbox", sent: "Sent", draft: "Drafts", archive: "Archive", trash: "Trash" }; return map[name.toLowerCase()] || name; };
@@ -85,6 +113,25 @@ export default function SearchResultsRoute() {
 				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
 					<Tooltip content="Back to inbox" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => void navigate(`/mailbox/${mailboxId}/emails/inbox`)} aria-label="Back to inbox" /></Tooltip>
 					<div className="min-w-0 flex-1"><h1 className="text-lg font-semibold text-kumo-default truncate">{semanticMode ? "Semantic Search Results" : "Search Results"}</h1>{!isLoading && <span className="text-sm text-kumo-subtle">{totalCount} result{totalCount !== 1 ? "s" : ""}{urlQuery ? ` for "${urlQuery}"` : ""}</span>}</div>
+					{!semanticMode && labels.length > 0 && (
+						<Select
+							aria-label="Filter by label"
+							size="sm"
+							value={labelFilter || LABEL_FILTER_ALL}
+							onValueChange={(value) => {
+								const next =
+									value && value !== LABEL_FILTER_ALL ? String(value) : "";
+								setLabelFilter(next);
+							}}
+						>
+							<Select.Option value={LABEL_FILTER_ALL}>All labels</Select.Option>
+							{labels.map((label) => (
+								<Select.Option key={label.id} value={label.name}>
+									{label.name}
+								</Select.Option>
+							))}
+						</Select>
+					)}
 					<SemanticSearchToggle />
 				</div>
 				<div className="flex-1 overflow-y-auto">
