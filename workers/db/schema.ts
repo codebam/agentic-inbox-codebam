@@ -440,3 +440,18 @@ export const attachmentText = sqliteTable("attachment_text", {
 	text: text("text").notNull(),
 	created_at: text("created_at").notNull(),
 });
+
+/**
+ * Per-mailbox saved searches (migration 37_add_saved_searches): a named
+ * query the operator re-runs from the sidebar or saves from the search
+ * page. One mailbox holds at most MAX_SAVED_SEARCHES rows (refused by
+ * MailboxDO.createSavedSearch; searches are kept, never pruned) and every
+ * stored value is trimmed to its bounds before the write.
+ */
+export const savedSearches = sqliteTable("saved_searches", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	/** The stored search query, exactly as the operator saved it. */
+	query: text("query").notNull(),
+	created_at: text("created_at").notNull(),
+});

@@ -611,6 +611,45 @@ export type LabelEmailResult =
 	| { ok: true; labels: Label[] }
 	| { ok: false; error: "Email not found" | "Label not found" };
 
+/** Longest saved-search name stored (and accepted), after trimming. */
+export const MAX_SAVED_SEARCH_NAME_LENGTH = 120;
+
+/** Longest saved-search query stored (and accepted), after trimming. */
+export const MAX_SAVED_SEARCH_QUERY_LENGTH = 1000;
+
+/** Most saved searches one mailbox can hold; createSavedSearch refuses beyond it. */
+export const MAX_SAVED_SEARCHES = 50;
+
+/** One stored saved search row (migration 37_add_saved_searches). */
+export interface SavedSearch {
+	id: string;
+	/** Trimmed, 1..MAX_SAVED_SEARCH_NAME_LENGTH characters. */
+	name: string;
+	/** Trimmed, 1..MAX_SAVED_SEARCH_QUERY_LENGTH characters. */
+	query: string;
+	created_at: string;
+}
+
+/**
+ * A new saved search as the API accepts it, before normalization. Fields
+ * are typed `unknown` on purpose: the Durable Object's normalizers are the
+ * validators, so a route can hand over a parsed JSON body without
+ * pre-checking its shape.
+ */
+export interface SavedSearchInput {
+	name?: unknown;
+	query?: unknown;
+}
+
+/**
+ * A partial change to one saved search. Omitted fields keep their stored
+ * value; a provided value is re-validated with the create bounds.
+ */
+export interface SavedSearchPatch {
+	name?: unknown;
+	query?: unknown;
+}
+
 
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
@@ -4388,6 +4427,121 @@ export class MailboxDO extends DurableObject<Env> {
 				asc(schema.labels.id),
 			)
 			.all();
+	}
+
+	// ── Saved searches (named queries) ─────────────────────────────
+
+	/**
+	 * Every saved search for this mailbox, newest first by created_at, then
+	 * id (the tie-break that keeps the list stable when two searches share a
+	 * timestamp). One row carries its id, name, query and created_at.
+	 */
+	listSavedSearches(): SavedSearch[] {
+		return this.db
+			.select()
+			.from(schema.savedSearches)
+			.orderBy(
+				desc(schema.savedSearches.created_at),
+				asc(schema.savedSearches.id),
+			)
+			.all();
+	}
+
+	/** How many saved searches this mailbox holds (the create-time cap check). */
+	#countSavedSearches(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.savedSearches)
+			.get();
+		return row?.total ?? 0;
+	}
+
+	/** Canonical stored name: trimmed and bounded; null when unusable. */
+	#normalizeSavedSearchName(value: unknown): string | null {
+		const name = typeof value === "string" ? value.trim() : "";
+		if (!name || name.length > MAX_SAVED_SEARCH_NAME_LENGTH) return null;
+		return name;
+	}
+
+	/** Canonical stored query: trimmed and bounded; null when unusable. */
+	#normalizeSavedSearchQuery(value: unknown): string | null {
+		const query = typeof value === "string" ? value.trim() : "";
+		if (!query || query.length > MAX_SAVED_SEARCH_QUERY_LENGTH) return null;
+		return query;
+	}
+
+	/**
+	 * Store a new saved search. Name and query are trimmed and must be
+	 * 1..MAX_SAVED_SEARCH_NAME_LENGTH / 1..MAX_SAVED_SEARCH_QUERY_LENGTH
+	 * characters, and a mailbox already holding MAX_SAVED_SEARCHES refuses
+	 * the write — searches are kept, never pruned, so a runaway caller
+	 * cannot grow the table without limit. Returns the stored row, or null
+	 * when the input is unusable or the mailbox is at its cap (the route
+	 * answers a 400 either way, naming the reason from its own pre-check).
+	 */
+	createSavedSearch(input: SavedSearchInput | null): SavedSearch | null {
+		const name = this.#normalizeSavedSearchName(input?.name);
+		const query = this.#normalizeSavedSearchQuery(input?.query);
+		if (name === null || query === null) return null;
+		if (this.#countSavedSearches() >= MAX_SAVED_SEARCHES) return null;
+		const row: SavedSearch = {
+			id: crypto.randomUUID(),
+			name,
+			query,
+			created_at: new Date().toISOString(),
+		};
+		this.db.insert(schema.savedSearches).values(row).run();
+		return row;
+	}
+
+	/**
+	 * Apply a partial change to one saved search: omitted fields keep their
+	 * stored value, and a provided value is validated with the same bounds as
+	 * create. Returns the updated row; null when the id is unknown or a
+	 * provided value is unusable (the route tells the two apart with its own
+	 * pre-check and answers 404/400 accordingly).
+	 */
+	updateSavedSearch(id: string, patch: SavedSearchPatch | null): SavedSearch | null {
+		const existing = this.db
+			.select()
+			.from(schema.savedSearches)
+			.where(eq(schema.savedSearches.id, id))
+			.get();
+		if (!existing) return null;
+		const provided = patch ?? {};
+		const name =
+			provided.name === undefined
+				? existing.name
+				: this.#normalizeSavedSearchName(provided.name);
+		const query =
+			provided.query === undefined
+				? existing.query
+				: this.#normalizeSavedSearchQuery(provided.query);
+		if (name === null || query === null) return null;
+		this.db
+			.update(schema.savedSearches)
+			.set({ name, query })
+			.where(eq(schema.savedSearches.id, id))
+			.run();
+		return { ...existing, name, query };
+	}
+
+	/**
+	 * Remove one saved search. Returns false when the id is unknown; nothing
+	 * else is touched.
+	 */
+	deleteSavedSearch(id: string): boolean {
+		const existing = this.db
+			.select({ id: schema.savedSearches.id })
+			.from(schema.savedSearches)
+			.where(eq(schema.savedSearches.id, id))
+			.get();
+		if (!existing) return false;
+		this.db
+			.delete(schema.savedSearches)
+			.where(eq(schema.savedSearches.id, id))
+			.run();
+		return true;
 	}
 
 	/** How many templates this mailbox holds (the create-time cap check). */

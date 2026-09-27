@@ -192,7 +192,12 @@ import {
 	requireMailbox,
 	type MailboxContext,
 } from "./lib/mailbox";
-import type { MailboxDO } from "./durableObject";
+import {
+	MAX_SAVED_SEARCHES,
+	MAX_SAVED_SEARCH_NAME_LENGTH,
+	MAX_SAVED_SEARCH_QUERY_LENGTH,
+	type MailboxDO,
+} from "./durableObject";
 
 type AppContext = Context<MailboxContext>;
 
@@ -1850,6 +1855,136 @@ app.delete(
 		return result.ok
 			? c.json({ labels: result.labels })
 			: c.json({ error: result.error }, 404);
+	},
+);
+
+
+// -- Saved searches (per-mailbox named queries) ---------------------
+
+/**
+ * The reason one saved-search field is unusable, or null when it is fine.
+ * The bounds mirror the Durable Object's own validators; checking them here
+ * is what lets the 400 name the field (the Durable Object answers null for
+ * both an unusable value and its cap, which the route must tell apart).
+ */
+function savedSearchFieldError(
+	field: "name" | "query",
+	value: unknown,
+	max: number,
+): string | null {
+	if (typeof value !== "string" || !value.trim()) {
+		return `A saved search ${field} is required`;
+	}
+	if (value.trim().length > max) {
+		return `A saved search ${field} can be at most ${max} characters`;
+	}
+	return null;
+}
+
+/** The reason a create body is unusable, the name checked before the query. */
+function savedSearchCreateError(body: unknown): string | null {
+	if (body === null || typeof body !== "object") return "Invalid saved search";
+	const input = body as { name?: unknown; query?: unknown };
+	return (
+		savedSearchFieldError("name", input.name, MAX_SAVED_SEARCH_NAME_LENGTH) ??
+		savedSearchFieldError("query", input.query, MAX_SAVED_SEARCH_QUERY_LENGTH)
+	);
+}
+
+/** The reason a patch body is unusable; omitted fields are never checked. */
+function savedSearchPatchError(body: unknown): string | null {
+	if (body === null || typeof body !== "object") return "Invalid saved search";
+	const patch = body as { name?: unknown; query?: unknown };
+	if (patch.name !== undefined) {
+		const error = savedSearchFieldError(
+			"name",
+			patch.name,
+			MAX_SAVED_SEARCH_NAME_LENGTH,
+		);
+		if (error) return error;
+	}
+	if (patch.query !== undefined) {
+		const error = savedSearchFieldError(
+			"query",
+			patch.query,
+			MAX_SAVED_SEARCH_QUERY_LENGTH,
+		);
+		if (error) return error;
+	}
+	return null;
+}
+
+
+/**
+ * The mailbox's saved searches, newest first. A saved search is a named
+ * query the operator re-runs from the sidebar or saves from the search
+ * page; every entry carries its id, name, query and created_at. Read/write
+ * only — nothing on this route sends mail.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/saved-searches", async (c: AppContext) => {
+	return c.json({ searches: await c.var.mailboxStub.listSavedSearches() });
+});
+
+
+/**
+ * Store one saved search. The name (1..120 characters, trimmed) and the
+ * query (1..1000 characters, trimmed) are validated here so the 400 names
+ * the reason, and the 50-per-mailbox cap is enforced by the Durable Object;
+ * an unusable payload is a 400, never a silently clipped row.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/saved-searches", async (c: AppContext) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	const error = savedSearchCreateError(body);
+	if (error) return c.json({ error }, 400);
+	const search = await c.var.mailboxStub.createSavedSearch(
+		body as { name: string; query: string },
+	);
+	return search
+		? c.json(search, 201)
+		: c.json(
+				{
+					error: `A mailbox can hold at most ${MAX_SAVED_SEARCHES} saved searches`,
+				},
+				400,
+			);
+});
+
+
+/**
+ * Partial update of one saved search (name and/or query). The stored row
+ * comes back so the sidebar can refresh without a second read; an unusable
+ * value is a 400, and an unknown id is a 404.
+ */
+app.patch(
+	"/api/v1/mailboxes/:mailboxId/saved-searches/:searchId",
+	async (c: AppContext) => {
+		const body = (await c.req.json().catch(() => null)) as unknown;
+		const error = savedSearchPatchError(body);
+		if (error) return c.json({ error }, 400);
+		const search = await c.var.mailboxStub.updateSavedSearch(
+			c.req.param("searchId")!,
+			body as { name?: string; query?: string },
+		);
+		return search
+			? c.json(search)
+			: c.json({ error: "Saved search not found" }, 404);
+	},
+);
+
+
+/**
+ * Remove one saved search. 404 when there is nothing to remove; nothing else
+ * is touched.
+ */
+app.delete(
+	"/api/v1/mailboxes/:mailboxId/saved-searches/:searchId",
+	async (c: AppContext) => {
+		const deleted = await c.var.mailboxStub.deleteSavedSearch(
+			c.req.param("searchId")!,
+		);
+		return deleted
+			? c.json({ ok: true })
+			: c.json({ error: "Saved search not found" }, 404);
 	},
 );
 
