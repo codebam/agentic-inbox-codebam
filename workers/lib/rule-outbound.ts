@@ -29,6 +29,7 @@
 
 import { sendEmail, type SendEmailParams } from "../email-sender";
 import { stripHtmlToText, textToHtml } from "./email-helpers";
+import { captureSendMessageId } from "./delivery-match";
 import { isRuleEmailAddress, type RuleOutboundAction } from "./rules";
 import { Folders } from "../../shared/folders";
 
@@ -66,6 +67,8 @@ export interface RuleOutboundSentCopy {
 	subject: string;
 	/** The send's HTML when it had one, otherwise its text. */
 	body: string;
+	/** The id the email binding returned for this send, stored on the copy. */
+	send_message_id: string;
 }
 
 
@@ -337,6 +340,7 @@ export async function runRuleOutboundActions(
 					to,
 					subject: params.subject,
 					body: params.html ?? params.text ?? "",
+					send_message_id: result.messageId,
 				});
 				record({
 					kind: "forward",
@@ -408,6 +412,7 @@ export async function runRuleOutboundActions(
 				to,
 				subject: params.subject,
 				body: params.html ?? params.text ?? "",
+				send_message_id: result.messageId,
 			});
 			// Recorded only after a successful send: a failed attempt must not
 			// consume the sender's daily slot.
@@ -511,6 +516,14 @@ export interface RuleOutboundBookkeepingStub {
 				attachments: [],
 		  ) => Promise<unknown>)
 		| undefined;
+	/**
+	 * Record the id the email binding returned on the stored copy
+	 * (MailboxDO.setSendMessageId). Optional like createEmail: a caller that
+	 * cannot store mail has no copy to stamp, and the capture is a no-op.
+	 */
+	setSendMessageId?:
+		| ((emailId: string, sendMessageId: string) => Promise<boolean> | boolean)
+		| undefined;
 }
 
 
@@ -541,6 +554,9 @@ function buildSentCopyStore(
 			in_reply_to: null,
 			email_references: null,
 		}, []);
+		// Best-effort: the id the binding returned, on the copy that just went
+		// in, so a bounce can be matched to it (workers/lib/delivery-match.ts).
+		await captureSendMessageId(stub, id, { messageId: copy.send_message_id });
 	};
 }
 
