@@ -126,6 +126,14 @@ interface ScheduledSendListResponse {
 	totalCount: number;
 }
 
+/** One stored pending upload, as POST .../uploads answers it. */
+export interface PendingUploadResponse {
+	id: string;
+	filename: string;
+	mimetype: string;
+	size: number;
+}
+
 interface ItemListResponse {
 	items: ExtractedItem[];
 	totalCount: number;
@@ -254,7 +262,22 @@ const api = {
 		get<EmailListResponse>(`/api/v1/mailboxes/${mailboxId}/reminders`),
 
 	// Scheduled sends — the composer queues messages here and the server's
-	// queue fires each one at `sendAt`. A queued send carries no attachments.
+	// queue fires each one at `sendAt`. A queued send carries its files by id
+	// (`upload_ids`), never bytes: the files go up through uploadPendingFile
+	// first and the fire path resolves the ids back to bytes.
+	/**
+	 * Upload one file ahead of a queued send: the bytes go to R2 and the id
+	 * that comes back is what the queued payload carries in `upload_ids`.
+	 * The caps are the linked-attachment caps, so the server answers 400 with
+	 * the same message the send route would give.
+	 */
+	uploadPendingFile: (
+		mailboxId: string,
+		file: { content: string; filename: string; type?: string },
+	) => post<PendingUploadResponse>(`/api/v1/mailboxes/${mailboxId}/uploads`, file),
+	/** Drop a pending upload — its row and its bytes — when it will not be sent. */
+	deletePendingUpload: (mailboxId: string, uploadId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/uploads/${uploadId}`),
 	/** Queue `payload` (the same shape `sendEmail` takes) for `sendAt` (ISO 8601, future only). */
 	scheduleSend: (mailboxId: string, payload: Record<string, unknown>, sendAt: string) =>
 		post<ScheduledSend>(`/api/v1/mailboxes/${mailboxId}/scheduled-sends`, {
