@@ -13,6 +13,7 @@ import {
 	FileIcon,
 	FolderIcon,
 	FunnelIcon,
+	MagnifyingGlassIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
@@ -23,11 +24,15 @@ import {
 	TrayIcon,
 } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
-import { NavLink, useNavigate, useParams } from "react-router";
+import { NavLink, useNavigate, useParams, useSearchParams } from "react-router";
 import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import { useCreateFolder, useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
+import {
+	useDeleteSavedSearch,
+	useSavedSearches,
+} from "~/queries/saved-searches";
 import { useUIStore } from "~/hooks/useUIStore";
 
 const FOLDER_ICONS: Record<string, React.ReactNode> = {
@@ -93,6 +98,18 @@ export default function Sidebar() {
 	const createFolderMutation = useCreateFolder();
 	const { startCompose, closeSidebar } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
+	const { data: savedSearchesData } = useSavedSearches(mailboxId);
+	const savedSearches = savedSearchesData?.searches ?? [];
+	const [searchParams] = useSearchParams();
+	// Every saved search shares the search route's pathname, so NavLink's
+	// isActive is true for all of them there; the row only counts as the
+	// current one when the page is showing its own query.
+	const currentSearchQuery = searchParams.get("q") ?? "";
+	const deleteSavedSearch = useDeleteSavedSearch();
+	// The saved search whose delete control is showing its confirm step.
+	const [confirmingSearchId, setConfirmingSearchId] = useState<string | null>(
+		null,
+	);
 	const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
 	const [newFolderName, setNewFolderName] = useState("");
 
@@ -120,6 +137,11 @@ export default function Sidebar() {
 			setNewFolderName("");
 			setIsCreateFolderOpen(false);
 		}
+	};
+
+	const handleDeleteSavedSearch = (searchId: string) => {
+		setConfirmingSearchId(null);
+		if (mailboxId) deleteSavedSearch.mutate({ mailboxId, searchId });
 	};
 
 	const displayName = useMemo(() => {
@@ -247,6 +269,64 @@ export default function Sidebar() {
 						</div>
 					</div>
 				)}
+				{/* Saved searches — named queries kept per mailbox. The section
+				    only appears once the mailbox holds at least one. */}
+				{savedSearches.length > 0 && (
+					<div className="pt-5">
+						<div className="flex items-center justify-between px-3 mb-1.5">
+							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+								Saved searches
+							</span>
+						</div>
+						{savedSearches.map((search) => (
+							<div key={search.id} className="group flex items-center gap-1">
+								<NavLink
+									to={`/mailbox/${mailboxId}/search?q=${encodeURIComponent(search.query)}`}
+									onClick={handleNavClick}
+									title={search.query}
+									className={({ isActive }) =>
+										`flex min-w-0 flex-1 items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${
+											isActive && currentSearchQuery === search.query
+												? "bg-kumo-fill font-semibold text-kumo-default"
+												: "text-kumo-strong hover:bg-kumo-tint"
+										}`
+									}
+								>
+									<MagnifyingGlassIcon size={18} className="shrink-0" />
+									<span className="truncate flex-1">{search.name}</span>
+								</NavLink>
+								{confirmingSearchId === search.id ? (
+									<>
+										<button
+											type="button"
+											onClick={() => handleDeleteSavedSearch(search.id)}
+											className="shrink-0 rounded px-1 text-xs font-medium text-kumo-danger hover:underline"
+										>
+											Delete
+										</button>
+										<button
+											type="button"
+											onClick={() => setConfirmingSearchId(null)}
+											className="shrink-0 rounded px-1 text-xs text-kumo-subtle hover:text-kumo-default"
+										>
+											Cancel
+										</button>
+									</>
+								) : (
+									<button
+										type="button"
+										onClick={() => setConfirmingSearchId(search.id)}
+										aria-label={`Delete saved search ${search.name}`}
+										className="shrink-0 rounded p-1 text-kumo-subtle opacity-0 transition-opacity hover:text-kumo-danger focus-visible:opacity-100 group-hover:opacity-100"
+									>
+										<TrashIcon size={14} />
+									</button>
+								)}
+							</div>
+						))}
+					</div>
+				)}
+
 				{/* Today — the morning brief for this mailbox */}
 				<div className="pt-5">
 					<div className="flex items-center justify-between px-3 mb-1.5">

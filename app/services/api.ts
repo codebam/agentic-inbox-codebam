@@ -159,6 +159,17 @@ interface ItemListResponse {
  */
 export type { Label };
 
+/**
+ * One saved search, as the saved-searches routes answer it: a named query
+ * the operator re-runs from the sidebar. The route rows also carry
+ * `created_at`, which nothing in the UI reads yet.
+ */
+export interface SavedSearch {
+	id: string;
+	name: string;
+	query: string;
+}
+
 // ---------- API client ----------
 
 const api = {
@@ -545,6 +556,28 @@ const api = {
 			query,
 			...(limit ? { limit } : {}),
 		}),
+	// Saved searches — named queries the operator re-runs from the sidebar.
+	// Read/write only: nothing here sends mail.
+	/** Every saved search for the mailbox, newest first. */
+	listSavedSearches: (mailboxId: string) =>
+		get<{ searches: SavedSearch[] }>(`/api/v1/mailboxes/${mailboxId}/saved-searches`),
+	/** Store a named query (the name is trimmed, 1..120 characters). */
+	createSavedSearch: (mailboxId: string, input: { name: string; query: string }) =>
+		post<SavedSearch>(`/api/v1/mailboxes/${mailboxId}/saved-searches`, input),
+	/**
+	 * Partial update: name and/or query. Saved searches follow labels in
+	 * calling the shared request helper directly — there is no patch()
+	 * sibling of put()/del() above.
+	 */
+	updateSavedSearch: (mailboxId: string, searchId: string, patch: { name?: string; query?: string }) =>
+		request<SavedSearch>(`/api/v1/mailboxes/${mailboxId}/saved-searches/${searchId}`, {
+			method: "PATCH",
+			body: JSON.stringify(patch),
+		}),
+	/** Remove one saved search. */
+	deleteSavedSearch: (mailboxId: string, searchId: string) =>
+		del<{ ok: boolean }>(`/api/v1/mailboxes/${mailboxId}/saved-searches/${searchId}`),
+
 	/** Embed one bounded batch of the mailbox's unembedded messages. */
 	semanticReindex: (mailboxId: string) =>
 		post<SemanticReindexProgress>(`/api/v1/mailboxes/${mailboxId}/semantic/reindex`),
