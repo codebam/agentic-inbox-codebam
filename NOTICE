@@ -14,7 +14,9 @@ Changes in this fork include, among others:
   - Renamed and rebranded the project to Agentic Inbox Codebam across the
     README, app UI, MCP metadata, configuration examples, and scripts.
   - Added per-domain catch-all mailbox routing.
-  - Added global and per-mailbox AI email categorization using TypeSafe Jev.
+  - Added global and per-mailbox AI email categorization using TypeSafe Jev,
+    including a reply-expectation gate that keeps auto-draft off one-way
+    mail (confirmations, receipts, alerts).
   - Added the combined All Accounts email view.
   - Added multi-select bulk actions (mark read/unread, star, archive, move,
     mark spam, delete) to the mailbox folder list and the All Accounts view.

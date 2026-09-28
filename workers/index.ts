@@ -3851,18 +3851,26 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// rule filed in Spam or stamped with the spam category, nor mail from a
 	// blocked sender (senderDecision.autoDraft). A discard rule has already
 	// returned above. The mailbox switch turns this off entirely.
-	if (
+	//
+	// The Jev reply gate holds the trigger back for mail the classifier read
+	// as not expecting a reply: confirmations, receipts, alerts, newsletters
+	// and other one-way notifications. A null verdict (categorization off,
+	// question disabled, or a failed classification) keeps drafting, matching
+	// the classifier's best-effort contract.
+	const canAutoDraft =
 		isAiAgentEnabled(env) &&
 		normalizeAutoDraft(mailboxSettings["autoDraft"]) &&
 		senderDecision.autoDraft &&
 		!isSpam &&
-		!ruleMarkedSpam
-	) {
+		!ruleMarkedSpam;
+	if (canAutoDraft && classification?.expectsReply !== false) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 			method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
 		})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	} else if (canAutoDraft) {
+		console.log(`Auto-draft skipped for ${mailboxId}: Jev says no reply is expected (p=${classification?.expectsReplyProbability ?? "n/a"})`);
 	}
 
 	// Outbound webhook notification for this arrival — notification only,

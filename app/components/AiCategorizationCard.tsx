@@ -31,6 +31,15 @@ export default function AiCategorizationCard({
 		onChange({ ...settings, spam: { ...settings.spam, ...patch } });
 	};
 
+	const updateExpectsReply = (
+		patch: Partial<CategorizationSettings["expectsReply"]>,
+	) => {
+		onChange({
+			...settings,
+			expectsReply: { ...settings.expectsReply, ...patch },
+		});
+	};
+
 	return (
 		<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
 			<div className="flex items-center justify-between mb-3">
@@ -50,7 +59,8 @@ export default function AiCategorizationCard({
 				Classify incoming email as it arrives using TypeSafe's Jev model (
 				<code>typesafe/jev</code>). Email content is sent to Workers AI for
 				classification. Spam can be filed automatically; custom categories are
-				applied as labels.
+				applied as labels. The reply gate holds auto-draft back for one-way
+				mail Jev reads as not expecting a reply.
 			</p>
 
 			<div className="space-y-5">
@@ -111,6 +121,50 @@ export default function AiCategorizationCard({
 										size="sm"
 									/>
 								</>
+							)}
+						</div>
+
+						{/* Reply gate */}
+						<div className="rounded-md border border-kumo-line bg-kumo-recessed p-4 space-y-3">
+							<Switch
+								checked={settings.expectsReply.enabled}
+								onCheckedChange={(enabled) => updateExpectsReply({ enabled })}
+								label="Draft replies only when a reply is expected"
+								size="sm"
+							/>
+							<p className="text-xs text-kumo-subtle">
+								Auto-draft skips one-way mail Jev reads as not expecting a reply:
+								confirmations, receipts, alerts, verification codes, newsletters and
+								other notifications. Only auto-draft is affected; drafting on request
+								in chat or over MCP still works.
+							</p>
+							{settings.expectsReply.enabled && (
+								<div className="flex flex-wrap items-center gap-3">
+									<span className="text-xs font-medium text-kumo-strong">
+										Reply threshold
+									</span>
+									<Input
+										aria-label="Reply expected threshold"
+										type="number"
+										min={0.05}
+										max={0.95}
+										step={0.05}
+										value={String(settings.expectsReply.threshold)}
+										onChange={(e) => {
+											const value = Number(e.target.value);
+											if (Number.isFinite(value)) {
+												updateExpectsReply({
+													threshold: Math.min(0.95, Math.max(0.05, value)),
+												});
+											}
+										}}
+										className="w-24"
+										size="sm"
+									/>
+									<span className="text-xs text-kumo-subtle">
+										Jev probability at or above which a reply is expected (0.05 to 0.95).
+									</span>
+								</div>
 							)}
 						</div>
 

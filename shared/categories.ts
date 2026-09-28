@@ -9,7 +9,9 @@
  * Incoming email is classified with TypeSafe's Jev model
  * (`typesafe/jev`) through the Workers AI binding. Jev answers typed
  * questions, so spam is a `noul` (boolean/probability) question and custom
- * categories are a `choice` question.
+ * categories are a `choice` question. A second `noul` question
+ * (`expects_reply`) decides whether the recipient is expected to reply; the
+ * auto-draft gate consults that verdict before drafting.
  */
 
 /** Special category value assigned to email classified as spam. */
@@ -44,10 +46,25 @@ export interface SpamCategorizationSettings {
 	moveToSpam: boolean;
 }
 
+/** The Jev reply-expectation question that gates auto-draft. */
+export interface ExpectsReplyCategorizationSettings {
+	/** Run the Jev reply-expectation question (asked on arrival). */
+	enabled: boolean;
+	/**
+	 * Jev returns a calibrated probability in [0, 1]. At or above this
+	 * threshold a reply is considered expected and auto-draft runs; below it
+	 * the auto-draft trigger is held back. The UI enforces 0.05 to 0.95 so a
+	 * stale setting can never skip (or keep) every auto-draft.
+	 */
+	threshold: number;
+}
+
 export interface CategorizationSettings {
 	/** Master switch for inbound email classification. */
 	enabled: boolean;
 	spam: SpamCategorizationSettings;
+	/** Jev question deciding whether new mail warrants an auto-drafted reply. */
+	expectsReply: ExpectsReplyCategorizationSettings;
 	/** Optional mailbox-specific categories in addition to the spam/not-spam question. */
 	categories: EmailCategory[];
 	/**
@@ -67,6 +84,9 @@ export const MAX_MERGED_CATEGORIES = MAX_EMAIL_CATEGORIES * 2;
 
 export const DEFAULT_SPAM_THRESHOLD = 0.8;
 
+/** Jev probability at or above which auto-draft considers a reply expected. */
+export const DEFAULT_EXPECTS_REPLY_THRESHOLD = 0.5;
+
 /** Fresh default settings. `enabled` defaults on so spam is filtered on arrival. */
 export function defaultCategorizationSettings(): CategorizationSettings {
 	return {
@@ -76,6 +96,10 @@ export function defaultCategorizationSettings(): CategorizationSettings {
 			threshold: DEFAULT_SPAM_THRESHOLD,
 			moveToSpam: true,
 		},
+		expectsReply: {
+			enabled: true,
+			threshold: DEFAULT_EXPECTS_REPLY_THRESHOLD,
+		},
 		categories: [],
 		useGlobalCategories: true,
 	};
@@ -83,7 +107,8 @@ export function defaultCategorizationSettings(): CategorizationSettings {
 
 /**
  * Turn arbitrary settings JSON into a safe, bounded shape. Missing settings
- * default to feature-on (spam detection only), while explicit `false`
+ * default to feature-on (spam detection and the reply gate), while
+ * explicit `false`
  * disables the corresponding behaviour.
  */
 export function normalizeCategorizationSettings(
@@ -97,11 +122,21 @@ export function normalizeCategorizationSettings(
 		value.spam && typeof value.spam === "object"
 			? (value.spam as Partial<SpamCategorizationSettings>)
 			: {};
+	const expectsReplyRaw =
+		value.expectsReply && typeof value.expectsReply === "object"
+			? (value.expectsReply as Partial<ExpectsReplyCategorizationSettings>)
+			: {};
 
 	const threshold =
 		typeof spamRaw.threshold === "number" && Number.isFinite(spamRaw.threshold)
 			? spamRaw.threshold
 			: DEFAULT_SPAM_THRESHOLD;
+
+	const replyThreshold =
+		typeof expectsReplyRaw.threshold === "number" &&
+		Number.isFinite(expectsReplyRaw.threshold)
+			? expectsReplyRaw.threshold
+			: DEFAULT_EXPECTS_REPLY_THRESHOLD;
 
 	return {
 		enabled: value.enabled !== false,
@@ -109,6 +144,10 @@ export function normalizeCategorizationSettings(
 			enabled: spamRaw.enabled !== false,
 			threshold: Math.min(1, Math.max(0.5, threshold)),
 			moveToSpam: spamRaw.moveToSpam !== false,
+		},
+		expectsReply: {
+			enabled: expectsReplyRaw.enabled !== false,
+			threshold: Math.min(0.95, Math.max(0.05, replyThreshold)),
 		},
 		categories: normalizeCategoryList(value.categories),
 		useGlobalCategories: value.useGlobalCategories !== false,

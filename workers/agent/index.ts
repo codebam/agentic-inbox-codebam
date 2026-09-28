@@ -73,6 +73,7 @@ import type { RulePatch } from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { isAllMailboxesAgentId } from "../../shared/mailboxes";
 import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
+import { storedExpectsReply } from "../../shared/auto-draft";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import type { Env } from "../types";
 
@@ -1351,6 +1352,17 @@ export class EmailAgent extends AIChatAgent<Env> {
 					emailData.emailId,
 				);
 				return { status: "skipped_spam" as const };
+			}
+
+			// Same defense in depth for the Jev reply gate: a direct
+			// /onNewEmail invocation must not draft for mail the classifier
+			// read as not expecting a reply (confirmations, receipts, alerts).
+			if (storedExpectsReply(email?.classification) === false) {
+				console.warn(
+					"Skipping auto-draft: Jev says no reply is expected:",
+					emailData.emailId,
+				);
+				return { status: "skipped_no_reply_expected" as const };
 			}
 			if (email?.body) {
 				const isInjection = await isPromptInjection(env.AI, email.body, models.promptInjection);

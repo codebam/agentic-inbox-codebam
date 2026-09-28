@@ -1,12 +1,14 @@
 import {
 	createExecutionContext,
 	listDurableObjectIds,
+	runInDurableObject,
 	SELF,
 	waitOnExecutionContext,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { normalizeAutoDraft } from "../shared/auto-draft";
+import { normalizeAutoDraft, storedExpectsReply } from "../shared/auto-draft";
+import { normalizeCategorizationSettings } from "../shared/categories";
 import { receiveEmail, type InboundEmailEvent } from "../workers/index";
 
 /** Register the mailbox record the inbound pipeline checks. */
@@ -17,9 +19,9 @@ async function registerMailbox(mailbox: string, settings: Record<string, unknown
 /** Delivery settings that keep the pipeline deterministic (no AI calls). */
 const PIPELINE_SETTINGS = { categorization: { enabled: false } };
 
-/** Push one raw message through the real receiveEmail path. */
-async function deliver(mailbox: string) {
-	const raw = [
+/** The raw message the gate tests deliver: minimal but parseable RFC 822. */
+function rawMessage(mailbox: string) {
+	return [
 		"From: sender@example.org",
 		`To: ${mailbox}`,
 		"Subject: Hello",
@@ -27,6 +29,23 @@ async function deliver(mailbox: string) {
 		"body",
 		"",
 	].join("\r\n");
+}
+
+/** Push one raw message through the real receiveEmail path. */
+async function deliver(mailbox: string) {
+	await deliverWith(mailbox, env, rawMessage(mailbox));
+}
+
+/**
+ * deliver() with the env and message under the test's control: the reply
+ * gate needs a Workers AI double (the pool cannot run the real binding) and
+ * a mailbox whose settings actually reach the classifier.
+ */
+async function deliverWith(
+	mailbox: string,
+	pipelineEnv: unknown,
+	raw: string,
+) {
 	const bytes = new TextEncoder().encode(raw);
 	const ctx = createExecutionContext();
 	const event: InboundEmailEvent = {
@@ -34,7 +53,11 @@ async function deliver(mailbox: string) {
 		rawSize: bytes.byteLength,
 		to: mailbox,
 	};
-	await receiveEmail(event, env, ctx);
+	await receiveEmail(
+		event,
+		pipelineEnv as Parameters<typeof receiveEmail>[1],
+		ctx,
+	);
 	// Let the scheduled auto-draft trigger (and the webhook) settle.
 	await waitOnExecutionContext(ctx);
 }
@@ -123,5 +146,181 @@ describe("auto-draft gate", () => {
 		);
 		await waitOnExecutionContext(ctx);
 		expect(await agentTouched(mailbox)).toBe(false);
+	});
+});
+
+describe("reply gate settings", () => {
+	it("defaults on and clamps the threshold into the safe band", () => {
+		expect(normalizeCategorizationSettings(undefined).expectsReply).toEqual({
+			enabled: true,
+			threshold: 0.5,
+		});
+		expect(
+			normalizeCategorizationSettings({ expectsReply: { enabled: false } })
+				.expectsReply,
+		).toEqual({ enabled: false, threshold: 0.5 });
+		expect(
+			normalizeCategorizationSettings({ expectsReply: { threshold: 0.7 } })
+				.expectsReply.threshold,
+		).toBe(0.7);
+		expect(
+			normalizeCategorizationSettings({ expectsReply: { threshold: 9 } })
+				.expectsReply.threshold,
+		).toBe(0.95);
+		expect(
+			normalizeCategorizationSettings({ expectsReply: { threshold: 0 } })
+				.expectsReply.threshold,
+		).toBe(0.05);
+		expect(
+			normalizeCategorizationSettings({ expectsReply: { threshold: "off" } })
+				.expectsReply.threshold,
+		).toBe(0.5);
+	});
+});
+
+describe("storedExpectsReply", () => {
+	it("reads the verdict from a serialized or parsed audit trail", () => {
+		expect(storedExpectsReply(JSON.stringify({ expects_reply: false }))).toBe(
+			false,
+		);
+		expect(storedExpectsReply({ expects_reply: true })).toBe(true);
+	});
+
+	it("answers null when there is no verdict to read", () => {
+		expect(storedExpectsReply(null)).toBeNull();
+		expect(storedExpectsReply(undefined)).toBeNull();
+		expect(storedExpectsReply("not json")).toBeNull();
+		expect(storedExpectsReply(JSON.stringify({ is_spam: false }))).toBeNull();
+		expect(storedExpectsReply({ expects_reply: "no" })).toBeNull();
+		expect(storedExpectsReply("[]")).toBeNull();
+	});
+});
+
+describe("Jev reply gate on the receive path", () => {
+	/** A Workers AI double: answers Jev questions, quiets other callers. */
+	function fakeJevAi(
+		answers: Record<string, unknown>,
+		questions: string[][] = [],
+	) {
+		return {
+			run: async (_model: string, params: unknown) => {
+				const input = params as { questions?: Record<string, unknown> } | null;
+				if (input && typeof input === "object" && input.questions) {
+					questions.push(Object.keys(input.questions));
+					return { model: "typesafe/jev", answers };
+				}
+				// The items extractor asks with `messages`; answer it with an
+				// empty extraction so the off-path stays quiet.
+				return { response: "[]" };
+			},
+		};
+	}
+
+	/** The newest row's stored classification audit trail. */
+	async function storedClassification(mailbox: string) {
+		const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailbox));
+		return runInDurableObject(stub, async (_instance, state) => {
+			const rows = [
+				...state.storage.sql.exec(
+					"SELECT classification FROM emails ORDER BY rowid DESC LIMIT 1",
+				),
+			];
+			const row = rows[0] as { classification: string | null } | undefined;
+			return row?.classification ?? null;
+		});
+	}
+
+	it("holds the auto-draft trigger back when Jev says no reply is expected", async () => {
+		const mailbox = "reply-gate-hold@example.com";
+		await registerMailbox(mailbox, { categorization: {} });
+		const questions: string[][] = [];
+		await deliverWith(
+			mailbox,
+			{
+				...env,
+				AI: fakeJevAi(
+					{
+						is_spam: { type: "noul", noul: 0.02 },
+						expects_reply: { type: "noul", noul: 0.05 },
+					},
+					questions,
+				),
+			},
+			rawMessage(mailbox),
+		);
+
+		expect(questions[0]).toEqual(["is_spam", "expects_reply"]);
+		expect(await agentTouched(mailbox)).toBe(false);
+		const stored = await storedClassification(mailbox);
+		expect(storedExpectsReply(stored)).toBe(false);
+		expect(JSON.parse(String(stored))).toMatchObject({
+			is_spam: false,
+			expects_reply: false,
+		});
+	});
+
+	it("keeps drafting when Jev expects a reply", async () => {
+		const mailbox = "reply-gate-go@example.com";
+		await registerMailbox(mailbox, { categorization: {} });
+		await deliverWith(
+			mailbox,
+			{
+				...env,
+				AI: fakeJevAi({
+					is_spam: { type: "noul", noul: 0.02 },
+					expects_reply: { type: "noul", noul: 0.92 },
+				}),
+			},
+			rawMessage(mailbox),
+		);
+
+		expect(await agentTouched(mailbox)).toBe(true);
+		expect(storedExpectsReply(await storedClassification(mailbox))).toBe(true);
+	});
+
+	it("keeps drafting when the classifier could not run (fail-open)", async () => {
+		const mailbox = "reply-gate-fail@example.com";
+		await registerMailbox(mailbox, { categorization: {} });
+		await deliverWith(
+			mailbox,
+			{
+				...env,
+				AI: {
+					run: async () => {
+						throw new Error("model unavailable");
+					},
+				},
+			},
+			rawMessage(mailbox),
+		);
+
+		expect(await agentTouched(mailbox)).toBe(true);
+		expect(await storedClassification(mailbox)).toBeNull();
+	});
+
+	it("asks no reply question when the mailbox turns the gate off", async () => {
+		const mailbox = "reply-gate-off@example.com";
+		await registerMailbox(mailbox, {
+			categorization: { expectsReply: { enabled: false } },
+		});
+		const questions: string[][] = [];
+		await deliverWith(
+			mailbox,
+			{
+				...env,
+				AI: fakeJevAi(
+					{
+						is_spam: { type: "noul", noul: 0.02 },
+						expects_reply: { type: "noul", noul: 0.05 },
+					},
+					questions,
+				),
+			},
+			rawMessage(mailbox),
+		);
+
+		expect(questions[0]).toEqual(["is_spam"]);
+		expect(await agentTouched(mailbox)).toBe(true);
+		expect(storedExpectsReply(await storedClassification(mailbox))).toBeNull();
 	});
 });

@@ -9,6 +9,8 @@
  * Jev evaluates a `state` against typed `noul`, `choice`, and `score`
  * questions and returns calibrated answers. We ask:
  *   - `is_spam`: noul question with a probability in [0, 1]
+ *   - `expects_reply`: noul question deciding whether the recipient is
+ *     expected to reply; the auto-draft gate reads this verdict
  *   - `category`: optional choice question over the mailbox's categories
  *
  * Classification is best-effort by design: any failure returns null and the
@@ -61,6 +63,14 @@ export interface EmailClassification {
 	categoryConfidence: number | null;
 	isSpam: boolean;
 	spamProbability: number | null;
+	/**
+	 * Jev's reply-expectation verdict: true when a reply is expected, false
+	 * when the mail is one-way (auto-draft skips it), null when the question
+	 * was not asked or no verdict could be read.
+	 */
+	expectsReply: boolean | null;
+	/** Raw probability behind `expectsReply`; null when the question was not asked. */
+	expectsReplyProbability: number | null;
 	model: string | null;
 	answers: Record<string, JevAnswer> | null;
 	usage: { input_tokens?: number; output_tokens?: number } | null;
@@ -81,6 +91,18 @@ const SPAM_CRITERIA = {
 	true: "The email is spam: unsolicited bulk/marketing, phishing, scam, fraud, or otherwise unwanted junk",
 	false:
 		"The email is legitimate personal or business correspondence (including opted-in newsletters, receipts, and notifications)",
+};
+
+const EXPECTS_REPLY_INSTRUCTIONS =
+	"Given the `state` object for a received email, decide whether the recipient should reply to it. " +
+	"A reply is expected when a person wrote to the recipient directly and an answer is needed: a question, a request, a proposal, an invitation to respond, or an ongoing conversation. " +
+	"Automated mail that only informs or notifies (confirmations, receipts, reminders, alerts, verification codes, calendar notices, newsletters, and marketing) expects no reply, even when it addresses the recipient by name.";
+
+const EXPECTS_REPLY_CRITERIA = {
+	true:
+		"The recipient should reply: a person is asking something, requesting an action, proposing, or awaiting an answer",
+	false:
+		"No reply is needed: a one-way notification, confirmation, receipt, alert, verification code, calendar notice, newsletter, marketing, or other automated message",
 };
 
 const CATEGORY_INSTRUCTIONS =
@@ -114,7 +136,11 @@ export async function classifyIncomingEmail(
 	if (!settings.enabled) return null;
 
 	const categories = settings.categories;
-	if (!settings.spam.enabled && categories.length === 0) return null;
+	if (
+		!settings.spam.enabled &&
+		categories.length === 0 &&
+		!settings.expectsReply.enabled
+	) return null;
 
 	const questions: Record<string, unknown> = {};
 
@@ -123,6 +149,14 @@ export async function classifyIncomingEmail(
 			type: "noul",
 			instructions: SPAM_INSTRUCTIONS,
 			criteria: SPAM_CRITERIA,
+		};
+	}
+
+	if (settings.expectsReply.enabled) {
+		questions["expects_reply"] = {
+			type: "noul",
+			instructions: EXPECTS_REPLY_INSTRUCTIONS,
+			criteria: EXPECTS_REPLY_CRITERIA,
 		};
 	}
 
@@ -179,6 +213,8 @@ return JSON.stringify({
 model: classification.model,
 is_spam: classification.isSpam,
 spam_probability: classification.spamProbability,
+expects_reply: classification.expectsReply,
+expects_reply_probability: classification.expectsReplyProbability,
 category: classification.category,
 category_name: classification.categoryName,
 category_confidence: classification.categoryConfidence,
@@ -202,6 +238,16 @@ function interpretJevResponse(
 		settings.spam.enabled &&
 		spamProbability !== null &&
 		spamProbability >= settings.spam.threshold;
+
+	const replyAnswer = answers["expects_reply"];
+	const expectsReplyProbability =
+		replyAnswer?.type === "noul" && typeof replyAnswer.noul === "number"
+			? clampProbability(replyAnswer.noul)
+			: null;
+	const expectsReply =
+		settings.expectsReply.enabled && expectsReplyProbability !== null
+			? expectsReplyProbability >= settings.expectsReply.threshold
+			: null;
 
 	let category: string | null = null;
 	let categoryConfidence: number | null = null;
@@ -249,6 +295,8 @@ function interpretJevResponse(
 		categoryConfidence,
 		isSpam,
 		spamProbability,
+		expectsReply,
+		expectsReplyProbability,
 		model: typeof response?.model === "string" ? response.model : null,
 		answers: Object.keys(compactAnswers).length > 0 ? compactAnswers : null,
 		usage: response?.usage ?? null,
