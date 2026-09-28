@@ -181,6 +181,18 @@ import {
 	type PushSubscriptionInput,
 	type PushSubscriptionRecord,
 } from "../../shared/push";
+import {
+	MAX_ACCESS_TOKENS,
+	MAX_ACCESS_TOKEN_NAME_LENGTH,
+	formatAccessToken,
+	normalizeAccessTokenScopes,
+	type AccessTokenRecord,
+	type AccessTokenScope,
+} from "../../shared/access-tokens";
+import {
+	generateAccessTokenSecret,
+	hashAccessToken,
+} from "../lib/access-tokens";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -648,6 +660,20 @@ export interface SavedSearchInput {
 export interface SavedSearchPatch {
 	name?: unknown;
 	query?: unknown;
+}
+
+/** How stale `last_used_at` must be before verifyAccessToken rewrites it. */
+const ACCESS_TOKEN_LAST_USED_REFRESH_MS = 60_000;
+
+/**
+ * A new access token as the API accepts it, before normalization. Fields
+ * are typed `unknown` on purpose: the Durable Object's normalizers are the
+ * validators, so a route can hand over a parsed JSON body without
+ * pre-checking its shape.
+ */
+export interface AccessTokenInput {
+	name?: unknown;
+	scopes?: unknown;
 }
 
 
@@ -4542,6 +4568,190 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.savedSearches.id, id))
 			.run();
 		return true;
+	}
+
+	// ── Access tokens (bearer credentials) ─────────────────────────
+
+	/**
+	 * Every access token for this mailbox, newest first by created_at, then
+	 * id (the tie-break that keeps the list stable when two tokens share a
+	 * timestamp). Metadata columns only — `token_hash` never leaves the
+	 * Durable Object — and a malformed stored scopes value falls back to an
+	 * empty array rather than throwing.
+	 */
+	listAccessTokens(): AccessTokenRecord[] {
+		return this.db
+			.select({
+				id: schema.accessTokens.id,
+				name: schema.accessTokens.name,
+				scopes: schema.accessTokens.scopes,
+				created_at: schema.accessTokens.created_at,
+				last_used_at: schema.accessTokens.last_used_at,
+			})
+			.from(schema.accessTokens)
+			.orderBy(
+				desc(schema.accessTokens.created_at),
+				asc(schema.accessTokens.id),
+			)
+			.all()
+			.map((row) => this.#accessTokenRecord(row));
+	}
+
+	/** How many access tokens this mailbox holds (the create-time cap check). */
+	#countAccessTokens(): number {
+		const row = this.db
+			.select({ total: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.accessTokens)
+			.get();
+		return row?.total ?? 0;
+	}
+
+	/** Canonical stored token name: trimmed and bounded; null when unusable. */
+	#normalizeAccessTokenName(value: unknown): string | null {
+		const name = typeof value === "string" ? value.trim() : "";
+		if (!name || name.length > MAX_ACCESS_TOKEN_NAME_LENGTH) return null;
+		return name;
+	}
+
+	/**
+	 * Parse a stored scopes JSON string back into scope strings. A malformed
+	 * or hand-edited value falls back to an empty array — never throws — so
+	 * one bad row cannot break a token listing or a verify.
+	 */
+	#parseAccessTokenScopes(value: string): AccessTokenScope[] {
+		try {
+			const parsed: unknown = JSON.parse(value);
+			return normalizeAccessTokenScopes(parsed) ?? [];
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Map a stored access_tokens row to its metadata record: parses the
+	 * stored scopes JSON and drops `token_hash`, the one column that must
+	 * never leave the Durable Object.
+	 */
+	#accessTokenRecord(
+		row: Pick<
+			typeof schema.accessTokens.$inferSelect,
+			"id" | "name" | "scopes" | "created_at" | "last_used_at"
+		>,
+	): AccessTokenRecord {
+		return {
+			id: row.id,
+			name: row.name,
+			scopes: this.#parseAccessTokenScopes(row.scopes),
+			created_at: row.created_at,
+			last_used_at: row.last_used_at,
+		};
+	}
+
+	/**
+	 * Mint a new access token and store only its hash. The name is trimmed
+	 * and must be 1..MAX_ACCESS_TOKEN_NAME_LENGTH characters, the scopes are
+	 * canonicalized to a non-empty subset of read/draft/send, and a mailbox
+	 * already holding MAX_ACCESS_TOKENS refuses the write — tokens are kept
+	 * until revoked, never pruned, so a runaway caller cannot grow the table
+	 * without limit. Returns the plaintext token (a bearer credential: shown
+	 * once, never stored) with its metadata record; null when a value is
+	 * unusable or the mailbox is at its cap (the route answers a 400 either
+	 * way, naming the reason from its own pre-check). The record carries no
+	 * hash fields.
+	 */
+	async createAccessToken(
+		mailboxId: string,
+		input: AccessTokenInput | null,
+	): Promise<{ record: AccessTokenRecord; token: string } | null> {
+		const name = this.#normalizeAccessTokenName(input?.name);
+		const scopes = normalizeAccessTokenScopes(input?.scopes);
+		if (name === null || scopes === null) return null;
+		if (this.#countAccessTokens() >= MAX_ACCESS_TOKENS) return null;
+		const token = formatAccessToken(mailboxId, generateAccessTokenSecret());
+		const tokenHash = await hashAccessToken(token);
+		// Hashing yields, so re-check the cap: two creates that interleaved on
+		// the await must not push the mailbox past MAX_ACCESS_TOKENS.
+		if (this.#countAccessTokens() >= MAX_ACCESS_TOKENS) return null;
+		const record: AccessTokenRecord = {
+			id: crypto.randomUUID(),
+			name,
+			scopes,
+			created_at: new Date().toISOString(),
+			last_used_at: null,
+		};
+		this.db
+			.insert(schema.accessTokens)
+			.values({
+				id: record.id,
+				name: record.name,
+				token_hash: tokenHash,
+				scopes: JSON.stringify(record.scopes),
+				created_at: record.created_at,
+				last_used_at: record.last_used_at,
+			})
+			.run();
+		return { record, token };
+	}
+
+	/**
+	 * Revoke one access token. Returns false when the id is unknown; nothing
+	 * else is touched. Its plaintext stops resolving the moment the hash row
+	 * is gone.
+	 */
+	revokeAccessToken(id: string): boolean {
+		const existing = this.db
+			.select({ id: schema.accessTokens.id })
+			.from(schema.accessTokens)
+			.where(eq(schema.accessTokens.id, id))
+			.get();
+		if (!existing) return false;
+		this.db
+			.delete(schema.accessTokens)
+			.where(eq(schema.accessTokens.id, id))
+			.run();
+		return true;
+	}
+
+	/**
+	 * Resolve one presented token. `tokenHash` is the SHA-256 hex of the
+	 * full token string (hashAccessToken); the plaintext never reaches the
+	 * Durable Object. A hit bumps `last_used_at` to now, but only when it is
+	 * unset or older than a minute, so a hot token does not rewrite its row
+	 * on every request — writes stay rare. Returns the metadata record (no
+	 * hash; the bumped timestamp included when one was written), or null for
+	 * an unknown hash or a storage failure — this method never throws.
+	 */
+	// eslint-disable-next-line @typescript-eslint/require-await -- async is the RPC contract: routes, tests and the verify surface await it.
+	async verifyAccessToken(tokenHash: string): Promise<AccessTokenRecord | null> {
+		try {
+			const existing = this.db
+				.select()
+				.from(schema.accessTokens)
+				.where(eq(schema.accessTokens.token_hash, tokenHash))
+				.get();
+			if (!existing) return null;
+			const record = this.#accessTokenRecord(existing);
+			const now = Date.now();
+			const lastUsed =
+				existing.last_used_at === null
+					? null
+					: Date.parse(existing.last_used_at);
+			if (
+				lastUsed === null ||
+				!Number.isFinite(lastUsed) ||
+				lastUsed < now - ACCESS_TOKEN_LAST_USED_REFRESH_MS
+			) {
+				record.last_used_at = new Date(now).toISOString();
+				this.db
+					.update(schema.accessTokens)
+					.set({ last_used_at: record.last_used_at })
+					.where(eq(schema.accessTokens.id, existing.id))
+					.run();
+			}
+			return record;
+		} catch {
+			return null;
+		}
 	}
 
 	/** How many templates this mailbox holds (the create-time cap check). */

@@ -199,6 +199,12 @@ import {
 	MAX_SAVED_SEARCH_QUERY_LENGTH,
 	type MailboxDO,
 } from "./durableObject";
+import {
+	ACCESS_TOKEN_SCOPES,
+	MAX_ACCESS_TOKENS,
+	MAX_ACCESS_TOKEN_NAME_LENGTH,
+	normalizeAccessTokenScopes,
+} from "../shared/access-tokens";
 
 type AppContext = Context<MailboxContext>;
 
@@ -1988,6 +1994,84 @@ app.delete(
 		return deleted
 			? c.json({ ok: true })
 			: c.json({ error: "Saved search not found" }, 404);
+	},
+);
+
+
+// -- Access tokens (bearer credentials) ------------------------------
+
+/**
+ * The reason a token-create body is unusable, or null when it is fine.
+ * The bounds mirror the Durable Object's own validators
+ * (shared/access-tokens.ts), so the 400 can name the field: the Durable
+ * Object answers null for an unusable value and for its cap alike, and
+ * only this pre-check can tell the two apart.
+ */
+function accessTokenCreateError(body: unknown): string | null {
+	if (body === null || typeof body !== "object") return "Invalid access token";
+	const input = body as { name?: unknown; scopes?: unknown };
+	const name = typeof input.name === "string" ? input.name.trim() : "";
+	if (!name) return "An access token name is required";
+	if (name.length > MAX_ACCESS_TOKEN_NAME_LENGTH) {
+		return `An access token name can be at most ${MAX_ACCESS_TOKEN_NAME_LENGTH} characters`;
+	}
+	if (normalizeAccessTokenScopes(input.scopes) === null) {
+		return `Scopes must be a non-empty subset of ${ACCESS_TOKEN_SCOPES.join(", ")}`;
+	}
+	return null;
+}
+
+
+/**
+ * The mailbox's access tokens, newest first. A token is a bearer
+ * credential, so this answer is metadata only: the plaintext is shown once
+ * by the create route and the stored hash never leaves the Durable Object.
+ * Read/write only — nothing on this route sends mail.
+ */
+app.get("/api/v1/mailboxes/:mailboxId/access-tokens", async (c: AppContext) => {
+	return c.json({ tokens: await c.var.mailboxStub.listAccessTokens() });
+});
+
+
+/**
+ * Mint one access token. The name (1..120 characters, trimmed) and the
+ * scopes (a non-empty subset of read, draft, send) are validated here so
+ * the 400 names the reason, and the 20-per-mailbox cap is enforced by the
+ * Durable Object; the 201 is the only answer that ever carries the
+ * plaintext token — it is shown once and cannot be read back.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/access-tokens", async (c: AppContext) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	const error = accessTokenCreateError(body);
+	if (error) return c.json({ error }, 400);
+	const created = await c.var.mailboxStub.createAccessToken(
+		decodeURIComponent(c.req.param("mailboxId")!),
+		body as { name: string; scopes: string[] },
+	);
+	return created
+		? c.json(created, 201)
+		: c.json(
+				{
+					error: `A mailbox can hold at most ${MAX_ACCESS_TOKENS} access tokens`,
+				},
+				400,
+			);
+});
+
+
+/**
+ * Revoke one access token. 404 when there is nothing to revoke; nothing
+ * else is touched, and the revoked token stops resolving immediately.
+ */
+app.delete(
+	"/api/v1/mailboxes/:mailboxId/access-tokens/:tokenId",
+	async (c: AppContext) => {
+		const revoked = await c.var.mailboxStub.revokeAccessToken(
+			c.req.param("tokenId")!,
+		);
+		return revoked
+			? c.json({ ok: true })
+			: c.json({ error: "Access token not found" }, 404);
 	},
 );
 
