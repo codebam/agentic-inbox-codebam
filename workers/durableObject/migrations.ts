@@ -818,4 +818,25 @@ export const mailboxMigrations: Migration[] = [
             );
         `),
 	},
+	{
+		// Access tokens (shared/access-tokens.ts): the bearer credentials an
+		// agent CLI or integration presents instead of a browser session. Only
+		// the SHA-256 hash of the full token string is stored — the plaintext
+		// is shown once at creation and never again — and `scopes` is a JSON
+		// array of the read/draft/send strings the token may use. Bounded by
+		// MAX_ACCESS_TOKENS per mailbox (createAccessToken refuses beyond it —
+		// tokens are kept until revoked, never pruned) and `last_used_at` is
+		// null until the first successful verify.
+		name: "39_add_access_tokens",
+		sql: txn(`
+            CREATE TABLE IF NOT EXISTS access_tokens (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                scopes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            );
+        `),
+	},
 ];

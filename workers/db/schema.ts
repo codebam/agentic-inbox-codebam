@@ -472,3 +472,25 @@ export const mutedThreads = sqliteTable("muted_threads", {
 	thread_id: text("thread_id").primaryKey(),
 	created_at: text("created_at").notNull(),
 });
+
+/**
+ * Access tokens (migration 39_add_access_tokens, shared/access-tokens.ts):
+ * the bearer credentials an agent CLI or integration presents instead of a
+ * browser session. Only the SHA-256 hash of the full token string is stored
+ * (`token_hash`, unique) — the plaintext is shown once at creation and never
+ * again — and `scopes` is a JSON array of the read/draft/send strings the
+ * token may use. One mailbox holds at most MAX_ACCESS_TOKENS rows (refused
+ * by MailboxDO.createAccessToken; a token is kept until revoked, never
+ * pruned), and `last_used_at` stays null until the first successful verify.
+ */
+export const accessTokens = sqliteTable("access_tokens", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	/** SHA-256 hex of the full token string; the plaintext is never stored. */
+	token_hash: text("token_hash").notNull().unique(),
+	/** JSON array of AccessTokenScope values, canonical order. */
+	scopes: text("scopes").notNull(),
+	created_at: text("created_at").notNull(),
+	/** ISO instant of the last successful verify; null until first use. */
+	last_used_at: text("last_used_at"),
+});
