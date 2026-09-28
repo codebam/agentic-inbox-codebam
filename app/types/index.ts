@@ -183,8 +183,8 @@ export interface BulkEmailTarget {
 	threadCount?: number | undefined;
 }
 
-/** Surface that recorded an action: the built-in agent or an MCP client. */
-export type AgentActionSource = "agent" | "mcp";
+/** Surface that recorded an action: the built-in agent, an MCP client or a scoped access token. */
+export type AgentActionSource = "agent" | "mcp" | "scoped";
 
 /**
  * One row of a mailbox's agent/MCP action audit log.

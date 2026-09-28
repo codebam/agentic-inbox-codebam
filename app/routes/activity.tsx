@@ -78,8 +78,8 @@ function ActionRow({ action, mailboxId, folderNames }: ActionRowProps) {
 		<li className="rounded-lg border border-kumo-line bg-kumo-base px-4 py-3">
 			<div className="flex items-start gap-3">
 				<div className="pt-0.5">
-					<Badge variant={action.source === "mcp" ? "purple" : "blue"}>
-						{action.source === "mcp" ? "MCP" : "agent"}
+					<Badge variant={action.source === "mcp" ? "purple" : action.source === "scoped" ? "teal" : "blue"}>
+						{action.source === "mcp" ? "MCP" : action.source === "scoped" ? "scoped" : "agent"}
 					</Badge>
 				</div>
 
