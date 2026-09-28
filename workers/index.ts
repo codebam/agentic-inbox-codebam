@@ -205,6 +205,10 @@ import {
 	MAX_ACCESS_TOKEN_NAME_LENGTH,
 	normalizeAccessTokenScopes,
 } from "../shared/access-tokens";
+import {
+	authenticateScopedRequest,
+	runScopedTool,
+} from "./lib/scoped-surface";
 
 type AppContext = Context<MailboxContext>;
 
@@ -333,6 +337,42 @@ app.get("/api/v1/config", (c) => {
 		agentEnabled: isAiAgentEnabled(c.env),
 		mcpEnabled: isMcpEnabled(c.env),
 	});
+});
+
+// -- Scoped automation surface ---------------------------------------
+
+/**
+ * Bearer-authenticated automation surface: POST /api/v1/scoped/<tool>, one
+ * mailbox per token, scopes read/draft/send — the token's scopes decide
+ * which tools answer. Authentication and dispatch live in
+ * workers/lib/scoped-surface.ts. Non-POST methods are not registered.
+ */
+app.post("/api/v1/scoped/:tool", async (c) => {
+	const auth = await authenticateScopedRequest(
+		c.req.header("authorization"),
+		c.env,
+	);
+	if (!auth.ok) {
+		c.header("WWW-Authenticate", "Bearer");
+		return c.json({ error: auth.error }, auth.status);
+	}
+
+	// An absent body is no arguments; a present but unparseable body is the
+	// malformed-JSON refusal.
+	const raw = await c.req.text();
+	let body: unknown;
+	if (raw.trim() === "") {
+		body = undefined;
+	} else {
+		try {
+			body = JSON.parse(raw);
+		} catch {
+			return c.json({ error: "Invalid request: malformed JSON body" }, 400);
+		}
+	}
+
+	const result = await runScopedTool(c.env, auth, c.req.param("tool"), body);
+	return c.json(result.body, result.status);
 });
 
 // -- Global categorization ------------------------------------------

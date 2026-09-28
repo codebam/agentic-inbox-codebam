@@ -101,6 +101,15 @@ function isMcpPath(pathname: string) {
 }
 
 /**
+ * The scoped automation surface (workers/lib/scoped-surface.ts): token-
+ * authenticated clients outside the Access boundary. Exactly this prefix is
+ * exempt — nothing else that merely starts with the words.
+ */
+function isScopedPath(pathname: string) {
+	return pathname === "/api/v1/scoped" || pathname.startsWith("/api/v1/scoped/");
+}
+
+/**
  * Public attachment download links (workers/lib/attachment-links.ts): the
  * token in the query string IS the capability, so these paths are opened by
  * recipients who have no Cloudflare Access session. Exactly this prefix is
@@ -154,6 +163,13 @@ app.use("*", async (c: AuthContext, next) => {
 	// Public download links authenticate with their token, not an Access JWT:
 	// the recipient is outside the Access boundary by definition.
 	if (isPublicDownloadPath(pathname)) {
+		return next();
+	}
+	// The scoped surface authenticates with its own per-mailbox bearer
+	// tokens (workers/lib/scoped-surface.ts); an operator-side Access bypass
+	// policy for this prefix is required for external clients — the deploy
+	// handover names it.
+	if (isScopedPath(pathname)) {
 		return next();
 	}
 	if (isMcpPath(pathname)) {
