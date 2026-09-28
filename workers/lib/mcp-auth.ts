@@ -16,12 +16,27 @@
  * API, so we verify them by asking Cloudflare whether the token can read one
  * of the domains this inbox is configured to manage.
  *
+ * As an alternative, an operator-minted Settings access token (the `ain1`
+ * wire format, shared/access-tokens.ts) authenticates too. Such a token is
+ * verified in the mailbox its string names, exactly like the scoped
+ * automation surface verifies it (workers/lib/scoped-surface.ts), and the
+ * session it authenticates is BOUND to that mailbox with the token's
+ * read/draft/send scopes — never the full multi-mailbox operator surface.
+ *
  * The browser UI remains protected by Cloudflare Access. This module is only
  * used for `/mcp`, where browser cookies and Access JWTs are not available to
  * most MCP clients.
  */
 
 import { z } from "zod";
+import {
+	isAccessTokenScope,
+	parseAccessToken,
+	type AccessTokenScope,
+} from "../../shared/access-tokens";
+import { hashAccessToken } from "./access-tokens";
+import { getMailboxStub } from "./email-helpers";
+import type { Env } from "../types";
 
 const DEFAULT_CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const MAX_AUTHORIZATION_LENGTH = 8 * 1024;
@@ -54,6 +69,12 @@ export interface McpAuthEnv {
 	MCP_AUTH_CACHE_TTL_SECONDS?: string;
 	/** Set to `"true"` to disable the per-colo auth cache entirely. */
 	MCP_AUTH_DISABLE_CACHE?: string;
+	/**
+	 * Durable Object namespace for the mailboxes. Required to verify Settings
+	 * access tokens: a token is looked up in the mailbox its string names, so
+	 * only the mailbox it was minted for can ever accept it.
+	 */
+	MAILBOX?: Env["MAILBOX"];
 }
 
 export type McpAuthErrorCode =
@@ -75,9 +96,31 @@ export interface McpAuthIdentity {
 	accounts: Array<{ id: string; name?: string | undefined }>;
 }
 
+/**
+ * The scoped binding a Settings access token carries into an MCP session.
+ * The token string names one mailbox, and the Durable Object record that
+ * verified the token holds its scopes and id; together they are the whole
+ * surface the session may reach.
+ */
+export interface McpScopedBinding {
+	/** The mailbox the token was minted for; the only one the session may act on. */
+	mailboxId: string;
+	/** The scopes the token carries (`read`, `draft`, `send`). */
+	scopes: AccessTokenScope[];
+	/** Id of the stored token record that verified, for the audit log. */
+	tokenId: string;
+}
+
 export interface McpAuthSuccess {
 	ok: true;
-	identity: McpAuthIdentity;
+	/**
+	 * Cloudflare-credential identity. Present when a Wrangler credential
+	 * (account or domain match) authenticated the request, absent for a
+	 * Settings access token.
+	 */
+	identity?: McpAuthIdentity;
+	/** Scoped binding. Present only when a Settings access token authenticated. */
+	binding?: McpScopedBinding;
 }
 
 export type McpAuthFailureStatus = 400 | 401 | 403 | 429 | 500 | 502 | 504;
@@ -506,8 +549,146 @@ export function parseBearerToken(header: string | null | undefined): string | nu
 }
 
 /**
+ * The one message every scoped /mcp authentication failure answers with.
+ * Identical to the scoped automation surface's (workers/lib/scoped-surface.ts):
+ * a bearer credential must not be an oracle, so a token that is malformed, a
+ * near miss and a revoked token all read the same.
+ */
+const INVALID_ACCESS_TOKEN_ERROR = "Invalid or revoked access token";
+
+/**
+ * Verify a Settings access token against the mailbox its string names.
+ *
+ * The recipe is exactly the scoped automation surface's
+ * (workers/lib/scoped-surface.ts): parse the wire format for the mailbox id,
+ * SHA-256 the FULL token string, and trust only the record the mailbox's own
+ * `verifyAccessToken` answers with. A token therefore resolves in one mailbox
+ * alone, and its stored scopes and id are what the session is bound to.
+ *
+ * Every failure answers the one indistinguishable 401, including a
+ * deployment without the namespace binding: a token that cannot be verified
+ * is not a credential, and saying which failure it was would turn the
+ * endpoint into an oracle.
+ */
+async function verifyScopedAccessToken(
+	token: string,
+	mailboxId: string,
+	env: McpAuthEnv,
+): Promise<McpAuthResult> {
+	// The structural env this module is typed against carries only what MCP
+	// auth reads; widen it back to the app Env for the shared stub helper.
+	const namespaceEnv = env as Env;
+	if (!env.MAILBOX) {
+		return failure(401, "invalid_token", INVALID_ACCESS_TOKEN_ERROR);
+	}
+
+	const record = await getMailboxStub(namespaceEnv, mailboxId).verifyAccessToken(
+		await hashAccessToken(token),
+	);
+	if (!record) {
+		return failure(401, "invalid_token", INVALID_ACCESS_TOKEN_ERROR);
+	}
+
+	return {
+		ok: true,
+		binding: {
+			mailboxId,
+			scopes: record.scopes,
+			tokenId: record.id,
+		},
+	};
+}
+
+/**
+ * The internal request header a verified scoped binding travels in, from the
+ * /mcp middleware to the MCP handler (workers/app.ts).
+ *
+ * INTERNAL ONLY. It is never itself a credential: the middleware deletes any
+ * client-supplied copy of this header from every /mcp request before it
+ * authenticates anything, and writes its own value only once a Settings
+ * access token verified. The /mcp route turns the middleware's header into
+ * the per-request props McpAgent.serve reads, so a client can neither forge a
+ * binding nor widen the one its token holds.
+ */
+export const MCP_SESSION_HEADER = "x-agentic-inbox-mcp-session";
+
+/**
+ * The props an MCP session carries, read by the agent from its execution
+ * context. A full operator session has no props at all; only a scoped one
+ * has a binding.
+ */
+export type McpSessionProps = { scopedSession: McpScopedBinding };
+
+/** Drop the internal session header from a request. */
+export function stripMcpSessionMarker(request: Request): Request {
+	if (!request.headers.has(MCP_SESSION_HEADER)) return request;
+	const headers = new Headers(request.headers);
+	headers.delete(MCP_SESSION_HEADER);
+	return new Request(request, { headers });
+}
+
+/**
+ * The request as the MCP handler should see it: the client's copy of the
+ * internal session marker is gone either way, and only a verified scoped
+ * result gets a marker of this code's own — carrying exactly the mailbox,
+ * scopes and token id the token's record holds, never anything the client
+ * asked for. A Cloudflare-credential (or Access JWT) request stays untagged:
+ * the full multi-mailbox operator session.
+ */
+export function bindMcpSessionMarker(
+	request: Request,
+	result: McpAuthResult,
+): Request {
+	const stripped = stripMcpSessionMarker(request);
+	if (!result.ok || !result.binding) return stripped;
+	const headers = new Headers(stripped.headers);
+	headers.set(MCP_SESSION_HEADER, JSON.stringify(result.binding));
+	return new Request(stripped, { headers });
+}
+
+/** True when `value` is a scoped binding this module could have written. */
+function isMcpScopedBinding(value: unknown): value is McpScopedBinding {
+	if (typeof value !== "object" || value === null) return false;
+	const binding = value as {
+		mailboxId?: unknown;
+		scopes?: unknown;
+		tokenId?: unknown;
+	};
+	return (
+		typeof binding.mailboxId === "string" &&
+		binding.mailboxId.length > 0 &&
+		typeof binding.tokenId === "string" &&
+		Array.isArray(binding.scopes) &&
+		binding.scopes.length > 0 &&
+		binding.scopes.every(isAccessTokenScope)
+	);
+}
+
+/**
+ * The scoped-session props a request carries, or undefined for a full
+ * operator session. Only the middleware above writes the marker; this reads
+ * it back for the /mcp route.
+ */
+export function mcpSessionProps(request: Request): McpSessionProps | undefined {
+	const raw = request.headers.get(MCP_SESSION_HEADER);
+	if (!raw) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return isMcpScopedBinding(parsed) ? { scopedSession: parsed } : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Convenience wrapper for the Hono middleware: validates the `Authorization`
  * header shape and then verifies the credential with Cloudflare.
+ *
+ * A bearer that is the Settings access-token wire format (`ain1`) is verified
+ * against its mailbox instead (see verifyScopedAccessToken) and is never
+ * cached: the auth cache exists to keep the Cloudflare API lookups cheap, and
+ * caching a scoped success would keep a revoked token working until its TTL
+ * lapsed. Everything else keeps today's path: the cache, then Cloudflare.
  */
 export async function authenticateMcpRequest(
 	authorizationHeader: string | null | undefined,
@@ -529,6 +710,11 @@ export async function authenticateMcpRequest(
 			"invalid_token",
 			"Authorization header must use the `Bearer <wrangler auth token>` scheme.",
 		);
+	}
+
+	const parsedAccessToken = parseAccessToken(token);
+	if (parsedAccessToken) {
+		return verifyScopedAccessToken(token, parsedAccessToken.mailboxId, env);
 	}
 
 	const cached = await readAuthCache(token, env, options);

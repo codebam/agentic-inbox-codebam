@@ -113,7 +113,7 @@ npm run deploy
 - [Workers AI](https://developers.cloudflare.com/workers-ai/) enabled (for the agent)
 - [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) configured for deployed/shared environments (required in production)
 
-Browser access is gated by the shared Cloudflare Access policy. The `/mcp` endpoint instead accepts a Wrangler credential produced by `wrangler auth token` (or `CLOUDFLARE_API_TOKEN`). Once authenticated, both paths grant access to all mailboxes by design; external agents select a mailbox with the `mailboxId` tool parameter. There is no per-mailbox authorization, so treat the Cloudflare Access policy and each Wrangler key as full-trust credentials.
+Browser access is gated by the shared Cloudflare Access policy. The `/mcp` endpoint instead accepts a Wrangler credential produced by `wrangler auth token` (or `CLOUDFLARE_API_TOKEN`), or an operator-minted access token scoped to one mailbox (see [Agent-first MCP server](#agent-first-mcp-server)). A Wrangler credential grants access to all mailboxes by design; external agents select a mailbox with the `mailboxId` tool parameter, and that path has no per-mailbox authorization, so treat the Cloudflare Access policy and each Wrangler key as full-trust credentials. A Settings access token is the narrower alternative: its session reaches the mailbox it was minted for and the tools its `read`, `draft` and `send` scopes allow, and nothing else.
 
 ## Agent-first MCP server
 
@@ -163,6 +163,25 @@ If your MCP client supports remote HTTP servers and custom headers:
 
 > **Cloudflare Access deployments:** add a **Bypass** policy for the `/mcp` and `/mcp/*` paths in the Access application. Without it, Access will challenge MCP clients at the edge before the Worker can validate the Wrangler bearer token. The Worker still enforces the bearer check on every MCP request.
 
+### Option C — Settings access token, scoped to one mailbox
+
+An operator-minted **access token** (the same credential the [Scoped automation API](#scoped-automation-api) uses, minted in the mailbox's Settings under **Access tokens**) also authenticates `/mcp`. Send it where Option B sends the Wrangler key, and the session it opens is bound to that one mailbox and to the scopes the token carries:
+
+```json
+{
+  "mcpServers": {
+    "agentic-inbox-codebam": {
+      "url": "https://email.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <Settings access token>"
+      }
+    }
+  }
+}
+```
+
+Inside that session, `read` reaches `list_emails`, `get_email`, `get_thread`, `search_emails` and `get_attachment`; `draft` the draft tools; `send` the two send tools; `list_mailboxes` answers the token's mailbox alone; and every other tool, and any call naming another `mailboxId`, comes back as an error. Revoking the token ends the session's access immediately, and the same Access **Bypass** policy for `/mcp` applies.
+
 ### How the Worker authorizes the key
 
 The Worker verifies the bearer credential by calling the Cloudflare API with it. In the default mode, the token is accepted only if it can read a Cloudflare zone listed in the `DOMAINS` Worker variable (or a domain derived from `EMAIL_ADDRESSES`). This binds each key to the account that owns the inbox.
@@ -175,6 +194,8 @@ npx wrangler secret put MCP_ALLOWED_ACCOUNT_IDS
 ```
 
 Auth results are cached per Worker isolate for 5 minutes (and in the Cloudflare Cache API where it is available). Raw credentials are never logged or written to disk.
+
+A **Settings access token** (Option C) takes a different path: it is verified against the mailbox its string names, inside that mailbox's Durable Object, and the result is never cached — so revoking the token ends access on the next request rather than within a cache TTL. Non-Wrangler bearers that are not access tokens keep the checks above.
 
 ### Available MCP tools
 
@@ -193,7 +214,9 @@ Aside from `/mcp`, automation outside the Access boundary can call the scoped
 tool API with a per-mailbox **access token**: mint one in the mailbox's
 Settings under **Access tokens** (`read`, `draft` and/or `send` scopes; up to
 20 per mailbox; the plaintext is shown once, only its SHA-256 is stored, and
-revoking a token takes effect immediately).
+revoking a token takes effect immediately). The same tokens also authenticate
+`/mcp`, as a session scoped to their mailbox (see
+[Option C](#option-c--settings-access-token-scoped-to-one-mailbox)).
 
 Each tool maps to one scope — `read`: `list_emails`, `get_email`, `get_thread`,
 `search_emails`, `get_attachment`; `draft`: `draft_reply`, `create_draft`,

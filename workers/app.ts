@@ -9,7 +9,13 @@ import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
-import { authenticateMcpRequest, type McpAuthFailure } from "./lib/mcp-auth";
+import {
+	authenticateMcpRequest,
+	bindMcpSessionMarker,
+	mcpSessionProps,
+	stripMcpSessionMarker,
+	type McpAuthFailure,
+} from "./lib/mcp-auth";
 import { sweepDueMail } from "./lib/mail-sweep";
 import { DIGEST_CRON, sweepDigests } from "./lib/digest-sweep";
 import { sweepImageProxyCache } from "./lib/image-proxy";
@@ -151,15 +157,28 @@ const app = new Hono<{ Bindings: Env }>();
 // * `/mcp` is agent-facing and authenticates with a Wrangler credential via
 //   `Authorization: Bearer <wrangler auth token>`. Cloudflare Access JWTs are
 //   accepted as a fallback for clients already inside the Access boundary.
+//   An operator-minted Settings access token (the `ain1` wire format) is the
+//   third credential: the session it authenticates is bound to the token's
+//   mailbox and scopes, and never to the multi-mailbox operator surface.
 // * All other routes keep the original Cloudflare Access gate.
 app.use("*", async (c: AuthContext, next) => {
+	const pathname = new URL(c.req.url).pathname;
+
+	// The internal scoped-session marker (workers/lib/mcp-auth.ts) is
+	// deleted from every /mcp request here — in development too. Only the
+	// branch below, after a Settings access token verified, may write one
+	// back, so no client-supplied copy can ever reach the MCP handler and
+	// no client can forge or widen a session binding.
+	if (isMcpPath(pathname)) {
+		c.req.raw = stripMcpSessionMarker(c.req.raw);
+	}
+
 	// Skip validation in development. Local MCP and UI traffic is already
 	// loopback-only in `wrangler dev`.
 	if (import.meta.env.DEV) {
 		return next();
 	}
 
-	const pathname = new URL(c.req.url).pathname;
 	// Public download links authenticate with their token, not an Access JWT:
 	// the recipient is outside the Access boundary by definition.
 	if (isPublicDownloadPath(pathname)) {
@@ -184,6 +203,11 @@ app.use("*", async (c: AuthContext, next) => {
 		if (authorization) {
 			const result = await authenticateMcpRequest(authorization, c.env);
 			if (result.ok) {
+				// A verified scoped session gets the marker re-attached from
+				// the verified record alone. A Cloudflare-credential (or
+				// Access JWT) request always travels untagged: the full
+				// multi-mailbox operator session.
+				c.req.raw = bindMcpSessionMarker(c.req.raw, result);
 				return next();
 			}
 			// If a client has both headers, prefer a valid Access JWT as a
@@ -243,19 +267,38 @@ const mcpHandler = EmailMCP.serve("/mcp", {
 		maxAge: 86400,
 	},
 });
+
+/**
+ * Hand one /mcp request to the MCP handler.
+ *
+ * A verified scoped session (workers/lib/mcp-auth.ts) becomes execution-
+ * context props here: per-request state a client cannot set, which
+ * McpAgent.serve reads and carries into the agent. The internal marker
+ * header the middleware carried the binding in on is not itself trusted —
+ * it is deleted from every request on the way in and only the middleware
+ * ever writes one, after the token verified.
+ */
+function handleMcpRequest(c: Context<{ Bindings: Env }>) {
+	const props = mcpSessionProps(c.req.raw);
+	if (props) {
+		c.executionCtx.props = props;
+	}
+	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
+}
+
 // The MCP server is opt-out (ENABLE_MCP): a disabled deployment answers 404
 // here, before the handler does any auth or session work.
 app.all("/mcp", async (c) => {
 	if (!isMcpEnabled(c.env)) {
 		return c.json({ error: "MCP server is disabled." }, 404);
 	}
-	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
+	return handleMcpRequest(c);
 });
 app.all("/mcp/*", async (c) => {
 	if (!isMcpEnabled(c.env)) {
 		return c.json({ error: "MCP server is disabled." }, 404);
 	}
-	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
+	return handleMcpRequest(c);
 });
 
 // Mount the API routes

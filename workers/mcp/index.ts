@@ -3,7 +3,17 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { McpAgent } from "agents/mcp";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type {
+	ShapeOutput,
+	ZodRawShapeCompat,
+} from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type {
+	CallToolResult,
+	ServerNotification,
+	ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import { z } from "zod";
 import {
 	toolListMailboxes,
@@ -54,6 +64,8 @@ import {
 	DEFAULT_CONTACT_SEARCH_LIMIT,
 	MAX_CONTACT_SEARCH_LIMIT,
 } from "../lib/contacts";
+import type { McpScopedBinding, McpSessionProps } from "../lib/mcp-auth";
+import { SCOPED_TOOL_SCOPES } from "../lib/scoped-surface";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
 import type { Env } from "../types";
@@ -87,6 +99,84 @@ function mcpResult(result: Record<string, unknown>) {
 		};
 	}
 	return mcpText(result);
+}
+
+/**
+ * The callback type of one shape-typed tool: the SDK's ToolCallback resolved
+ * for its object-schema branch, kept as a plain generic alias so a callback
+ * whose schema is the type parameter `Shape` stays checkable. The SDK's own
+ * ToolCallback is a conditional type, which TypeScript cannot resolve
+ * against an unresolved `Shape`.
+ */
+type ShapeToolHandler<Shape extends ZodRawShapeCompat> = (
+	args: ShapeOutput<Shape>,
+	extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+) => CallToolResult | Promise<CallToolResult>;
+
+/**
+ * The SDK's four-argument tool registration form —
+ * `server.tool(name, description, schema, callback)` — as one callable
+ * signature. The SDK declares `tool` as an overload set, and TypeScript
+ * cannot resolve an overload through a wrapper's own type parameter, so the
+ * method is bound to this signature once (in init, below) and the wrapper
+ * then delegates through it.
+ */
+type ToolRegistrar = <Shape extends ZodRawShapeCompat>(
+	name: string,
+	description: string,
+	schema: Shape,
+	callback: ShapeToolHandler<Shape>,
+) => RegisteredTool;
+
+/**
+ * The MCP surface's rules for a session bound by a Settings access token
+ * (`ain1`, workers/lib/mcp-auth.ts).
+ *
+ * The binding names one mailbox and the read/draft/send scopes the token's
+ * stored record holds. Inside such a session:
+ *   - only the tools of SCOPED_TOOL_SCOPES — the very map the scoped
+ *     automation surface uses (workers/lib/scoped-surface.ts), never a copy —
+ *     plus `list_mailboxes` may be invoked, each gated by the scope the map
+ *     assigns it;
+ *   - `list_mailboxes` answers the bound mailbox alone;
+ *   - every argument naming another mailbox is refused.
+ *
+ * Returns the error result to answer with, or null when the call may run. An
+ * unbound session — a Wrangler credential — is the full multi-mailbox
+ * operator surface and is not restricted here.
+ */
+async function scopedSessionRefusal(
+	env: Env,
+	binding: McpScopedBinding,
+	toolName: string,
+	args: unknown,
+): Promise<CallToolResult | null> {
+	const scope = SCOPED_TOOL_SCOPES[toolName];
+	if (!scope && toolName !== "list_mailboxes") {
+		return mcpError(
+			`Scoped access tokens cannot use the "${toolName}" tool. This session is bound to "${binding.mailboxId}" and may only call list_mailboxes and its token's scoped tools.`,
+		);
+	}
+
+	const asked = (args as { mailboxId?: unknown }).mailboxId;
+	if (typeof asked === "string" && asked !== binding.mailboxId) {
+		return mcpError(
+			`This session is bound to mailbox "${binding.mailboxId}" and cannot act on "${asked}".`,
+		);
+	}
+
+	if (toolName === "list_mailboxes") {
+		const mailboxes = await toolListMailboxes(env);
+		return mcpText(
+			mailboxes.filter((mailbox) => mailbox.id === binding.mailboxId),
+		);
+	}
+
+	if (scope && !binding.scopes.includes(scope)) {
+		return mcpError(`This token lacks the ${scope} scope, which "${toolName}" requires.`);
+	}
+
+	return null;
 }
 
 
@@ -159,8 +249,14 @@ const searchFilterShape = {
  * Clients (ProtoAgent, Claude Code, Cursor, etc.) connect to the
  * `/mcp` endpoint and can list mailboxes, read/search emails,
  * draft replies, send messages, and manage folders.
+ *
+ * A session authenticated by a Wrangler credential is the full operator
+ * surface. A session authenticated by an operator-minted Settings access
+ * token carries `props.scopedSession` instead — set by the /mcp middleware
+ * from the token's verified record, never by a client — and every tool
+ * registration below is gated by it (see scopedSessionRefusal).
  */
-export class EmailMCP extends McpAgent<Env> {
+export class EmailMCP extends McpAgent<Env, unknown, McpSessionProps> {
 	server = new McpServer(
 		{
 			name: "agentic-inbox-codebam",
@@ -197,8 +293,35 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			return null;
 		};
 
+		// The SDK's overloaded `tool` cannot be called with a schema held in a
+		// type parameter; bind its four-argument form once (see ToolRegistrar).
+		const register = this.server.tool.bind(this.server) as ToolRegistrar;
+
+		/**
+		 * Register one MCP tool through the scoped-session guard: a session
+		 * bound by a Settings access token (workers/lib/mcp-auth.ts) may only
+		 * reach the tools scopedSessionRefusal allows. The binding is read
+		 * from this agent's props at call time — props are set by the /mcp
+		 * middleware, never by a client — so every tool registered in this
+		 * method is covered, including any added later.
+		 */
+		const registerTool = <Shape extends ZodRawShapeCompat>(
+			name: string,
+			description: string,
+			shape: Shape,
+			handler: ShapeToolHandler<Shape>,
+		) =>
+			register(name, description, shape, async (args, extra) => {
+				const binding = this.props?.scopedSession;
+				if (binding) {
+					const refusal = await scopedSessionRefusal(env, binding, name, args);
+					if (refusal) return refusal;
+				}
+				return handler(args, extra);
+			});
+
 		// ── list_mailboxes ─────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_mailboxes",
 			"List all available mailboxes",
 			{},
@@ -209,7 +332,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── list_emails ────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_emails",
 			"List emails in a mailbox folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, category).",
 			{
@@ -244,7 +367,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── get_email ──────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"get_email",
 			"Get a single email with its full body content. Use this to read the actual content of an email.",
 			{
@@ -266,7 +389,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── get_attachment ─────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"get_attachment",
 			"Read one attachment's metadata and, for text-ish files (text/*, application/json, application/xml, application/javascript, application/x-ndjson, message/rfc822), its text content, decoded as UTF-8 and capped at 200000 characters. Read-only and bounded: binary attachments, files over 1 MiB, and blobs missing from storage come back as metadata plus an omission reason — never as raw bytes.",
 			{
@@ -288,7 +411,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── get_thread ─────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"get_thread",
 			"Get all emails in a conversation thread. Returns all messages sorted chronologically.",
 			{
@@ -306,7 +429,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── search_emails ──────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"search_emails",
 			"Search for emails in one mailbox. Free text matches subject, body, sender and recipient; Gmail-style operators (from:bob is:unread has:attachment before:2025-01-01) are accepted in the query or as separate filters.",
 			{
@@ -322,7 +445,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── search_all_mailboxes ───────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"search_all_mailboxes",
 			"Search every mailbox in the deployment at once and merge the matches by date (newest first). Same filters as search_emails; each result row includes the mailboxId it came from.",
 			{ ...searchFilterShape },
@@ -333,7 +456,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── semantic_search ────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"semantic_search",
 			"Semantic (meaning-based) search over one mailbox's stored mail. Use it when the exact words are unknown — it finds messages by what they are about rather than by keyword. Read-only: it reads the mailbox, changes nothing and sends nothing. It needs the mailbox's semantic index (Settings → Semantic search) and reports a not-configured message when the deployment has none.",
 			{
@@ -362,7 +485,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── draft_reply ────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"draft_reply",
 			"Draft a reply to an email and save it to the Drafts folder. Does NOT send — saves a draft for review.",
 			{
@@ -399,7 +522,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── create_draft ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"create_draft",
 			"Create a new draft email. Can be a new email or a reply draft.",
 			{
@@ -449,7 +572,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── update_draft ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"update_draft",
 			"Update an existing draft email's content.",
 			{
@@ -485,7 +608,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── delete_email ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"delete_email",
 			"Delete an email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible.",
 			{
@@ -517,7 +640,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── discard_draft ──────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"discard_draft",
 			"Permanently delete a draft email — drafts are not moved to Trash and cannot be restored.",
 			{
@@ -533,7 +656,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── delete_spam_emails ─────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"delete_spam_emails",
 			"Permanently delete every email marked as spam (Spam folder, spam category, or classifier is_spam). Irreversible — spam is never moved to Trash. Omit mailboxId to clear spam from every mailbox.",
 			{
@@ -553,7 +676,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── send_reply ─────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"send_reply",
 			"Send a reply to an email. Only call after drafting and getting confirmation.",
 			{
@@ -595,7 +718,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── send_email ─────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"send_email",
 			`Send a new email (not a reply), optionally with cc, bcc and inline attachments (${TOOL_ATTACHMENT_CAP_NOTE}). Only call after the human operator has explicitly confirmed the exact recipient, subject and body.`,
 			{
@@ -647,7 +770,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── mark_email_read ────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"mark_email_read",
 			"Mark an email as read or unread.",
 			{
@@ -674,7 +797,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── star_email ─────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"star_email",
 			"Star or unstar an email.",
 			{
@@ -701,7 +824,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── move_email ─────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"move_email",
 			"Move an email to a different folder (inbox, sent, draft, archive, spam, trash).",
 			{
@@ -742,7 +865,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── set_sender_policy ──────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"set_sender_policy",
 			"Record an allow or block decision for the sender of an email: allow moves the message back to the Inbox and clears its spam markings, block moves it to Spam. Nothing is deleted.",
 			{
@@ -761,7 +884,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── snooze_email ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"snooze_email",
 			"Snooze an email until a future time. The message moves to the Snoozed folder and returns to the folder it came from by itself when the time arrives — nothing is deleted. Accepts an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
 			{
@@ -782,7 +905,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── unsnooze_email ─────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"unsnooze_email",
 			"Wake a snoozed email now: it returns to the folder it came from immediately. Nothing is deleted.",
 			{
@@ -798,7 +921,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── set_reminder ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"set_reminder",
 			"Set a follow-up reminder for an email. The message stays where it is; when the reminder fires it is flagged and pulled back to the Inbox if the thread still expects a reply. Nothing is deleted. Accepts an ISO 8601 timestamp or a relative shorthand like 30m, 4h, 3d or 1w.",
 			{
@@ -819,7 +942,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── clear_reminder ─────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"clear_reminder",
 			"Cancel an email's follow-up reminder, pending or already fired. Nothing is deleted.",
 			{
@@ -835,7 +958,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── list_snoozed ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_snoozed",
 			"List the messages currently snoozed in a mailbox, earliest wake time first. Read-only: it changes nothing.",
 			{ mailboxId: z.string().describe("The mailbox email address") },
@@ -849,7 +972,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── list_scheduled_sends ───────────────────────────────────
 		// Sending is operator-only: these tools can read the queue and
 		// cancel a pending send, never schedule or send one.
-		this.server.tool(
+		registerTool(
 			"list_scheduled_sends",
 			"List the outbound messages queued for later in a mailbox, newest first, with their send time and status. Read-only: it sends and changes nothing.",
 			{ mailboxId: z.string().describe("The mailbox email address") },
@@ -861,7 +984,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 		// ── cancel_scheduled_send ──────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"cancel_scheduled_send",
 			"Cancel a pending scheduled send so it never fires. Only a pending send can be cancelled; nothing is sent and nothing is deleted.",
 			{
@@ -883,7 +1006,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// author automation that SENDS mail: forward_to and auto_reply_text
 		// are stripped by toolCreateRule / toolUpdateRule, and a rule carrying
 		// them cannot be enabled from here.
-		this.server.tool(
+		registerTool(
 			"list_rules",
 			"List the mailbox's deterministic rules (file, label, star, mark read, discard) with firing statistics. Rules that forward or auto-reply are operator-only: they are listed, but cannot be created, edited, or enabled through tools.",
 			{ mailboxId: z.string().describe("The mailbox email address") },
@@ -896,7 +1019,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── create_rule ────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"create_rule",
 			"Create a deterministic rule for incoming mail: move it to a folder, set a category, star/unstar, mark read/unread, or discard it. A rule needs at least one match condition and at least one action. Rules created here cannot send mail: forward_to and auto_reply_text are operator-only and are stripped.",
 			{ mailboxId: z.string().describe("The mailbox email address"), ...ruleToolDraftShape },
@@ -910,7 +1033,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── update_rule ────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"update_rule",
 			"Update one deterministic rule by id: rename, reorder, change its conditions or actions, enable or pause it. Rules that send mail automatically (forward or auto-reply) cannot be edited or enabled through tools — only the operator can change those.",
 			{
@@ -937,7 +1060,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── list_agent_actions ─────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_agent_actions",
 			"List the most recent mutating tool calls made through the agent or the MCP server for this mailbox, newest first, with the total number recorded. Read-only: it changes nothing. The log holds metadata only (tool, message id, subject, thread id, folder/read/star state) — never message bodies.",
 			{
@@ -959,7 +1082,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── undo_action ────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"undo_action",
 			"Undo one recorded mutating tool call by its action id: restores the message's read state, star state and folder from the state recorded before the call. It never sends and never deletes mail; only actions flagged undoable (move, star, mark read) can be undone, and each action can be undone once. Get the action id from list_agent_actions.",
 			{
@@ -977,7 +1100,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── search_contacts ────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"search_contacts",
 			"Search this mailbox's contacts — the addresses it has exchanged mail with — ranked by how often it sent to them and how recently they were seen. Use it to resolve a recipient address before send_email or send_reply. Read-only: it returns address metadata only (address, display name, sent/received counts, last seen), never message bodies.",
 			{
@@ -1012,7 +1135,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── list_templates ─────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_templates",
 			"List the mailbox's message templates — operator-authored reusable snippets (name, optional subject, body). Read-only: use a template as a starting point for a draft, but templates can only be created, edited or deleted by the operator in the app.",
 			{
@@ -1027,7 +1150,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── list_labels ────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_labels",
 			"List the mailbox's labels — user/agent-applied tags on messages (id, name, color, created_at), ordered by name. Read-only: labels are created and removed by the operator in the app.",
 			{
@@ -1042,7 +1165,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── add_label ──────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"add_label",
 			"Attach one label to one email. Pass the label's name (matched case-insensitively) or its id; the label must already exist — labels are created by the operator in the app. Answers the email's labels after the change. Nothing is sent.",
 			{
@@ -1070,7 +1193,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── remove_label ───────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"remove_label",
 			"Detach one label from one email. Pass the label's name (matched case-insensitively) or its id; detaching a label the email does not carry is a no-op. Answers the email's labels after the change. Nothing is sent.",
 			{
@@ -1098,7 +1221,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 
 		// ── list_items ─────────────────────────────────────────────
-		this.server.tool(
+		registerTool(
 			"list_items",
 			"List the tasks and deadlines extracted from this mailbox's mail — one entry per concrete task or deadline, with its source message id, kind (task | deadline), title, details, due date and status (open | done | dismissed). Read-only: items are closed or dismissed by the operator in the app, this tool changes nothing, and nothing here sends mail.",
 			{
