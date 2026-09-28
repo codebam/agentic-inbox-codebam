@@ -7,6 +7,7 @@ import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { ItemStatus } from "shared/items";
+import type { AccessTokenRecord } from "shared/access-tokens";
 import type { PushConfig, PushSubscriptionInput } from "shared/push";
 import type {
 	MailRule,
@@ -171,17 +172,11 @@ export interface SavedSearch {
 }
 
 /**
- * One access token, as the access-tokens routes answer it. Declared locally
- * here — the parent repoints this type at the backend's shared module
- * after the merge, so the UI imports nothing from shared/access-tokens yet.
+ * One access token, as the access-tokens routes answer it — the backend's
+ * own record type (shared/access-tokens.ts), so the UI cannot drift from
+ * what the routes actually return.
  */
-export interface AccessToken {
-	id: string;
-	name: string;
-	scopes: string[];
-	created_at: string;
-	last_used_at: string | null;
-}
+export type AccessToken = AccessTokenRecord;
 
 // ---------- API client ----------
 
