@@ -62,7 +62,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **One-click unsubscribe** — RFC 8058 header-driven unsubscribe on an explicit click, fetched through the same SSRF guard as the remote-image proxy
 - **Contacts autocomplete** — Recipient suggestions built from stored mail metadata (counts and last-seen, never bodies)
 - **Trash retention and mailbox purge** — Configurable Trash cleanup (30 days by default, 0 disables) plus a full mailbox purge that removes the Durable Object state, attachment blobs and chat history
-- **Remote-image proxy** — Opt-in per sender; images load through a same-origin, R2-cached proxy with a size/type cap, never from the sender's servers
+- **Remote-image proxy** — Opt-in per sender; images (and inline attachments) load through a same-origin, R2-cached proxy with a size/type cap, fetched by the page itself and inlined as `data:` URLs — the sandboxed body cannot carry the session, so this is what makes them render behind Cloudflare Access — never from the sender's servers
 - **Morning brief** — A trailing-24-hour digest in the app (counts, needs-reply, recent arrivals, categories, fired reminders, tasks due), optionally POSTed to the mailbox webhook each morning
 - **Thread summaries** — A one-click AI summary of a conversation — participants, decisions, open questions, action items, current state — computed on demand and never stored or sent
 - **Thread mute** — Mute a conversation from the message toolbar: new mail in it still arrives and classifies, but raises no push or webhook notification

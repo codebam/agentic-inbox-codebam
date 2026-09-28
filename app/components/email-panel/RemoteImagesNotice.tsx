@@ -11,13 +11,38 @@ import {
 	normalizeImageAllowlist,
 	senderAddress,
 } from "shared/remote-images";
-import { useImagesShownForMessage, useRemoteImagesStore } from "~/hooks/useRemoteImages";
+import {
+	useBodyImageState,
+	useImagesShownForMessage,
+	useRemoteImagesStore,
+} from "~/hooks/useRemoteImages";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import type { Email } from "~/types";
 
 interface RemoteImagesNoticeProps {
 	email: Email;
 	mailboxId?: string | undefined;
+}
+
+/**
+ * What the body's first-party image load is doing, for the notice line: the
+ * page fetches a body's app-origin images itself (app/lib/body-images.ts)
+ * and reports the outcome here, so an image that could not be loaded is
+ * visible instead of silently absent.
+ */
+function ImageLoadStatus({ emailId }: { emailId: string }) {
+	const state = useBodyImageState(emailId);
+	if (state.pending > 0) {
+		return <span className="text-kumo-subtle">Loading images…</span>;
+	}
+	if (state.failed > 0) {
+		return (
+			<span className="text-kumo-subtle">
+				{state.failed} image{state.failed === 1 ? "" : "s"} couldn't be loaded.
+			</span>
+		);
+	}
+	return null;
 }
 
 /**
@@ -79,6 +104,7 @@ export default function RemoteImagesNotice({ email, mailboxId }: RemoteImagesNot
 			<div className="flex items-center gap-2 px-4 py-1.5 border-b border-kumo-line text-xs text-kumo-subtle md:px-6">
 				<ImageIcon size={14} className="shrink-0" />
 				<span className="truncate">Images from {senderLabel} are always shown.</span>
+				<ImageLoadStatus emailId={email.id} />
 			</div>
 		);
 	}
@@ -88,6 +114,7 @@ export default function RemoteImagesNotice({ email, mailboxId }: RemoteImagesNot
 			<div className="flex flex-wrap items-center gap-2 px-4 py-1.5 border-b border-kumo-line text-xs text-kumo-subtle md:px-6">
 				<ImageIcon size={14} className="shrink-0" />
 				<span>Remote images are shown for this message.</span>
+				<ImageLoadStatus emailId={email.id} />
 				<Button variant="ghost" size="sm" onClick={() => hideImages(email.id)}>
 					Block images
 				</Button>
@@ -99,6 +126,7 @@ export default function RemoteImagesNotice({ email, mailboxId }: RemoteImagesNot
 		<div className="flex flex-wrap items-center gap-2 px-4 py-1.5 border-b border-kumo-line text-xs text-kumo-subtle md:px-6">
 			<ImageIcon size={14} className="shrink-0" />
 			<span>Remote images are blocked to protect your privacy.</span>
+			<ImageLoadStatus emailId={email.id} />
 			<Button
 				variant="secondary"
 				size="sm"

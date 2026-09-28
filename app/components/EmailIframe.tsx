@@ -5,10 +5,15 @@
 import DOMPurify from "dompurify";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+	BLOCKED_IMAGE_DATA_URI,
 	blockRemoteImages,
 	buildEmailIframeCsp,
+	collectBodyImageUrls,
+	inlineBodyImages,
 	proxyRemoteImages,
 } from "shared/remote-images";
+import { useRemoteImagesStore } from "~/hooks/useRemoteImages";
+import { loadBodyImages } from "~/lib/body-images";
 
 interface EmailIframeProps {
 	body: string;
@@ -26,6 +31,8 @@ interface EmailIframeProps {
 	 * as before: no proxy rewriting, so no sender URL is relayed.
 	 */
 	mailboxId?: string | undefined;
+	/** Message the body belongs to; the notice above the body reads its image-load state. */
+	emailId?: string | undefined;
 }
 
 /** The height report our sandboxed iframe posts to the parent window. */
@@ -33,6 +40,15 @@ interface EmailIframeHeightReport {
 	__emailIframeHeight: unknown;
 	height: number;
 }
+
+/** Fetched body images, tagged with the render inputs they belong to. */
+interface InlinedImages {
+	key: string;
+	dataUrls: Map<string, string>;
+}
+
+/** The no-bytes-yet lookup for a body whose images are still being fetched. */
+const NO_DATA_URLS: ReadonlyMap<string, string> = new Map();
 
 
 /**
@@ -66,15 +82,25 @@ function isHeightReport(value: unknown): value is EmailIframeHeightReport {
  *   body is passed through `blockRemoteImages` and the CSP allows no remote
  *   host. After an explicit opt-in (`allowRemoteImages`) they load through
  *   the same-origin image proxy (`mailboxId`), never from the sender.
+ * - The body's app-origin images — proxied remote images and inline
+ *   attachments — are fetched by THIS page and inlined as `data:` URLs
+ *   before the body is handed to the iframe. A document in a sandbox
+ *   without `allow-same-origin` sends its subresource requests with no
+ *   cookies at all (Chromium marks them `Sec-Fetch-Site: cross-site`), so
+ *   behind Cloudflare Access the iframe could never authenticate one; the
+ *   page is first-party and can (app/lib/body-images.ts).
  */
 export default function EmailIframe({
 	body,
 	autoSize,
 	allowRemoteImages = false,
 	mailboxId,
+	emailId,
 }: EmailIframeProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const [height, setHeight] = useState(autoSize ? 100 : 0);
+	const [inlined, setInlined] = useState<InlinedImages | null>(null);
+	const setImageState = useRemoteImagesStore((state) => state.setImageState);
 
 	// Listen for height reports from the sandboxed iframe
 	const handleMessage = useCallback(
@@ -115,6 +141,27 @@ export default function EmailIframe({
 				: sanitizedBody
 			: blockRemoteImages(sanitizedBody).html;
 
+		// Everything the body loads from the app's own origin — the proxy
+		// routes above and the inline-attachment routes MessageBody built —
+		// is fetched here, first-party, and inlined as a `data:` URL: the
+		// sandboxed iframe cannot carry the session, this page can. Until
+		// the bytes arrive the same references render as the blocked
+		// placeholder, so the iframe never fires the unauthenticated
+		// request the page is making on its behalf.
+		const baseUrl = window.location.href;
+		const renderKey = `${allowRemoteImages ? "show" : "block"}|${mailboxId ?? ""}|${body}`;
+		const fetched = inlined?.key === renderKey ? inlined.dataUrls : null;
+		const renderedBody = inlineBodyImages(
+			cleanBody,
+			fetched ?? NO_DATA_URLS,
+			baseUrl,
+			// An app-origin reference with no bytes — still loading, or a
+			// fetch that failed — renders as the blocked placeholder: the
+			// iframe must never issue the unauthenticated request the page
+			// is making on its behalf.
+			{ fallback: BLOCKED_IMAGE_DATA_URI },
+		).html;
+
 		// Inline attachments are rewritten to same-origin API URLs and the
 		// proxied remote images are same-origin too, so the CSP keeps the
 		// app's own origin and still never allows a remote host.
@@ -127,7 +174,8 @@ export default function EmailIframe({
 
 		// Height-reporting script: sends body.scrollHeight to the parent.
 		// Runs inside the opaque-origin sandbox so it has zero access to
-		// the parent page — it can only postMessage.
+		// the parent page — it can only postMessage. The `load` listener
+		// catches the height once the body's images have decoded.
 		const heightScript = autoSize
 			? `<script>
 				function reportHeight() {
@@ -138,6 +186,7 @@ export default function EmailIframe({
 				setTimeout(reportHeight, 50);
 				setTimeout(reportHeight, 150);
 				setTimeout(reportHeight, 400);
+				addEventListener("load", reportHeight);
 			</script>`
 			: "";
 
@@ -192,9 +241,29 @@ h1, h2, h3 { margin: 8px 0 4px; }
 ul, ol { padding-left: 20px; margin: 4px 0; }
 </style>
 </head>
-<body>${cleanBody}${heightScript}</body>
+<body>${renderedBody}${heightScript}</body>
 </html>`;
-	}, [body, autoSize, allowRemoteImages, mailboxId]);
+
+		// Nothing left to fetch once the body carries its images, or when it
+		// references none from this origin.
+		if (fetched) return;
+
+		const urls = collectBodyImageUrls(cleanBody, baseUrl);
+		if (urls.length === 0) return;
+
+		const controller = new AbortController();
+		if (emailId) setImageState(emailId, { pending: urls.length, failed: 0 });
+		loadBodyImages(urls, { signal: controller.signal })
+			.then((result) => {
+				if (controller.signal.aborted) return;
+				if (emailId) {
+					setImageState(emailId, { pending: 0, failed: result.failed });
+				}
+				setInlined({ key: renderKey, dataUrls: result.dataUrls });
+			})
+			.catch(() => {});
+		return () => controller.abort();
+	}, [body, autoSize, allowRemoteImages, mailboxId, emailId, inlined, setImageState]);
 
 	return (
 		<iframe

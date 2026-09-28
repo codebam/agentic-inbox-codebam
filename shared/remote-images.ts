@@ -41,8 +41,14 @@ const MAX_ALLOWLIST_ENTRY_LENGTH = 320;
 /** `<img ...>` tags, tolerating quoted attribute values that contain `>`. */
 const IMG_TAG_RE = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 
-/** A srcset candidate URL: preceded by the value start, whitespace or comma. */
-const SRCSET_CANDIDATE_RE = /(^|[\s,])((?:https?:)?\/\/[^\s,]+)/gi;
+/**
+ * A srcset candidate URL: preceded by the value start, whitespace or comma.
+ * Matches scheme-relative (`//host/…`), absolute (`https://…`) and
+ * single-slash-relative (`/path`) candidates; a candidate the callback
+ * declines is copied back unchanged, and a `data:` value's own commas never
+ * split it because the scan requires a `/` right after the separator.
+ */
+const SRCSET_CANDIDATE_RE = /(^|[\s,])((?:https?:)?\/[^\s,]+)/gi;
 
 const EMAIL_RE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
 const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/;
@@ -318,6 +324,170 @@ export function proxyRemoteImages(
 		return result.tag;
 	});
 	return { html: proxied, proxiedCount };
+}
+
+
+// ── First-party image loading ──────────────────────────────────────
+//
+// The body renders inside a sandboxed iframe, and a document in a sandbox
+// without `allow-same-origin` has an opaque origin: Chromium sends its
+// subresource requests as `Sec-Fetch-Site: cross-site` and attaches NO
+// cookies at all, whatever the cookie's SameSite. Behind Cloudflare Access
+// that made every app-origin image in a body unauthenticated — the edge
+// answered its 302-to-login and the iframe CSP then refused to render the
+// login page as an image, so opted-in remote images and inline attachments
+// both came up broken.
+//
+// The page therefore loads them itself. These helpers do the two halves that
+// do not need a network: collecting the app-origin image URLs a body
+// references, and putting fetched bytes back into the body as `data:` URLs —
+// which the iframe CSP already allows, so the iframe never has to make an
+// authenticated request at all.
+
+
+/**
+ * Resolve one `src`/`srcset` candidate against the page URL and return it in
+ * absolute form when it is an http(s) URL on the app's own origin; null for
+ * anything else — `data:`, `cid:`, `blob:`, relative values that land on a
+ * different origin, and remote URLs, which are never fetched from the page
+ * (they go through the proxy route or stay blocked).
+ *
+ * Control characters browsers ignore while parsing a URL are stripped first,
+ * the same cleaning the rewriters above apply.
+ */
+function appOriginImageUrl(value: string, baseUrl: string): string | null {
+	// eslint-disable-next-line no-control-regex -- deliberate: control characters are what browsers strip while parsing a URL
+	const cleaned = value.replace(/[\u0000-\u0020]/g, "");
+	if (!cleaned) return null;
+	let resolved: URL;
+	let base: URL;
+	try {
+		resolved = new URL(cleaned, baseUrl);
+		base = new URL(baseUrl);
+	} catch {
+		return null;
+	}
+	if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
+	if (resolved.origin !== base.origin) return null;
+	return resolved.toString();
+}
+
+/**
+ * Every app-origin image URL a body references, in first-seen order and
+ * deduped: the inline-attachment routes and the image-proxy routes the
+ * rewriters produce. This is what the page fetches first-party before the
+ * body is rendered.
+ */
+export function collectBodyImageUrls(html: string, baseUrl: string): string[] {
+	if (!html || !baseUrl) return [];
+	const urls: string[] = [];
+	const seen = new Set<string>();
+	const add = (value: string): null => {
+		const absolute = appOriginImageUrl(value, baseUrl);
+		if (absolute && !seen.has(absolute)) {
+			seen.add(absolute);
+			urls.push(absolute);
+		}
+		return null;
+	};
+	const collector: ImageRewriter = {
+		src: (value) => add(value),
+		srcset: (value) => {
+			rewriteSrcsetCandidates(value, add);
+			return null;
+		},
+	};
+	html.replace(IMG_TAG_RE, (tag) => {
+		rewriteImgTag(tag, collector);
+		return tag;
+	});
+	return urls;
+}
+
+export interface InlinedBodyImages {
+	/** The body with every collected reference swapped for its data: URL. */
+	html: string;
+	/** How many references were inlined (one per src/srcset candidate). */
+	inlinedCount: number;
+}
+
+export interface InlineBodyImagesOptions {
+	/**
+	 * Replacement for an app-origin reference that has no fetched entry yet.
+	 * The render before a body's images arrive passes the blocked
+	 * placeholder, so the sandboxed iframe never issues the unauthenticated
+	 * request the page is about to make on its behalf (and never logs a CSP
+	 * violation for the redirect it would get back).
+	 */
+	fallback?: string;
+}
+
+/**
+ * Swap the app-origin image references of a body for the `data:` URLs they
+ * were fetched into, resolving each candidate the same way
+ * `collectBodyImageUrls` did so the two cannot disagree about what a
+ * reference points at. References without an entry (a failed fetch, a
+ * `data:`/`cid:` value) are copied back byte for byte, which leaves the
+ * blocked placeholder a failed remote image already carries, unless a
+ * `fallback` is given — then an app-origin reference with no bytes yet
+ * becomes that fallback instead.
+ */
+export function inlineBodyImages(
+	html: string,
+	dataUrls: ReadonlyMap<string, string>,
+	baseUrl: string,
+	opts: InlineBodyImagesOptions = {},
+): InlinedBodyImages {
+	if (!html) return { html, inlinedCount: 0 };
+	const replace = (value: string): RewrittenValue | null => {
+		const absolute = appOriginImageUrl(value, baseUrl);
+		if (!absolute) return null;
+		const dataUrl = dataUrls.get(absolute);
+		if (dataUrl) return { value: dataUrl, count: 1 };
+		return opts.fallback ? { value: opts.fallback, count: 0 } : null;
+	};
+	const rewriter: ImageRewriter = {
+		src: replace,
+		srcset: (value) => rewriteSrcsetCandidates(value, (candidate) => replace(candidate)?.value ?? null),
+	};
+	let inlinedCount = 0;
+	const inlined = html.replace(IMG_TAG_RE, (tag) => {
+		const result = rewriteImgTag(tag, rewriter);
+		inlinedCount += result.rewriteCount;
+		return result.tag;
+	});
+	return { html: inlined, inlinedCount };
+}
+
+/** Chunk size for the `btoa` fallback; a per-character loop over a whole image is not free. */
+const BASE64_CHUNK = 0x8000;
+
+/**
+ * A `data:` URL for fetched image bytes.
+ *
+ * The encoder is the runtime's native one where it exists (`toBase64`, as in
+ * the attachments module's encoder — a per-byte loop over a multi-megabyte
+ * image is a CPU-budget hazard on the Worker side and a jank hazard in the
+ * browser), with a chunked `btoa` fallback for a runtime without it. The
+ * chunked fallback avoids spreading a whole `Uint8Array` into
+ * `String.fromCharCode`, which overflows the argument limit past ~64k bytes.
+ */
+export function bytesToDataUrl(bytes: Uint8Array, contentType: string): string {
+	const toBase64 = (bytes as unknown as { toBase64?: () => string }).toBase64;
+	let base64: string;
+	if (typeof toBase64 === "function") {
+		base64 = toBase64.call(bytes);
+	} else {
+		let binary = "";
+		for (let i = 0; i < bytes.length; i += BASE64_CHUNK) {
+			const end = Math.min(i + BASE64_CHUNK, bytes.length);
+			let piece = "";
+			for (let j = i; j < end; j++) piece += String.fromCharCode(bytes[j]!);
+			binary += piece;
+		}
+		base64 = btoa(binary);
+	}
+	return `data:${contentType};base64,${base64}`;
 }
 
 /**

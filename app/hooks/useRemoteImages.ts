@@ -13,12 +13,28 @@ import { useMailbox } from "~/queries/mailboxes";
  */
 interface RemoteImagesState {
 	shownMessageIds: Set<string>;
+	/**
+	 * First-party image loads, by message id. A body's images are fetched by
+	 * the page (see app/lib/body-images.ts) and the notice above the body
+	 * reads this to say what is still loading and what failed.
+	 */
+	imageStates: Map<string, BodyImageState>;
 	showImages: (emailId: string) => void;
 	hideImages: (emailId: string) => void;
+	setImageState: (emailId: string, state: BodyImageState) => void;
+}
+
+/** Loading progress of one message's body images. */
+export interface BodyImageState {
+	/** Images still being fetched first-party. */
+	pending: number;
+	/** Images that could not be loaded (refused, oversize, not an image). */
+	failed: number;
 }
 
 export const useRemoteImagesStore = create<RemoteImagesState>((set) => ({
 	shownMessageIds: new Set<string>(),
+	imageStates: new Map<string, BodyImageState>(),
 	showImages: (emailId) =>
 		set((state) => {
 			const next = new Set(state.shownMessageIds);
@@ -31,7 +47,27 @@ export const useRemoteImagesStore = create<RemoteImagesState>((set) => ({
 			next.delete(emailId);
 			return { shownMessageIds: next };
 		}),
+	setImageState: (emailId, imageState) =>
+		set((state) => {
+			const next = new Map(state.imageStates);
+			next.set(emailId, imageState);
+			return { imageStates: next };
+		}),
 }));
+
+/** Stable empty state, so a selector never returns a fresh object per render. */
+const NO_IMAGE_STATE: BodyImageState = { pending: 0, failed: 0 };
+
+/** Loading progress of one message's body images; zeroed when nothing ran. */
+export function useBodyImageState(
+	emailId: string | null | undefined,
+): BodyImageState {
+	return (
+		useRemoteImagesStore((state) =>
+			emailId ? state.imageStates.get(emailId) : undefined,
+		) ?? NO_IMAGE_STATE
+	);
+}
 
 /** True when this message's remote images were shown for the session. */
 export function useImagesShownForMessage(

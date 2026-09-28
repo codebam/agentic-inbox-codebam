@@ -6,7 +6,10 @@ import {
 	MAX_IMAGE_ALLOWLIST_ENTRIES,
 	blockRemoteImages,
 	buildEmailIframeCsp,
+	bytesToDataUrl,
+	collectBodyImageUrls,
 	hasRemoteImages,
+	inlineBodyImages,
 	isRemoteImageUrl,
 	isSenderAllowlisted,
 	normalizeImageAllowlist,
@@ -328,5 +331,143 @@ describe("mailbox settings route", () => {
 			await env.BUCKET.get(`mailboxes/${mailbox}.json`)
 		)!.json()) as { imageAllowlist: string[] };
 		expect(stored.imageAllowlist).toEqual(["alerts@example.com", "@news.example.com"]);
+	});
+});
+
+
+describe("collectBodyImageUrls", () => {
+	const BASE = "https://app.example.com/mailbox/m/emails/inbox";
+	const INLINE = "/api/v1/mailboxes/m/emails/e1/attachments/a1";
+	const PROXY = `/api/v1/mailboxes/m/image-proxy?url=${encodeURIComponent(TRACKER)}`;
+
+	it("collects the app-origin routes a body references, resolved and deduped", () => {
+		const result = collectBodyImageUrls(
+			`<img src="${INLINE}"><img src="${PROXY}" srcset="${PROXY} 2x, ${INLINE} 1x">`,
+			BASE,
+		);
+		expect(result).toEqual([
+			`https://app.example.com${INLINE}`,
+			`https://app.example.com${PROXY}`,
+		]);
+	});
+
+	it("ignores remote, data:, cid: and cross-origin references", () => {
+		const body =
+			`<img src="${TRACKER}"><img src="${DATA_IMAGE}"><img src="${CID}">` +
+			`<img src="//other.example.com/x.png"><img src="http://plain.example.com/a.gif">` +
+			`<a href="/api/v1/mailboxes/m/emails/e1">link</a>`;
+		expect(collectBodyImageUrls(body, BASE)).toEqual([]);
+	});
+
+	it("resolves a relative reference against the page URL", () => {
+		expect(collectBodyImageUrls(`<img src="logo.png">`, BASE)).toEqual([
+			"https://app.example.com/mailbox/m/emails/logo.png",
+		]);
+	});
+
+	it("returns nothing without a body or a base URL", () => {
+		expect(collectBodyImageUrls("", BASE)).toEqual([]);
+		expect(collectBodyImageUrls(`<img src="${INLINE}">`, "")).toEqual([]);
+	});
+});
+
+describe("inlineBodyImages", () => {
+	const BASE = "https://app.example.com/mailbox/m/emails/inbox";
+	const INLINE = "/api/v1/mailboxes/m/emails/e1/attachments/a1";
+	const INLINE_ABSOLUTE = `https://app.example.com${INLINE}`;
+	const DATA_A = "data:image/png;base64,AAAA";
+	const DATA_B = "data:image/gif;base64,BBBB";
+
+	it("swaps a collected reference for its data: URL", () => {
+		const result = inlineBodyImages(
+			`<p>x</p><img src="${INLINE}" alt="logo">`,
+			new Map([[INLINE_ABSOLUTE, DATA_A]]),
+			BASE,
+		);
+		expect(result.inlinedCount).toBe(1);
+		expect(result.html).toBe(`<p>x</p><img src="${DATA_A}" alt="logo">`);
+	});
+
+	it("inlines srcset candidates and keeps descriptors and unfetched ones", () => {
+		const body = `<img srcset="${INLINE} 1x, https://app.example.com/api/v1/mailboxes/m/emails/e1/attachments/a2 2x">`;
+		const result = inlineBodyImages(
+			body,
+			new Map([
+				[INLINE_ABSOLUTE, DATA_A],
+				["https://app.example.com/api/v1/mailboxes/m/emails/e1/attachments/a2", DATA_B],
+			]),
+			BASE,
+		);
+		expect(result.inlinedCount).toBe(2);
+		expect(result.html).toBe(`<img srcset="${DATA_A} 1x, ${DATA_B} 2x">`);
+	});
+
+	it("leaves a reference without a fetched entry byte for byte", () => {
+		const body = `<img src="${INLINE}"><img src="${TRACKER}"><img src="${DATA_IMAGE}">`;
+		const result = inlineBodyImages(body, new Map([["https://app.example.com/other", DATA_A]]), BASE);
+		expect(result.inlinedCount).toBe(0);
+		expect(result.html).toBe(body);
+	});
+
+	it("quotes an inlined unquoted value", () => {
+		const result = inlineBodyImages(
+			`<img src=${INLINE} alt=hi>`,
+			new Map([[INLINE_ABSOLUTE, DATA_A]]),
+			BASE,
+		);
+		expect(result.html).toBe(`<img src="${DATA_A}" alt=hi>`);
+	});
+
+	it("returns the body unchanged for an empty map or body", () => {
+		const body = `<img src="${INLINE}">`;
+		expect(inlineBodyImages(body, new Map(), BASE)).toEqual({ html: body, inlinedCount: 0 });
+		expect(inlineBodyImages("", new Map([[INLINE_ABSOLUTE, DATA_A]]), BASE)).toEqual({
+			html: "",
+			inlinedCount: 0,
+		});
+	});
+
+	it("renders an unfetched app-origin reference as the fallback, counting only real inlines", () => {
+		const result = inlineBodyImages(
+			`<img src="${INLINE}"><img src="${TRACKER}"><img src="${CID}"><img src="${DATA_IMAGE}">`,
+			new Map(),
+			BASE,
+			{ fallback: BLOCKED_IMAGE_DATA_URI },
+		);
+		expect(result.inlinedCount).toBe(0);
+		expect(result.html).toBe(
+			`<img src="${BLOCKED_IMAGE_DATA_URI}"><img src="${TRACKER}"><img src="${CID}"><img src="${DATA_IMAGE}">`,
+		);
+	});
+
+	it("prefers the fetched bytes over the fallback", () => {
+		const result = inlineBodyImages(
+			`<img src="${INLINE}">`,
+			new Map([[INLINE_ABSOLUTE, DATA_A]]),
+			BASE,
+			{ fallback: BLOCKED_IMAGE_DATA_URI },
+		);
+		expect(result.inlinedCount).toBe(1);
+		expect(result.html).toBe(`<img src="${DATA_A}">`);
+	});
+});
+
+describe("bytesToDataUrl", () => {
+	it("encodes the exact bytes as base64", () => {
+		const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+		expect(bytesToDataUrl(bytes, "image/png")).toBe(
+			`data:image/png;base64,${btoa("\x89PNG\x00\xff")}`,
+		);
+	});
+
+	it("round-trips a payload larger than the btoa chunk", () => {
+		const bytes = new Uint8Array(0x8000 * 2 + 7);
+		for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+		const dataUrl = bytesToDataUrl(bytes, "image/jpeg");
+		const base64 = dataUrl.slice("data:image/jpeg;base64,".length);
+		const decoded = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+		expect(decoded.length).toBe(bytes.length);
+		expect(Array.from(decoded.slice(0, 64))).toEqual(Array.from(bytes.slice(0, 64)));
+		expect(Array.from(decoded.slice(-64))).toEqual(Array.from(bytes.slice(-64)));
 	});
 });
