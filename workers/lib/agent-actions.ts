@@ -152,12 +152,7 @@ export async function runAudited<T>(
 		const after = context.emailId ? await readState(stub, context.emailId) : null;
 		const action: AgentActionInput = {
 			id: crypto.randomUUID(),
-			// workers/durableObject/index.ts still names only the two surfaces
-			// that predate the scoped API, but `source` is a plain TEXT column
-			// that stores whatever source the caller passes — the cast at this
-			// one boundary is not a behaviour change, and the scoped surface
-			// needs it to record itself.
-			source: context.source as AgentActionInput["source"],
+			source: context.source,
 			tool: context.tool,
 			emailId: context.emailId,
 			emailSubject: before?.subject ?? after?.subject ?? null,

@@ -45,6 +45,7 @@ import {
 	type SenderPolicy,
 	type SenderPolicyEntry,
 } from "../lib/sender-policy";
+import type { AgentActionSource } from "../lib/agent-actions";
 import type { StorageUsage } from "../lib/quota";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
@@ -466,14 +467,14 @@ interface AttachmentData {
 export const MAX_AGENT_ACTIONS = 500;
 
 /**
- * A mutating agent/MCP tool call to record. Metadata only — ids, flags,
- * folder names, a subject and a thread id; `args`/`beforeState`/`afterState`
+ * A mutating agent, MCP or scoped tool call to record. Metadata only — ids,
+ * flags, folder names, a subject and a thread id; `args`/`beforeState`/`afterState`
  * are JSON strings the caller has already bounded (see
  * workers/lib/agent-actions.ts).
  */
 export interface AgentActionInput {
 	id: string;
-	source: "agent" | "mcp";
+	source: AgentActionSource;
 	tool: string;
 	emailId?: string | null;
 	emailSubject?: string | null;
