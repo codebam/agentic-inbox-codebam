@@ -21,6 +21,7 @@ import SenderPolicyCard from "~/components/SenderPolicyCard";
 import DigestCard from "~/components/DigestCard";
 import MailboxExportCard from "~/components/MailboxExportCard";
 import ImportCard from "~/components/ImportCard";
+import AccessTokensCard from "~/components/AccessTokensCard";
 import PushNotificationsCard from "~/components/PushNotificationsCard";
 import StorageCard from "~/components/StorageCard";
 import { normalizeAutoDraft } from "shared/auto-draft";
@@ -383,6 +384,7 @@ export default function SettingsRoute() {
 				<StorageCard mailboxId={mailboxId} />
 				<MailboxExportCard mailboxId={mailboxId} />
 				<ImportCard mailboxId={mailboxId} />
+				<AccessTokensCard mailboxId={mailboxId} />
 
 
 				{/* Save */}

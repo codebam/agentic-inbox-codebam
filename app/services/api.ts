@@ -170,6 +170,19 @@ export interface SavedSearch {
 	query: string;
 }
 
+/**
+ * One access token, as the access-tokens routes answer it. Declared locally
+ * here — the parent repoints this type at the backend's shared module
+ * after the merge, so the UI imports nothing from shared/access-tokens yet.
+ */
+export interface AccessToken {
+	id: string;
+	name: string;
+	scopes: string[];
+	created_at: string;
+	last_used_at: string | null;
+}
+
 // ---------- API client ----------
 
 const api = {
@@ -592,6 +605,23 @@ const api = {
 	/** Remove one saved search. */
 	deleteSavedSearch: (mailboxId: string, searchId: string) =>
 		del<{ ok: boolean }>(`/api/v1/mailboxes/${mailboxId}/saved-searches/${searchId}`),
+
+	// Access tokens — bearer credentials for external automation. The
+	// operator mints one per client, the plaintext comes back from the create
+	// call alone, and revoking one stops that client immediately. Nothing in
+	// this block sends mail.
+	/** Every token issued for the mailbox; metadata only, never plaintext. */
+	listAccessTokens: (mailboxId: string) =>
+		get<{ tokens: AccessToken[] }>(`/api/v1/mailboxes/${mailboxId}/access-tokens`),
+	/** Mint a token; the response carries the plaintext exactly once. */
+	createAccessToken: (mailboxId: string, input: { name: string; scopes: string[] }) =>
+		post<{ token: string; record: AccessToken }>(
+			`/api/v1/mailboxes/${mailboxId}/access-tokens`,
+			input,
+		),
+	/** Revoke one token; anything holding it stops working immediately. */
+	revokeAccessToken: (mailboxId: string, tokenId: string) =>
+		del<{ ok: boolean }>(`/api/v1/mailboxes/${mailboxId}/access-tokens/${tokenId}`),
 
 	/** Embed one bounded batch of the mailbox's unembedded messages. */
 	semanticReindex: (mailboxId: string) =>

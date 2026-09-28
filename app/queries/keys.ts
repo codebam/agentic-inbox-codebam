@@ -49,6 +49,10 @@ export const queryKeys = {
 		/** Every saved search for a mailbox, newest first. */
 		list: (mailboxId: string) => ["saved-searches", mailboxId] as const,
 	},
+	accessTokens: {
+		/** Every access token issued for a mailbox, newest first. */
+		list: (mailboxId: string) => ["access-tokens", mailboxId] as const,
+	},
 	items: {
 		/** One filtered page of a mailbox's extracted tasks and deadlines. */
 		list: (mailboxId: string, filters: Record<string, string>) =>
