@@ -285,7 +285,11 @@ async function cloudflareGet(
 	const timer = setTimeout(() => controller.abort(), CLOUDFLARE_API_TIMEOUT_MS);
 
 	try {
-		const response = await context.fetcher(`${context.apiBase}${path}`, {
+		// Call the fetcher without a receiver: workerd's native `fetch`
+		// throws "Illegal invocation" when invoked as a method of a plain
+		// object, so `context.fetcher(...)` fails where a bare call works.
+		const fetcher = context.fetcher;
+		const response = await fetcher(`${context.apiBase}${path}`, {
 			method: "GET",
 			headers: {
 				Accept: "application/json",
