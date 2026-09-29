@@ -27,7 +27,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
      [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/codebam/agentic-inbox-codebam)
 
-2. **Configure Cloudflare Access** -- Enable [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) on your Worker under Settings > Domains & Routes. The modal will show your `POLICY_AUD` and `TEAM_DOMAIN` values. `TEAM_DOMAIN` can be either your Access team URL or the full `.../cdn-cgi/access/certs` URL. **You must set these as secrets for your Worker.** Add a **Bypass** policy for `/mcp` and `/mcp/*` so external agents can authenticate with Wrangler keys (see [Agent-first MCP server](#agent-first-mcp-server)) and for `/api/v1/scoped` and `/api/v1/scoped/*` so automation can authenticate with per-mailbox access tokens (see [Scoped automation API](#scoped-automation-api)).
+2. **Configure Cloudflare Access** -- Enable [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) on your Worker under Settings > Domains & Routes. The modal will show your `POLICY_AUD` and `TEAM_DOMAIN` values. `TEAM_DOMAIN` can be either your Access team URL or the full `.../cdn-cgi/access/certs` URL. **You must set these as secrets for your Worker.** Add a **Bypass** policy for `/mcp` and `/mcp/*` so external agents can authenticate with Wrangler keys (see [Agent-first MCP server](#agent-first-mcp-server)) and for `/api/v1/scoped` and `/api/v1/scoped/*` so automation can authenticate with access tokens, per-mailbox or app-wide (see [Scoped automation API](#scoped-automation-api)).
 3. **Set up Email Routing** -- In the Cloudflare dashboard, go to each domain > Email Routing and create a catch-all rule that forwards to this Worker. Mail sent to an address that does not have its own mailbox is delivered to that domain's `catch-all@<domain>` mailbox, which the Worker creates automatically. The original SMTP recipient is preserved and shown as **Delivered to** in the message view.
 4. **Enable Email Service** -- The worker needs the `send_email` binding to send outbound emails. See [Email Service docs](https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/)
 5. **Create a mailbox** -- Visit your deployed app and create a mailbox for any address on your domain (e.g. `hello@example.com`)
@@ -50,6 +50,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Spam-safe drafting** — No draft reply is created for an email marked as spam (Spam folder, `spam` category, or a stored spam classification), whether it comes from auto-draft, the built-in chat, MCP, or the composer
 - **Agent-first MCP server** — External agents authenticate with the local Wrangler login key (`wrangler auth token`) to read, search, draft, and send email
 - **Scoped access tokens** — Mint a bearer token per mailbox in Settings → Access tokens with `read`, `draft` and/or `send` scopes; automation outside the Access boundary calls `POST /api/v1/scoped/<tool>`, each token reaches one mailbox only, and every mutating call lands in the mailbox's activity log
+- **App access tokens** — One bearer credential for every mailbox, minted in Global Settings → App access tokens with the same `read`, `draft` and `send` scopes; use it on `/mcp` or `POST /api/v1/scoped/<tool>` (naming `mailboxId` per call) when an automation must span mailboxes, and revoke it from the same page
 - **Optional AI surfaces** — Deployment-wide `ENABLE_AI_AGENT` and `ENABLE_MCP` switches (both default on): a disabled agent answers 404 on `/agents/*` and skips auto-draft, a disabled MCP server answers 404 on `/mcp`, and the UI hides the panels it can no longer use
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending. Auto-draft is skipped for spam and for mail TypeSafe Jev reads as not expecting a reply (confirmations, receipts, alerts, newsletters and other one-way notifications), and refused even if the trigger is invoked directly
 - **AI categorization on arrival** — TypeSafe's Jev model (`typesafe/jev`) classifies each incoming email as spam or not-spam with a calibrated probability, decides whether a reply is expected (gating auto-draft), and can label it with custom categories. Detected spam is filed in the Spam folder and skipped by auto-draft. Categories can be defined per mailbox, app-wide in Global Settings for every mailbox, or both; each mailbox can opt out of global categories.
@@ -76,7 +77,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 ### What's different in this fork
 
-This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev (including a reply-expectation gate for auto-draft), the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, per-mailbox saved searches, thread muting with notification suppression, per-mailbox scoped access tokens for automation clients, opt-out switches for the AI agent and MCP server, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
+This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with TypeSafe Jev (including a reply-expectation gate for auto-draft), the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, per-mailbox saved searches, thread muting with notification suppression, scoped access tokens for automation clients, per mailbox or app-wide, opt-out switches for the AI agent and MCP server, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
 
 ## Stack
 
@@ -113,7 +114,7 @@ npm run deploy
 - [Workers AI](https://developers.cloudflare.com/workers-ai/) enabled (for the agent)
 - [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) configured for deployed/shared environments (required in production)
 
-Browser access is gated by the shared Cloudflare Access policy. The `/mcp` endpoint instead accepts a Wrangler credential produced by `wrangler auth token` (or `CLOUDFLARE_API_TOKEN`), or an operator-minted access token scoped to one mailbox (see [Agent-first MCP server](#agent-first-mcp-server)). A Wrangler credential grants access to all mailboxes by design; external agents select a mailbox with the `mailboxId` tool parameter, and that path has no per-mailbox authorization, so treat the Cloudflare Access policy and each Wrangler key as full-trust credentials. A Settings access token is the narrower alternative: its session reaches the mailbox it was minted for and the tools its `read`, `draft` and `send` scopes allow, and nothing else.
+Browser access is gated by the shared Cloudflare Access policy. The `/mcp` endpoint instead accepts a Wrangler credential produced by `wrangler auth token` (or `CLOUDFLARE_API_TOKEN`), or an operator-minted access token scoped to one mailbox or reaching every mailbox (see [Agent-first MCP server](#agent-first-mcp-server)). A Wrangler credential grants access to all mailboxes by design; external agents select a mailbox with the `mailboxId` tool parameter, and that path has no per-mailbox authorization, so treat the Cloudflare Access policy and each Wrangler key as full-trust credentials. A Settings access token is the narrower alternative: its session reaches the mailbox it was minted for and the tools its `read`, `draft` and `send` scopes allow, and nothing else.
 
 ## Agent-first MCP server
 
@@ -182,6 +183,10 @@ An operator-minted **access token** (the same credential the [Scoped automation 
 
 Inside that session, `read` reaches `list_emails`, `get_email`, `get_thread`, `search_emails` and `get_attachment`; `draft` the draft tools; `send` the two send tools; `list_mailboxes` answers the token's mailbox alone; and every other tool, and any call naming another `mailboxId`, comes back as an error. Revoking the token ends the session's access immediately, and the same Access **Bypass** policy for `/mcp` applies.
 
+### Option D — App access token, every mailbox
+
+An **app access token** (minted in **Global Settings** → **App access tokens**) authenticates `/mcp` the same way, but the session it opens reaches EVERY mailbox: the scoped tools run wherever their `mailboxId` argument points, `list_mailboxes` answers all of them, `search_all_mailboxes` searches across them, and every other tool is refused. It carries the same `read`, `draft` and `send` scopes, is shown once at mint, stored only as a SHA-256 hash, and revoking it takes effect immediately.
+
 ### How the Worker authorizes the key
 
 The Worker verifies the bearer credential by calling the Cloudflare API with it. In the default mode, the token is accepted only if it can read a Cloudflare zone listed in the `DOMAINS` Worker variable (or a domain derived from `EMAIL_ADDRESSES`). This binds each key to the account that owns the inbox.
@@ -195,7 +200,7 @@ npx wrangler secret put MCP_ALLOWED_ACCOUNT_IDS
 
 Auth results are cached per Worker isolate for 5 minutes (and in the Cloudflare Cache API where it is available). Raw credentials are never logged or written to disk.
 
-A **Settings access token** (Option C) takes a different path: it is verified against the mailbox its string names, inside that mailbox's Durable Object, and the result is never cached — so revoking the token ends access on the next request rather than within a cache TTL. Non-Wrangler bearers that are not access tokens keep the checks above.
+A **Settings access token** (Option C) takes a different path: it is verified against the mailbox its string names, inside that mailbox's Durable Object, and the result is never cached — so revoking the token ends access on the next request rather than within a cache TTL. An **app access token** (Option D) is verified against the deployment-wide `config/app-tokens.json` object in R2, equally uncached. Non-Wrangler bearers that are not access tokens keep the checks above.
 
 ### Available MCP tools
 
@@ -218,6 +223,13 @@ revoking a token takes effect immediately). The same tokens also authenticate
 `/mcp`, as a session scoped to their mailbox (see
 [Option C](#option-c--settings-access-token-scoped-to-one-mailbox)).
 
+App-level tokens (minted in **Global Settings** → **App access tokens**, up to
+20 per deployment) work on the same endpoint but reach every mailbox: each
+mailbox-scoped call carries `mailboxId` in its body, and the two all-mailbox
+reads `list_mailboxes` and `search_all_mailboxes` (read scope) become
+available. Their calls are recorded in the activity log of the mailbox they
+act on, with the same source `scoped`.
+
 Each tool maps to one scope — `read`: `list_emails`, `get_email`, `get_thread`,
 `search_emails`, `get_attachment`; `draft`: `draft_reply`, `create_draft`,
 `update_draft`, `discard_draft`; `send`: `send_email`, `send_reply` — and the
@@ -232,6 +244,14 @@ curl -X POST https://<your-worker>/api/v1/scoped/list_emails \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"folder":"inbox","limit":5}'
+```
+
+```sh
+# An app-level token names its mailbox per call:
+curl -X POST https://<your-worker>/api/v1/scoped/list_emails \
+  -H "Authorization: Bearer <app access token>" \
+  -H "Content-Type: application/json" \
+  -d '{"mailboxId":"hello@example.com","folder":"inbox","limit":5}'
 ```
 
 An Access **Bypass** policy for `/api/v1/scoped` and `/api/v1/scoped/*` is

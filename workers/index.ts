@@ -350,7 +350,8 @@ app.get("/api/v1/config", (c) => {
 
 /**
  * Bearer-authenticated automation surface: POST /api/v1/scoped/<tool>, one
- * mailbox per token, scopes read/draft/send — the token's scopes decide
+ * mailbox per per-mailbox token (an app token names its target per call
+ * and reaches every mailbox), scopes read/draft/send — the token's scopes decide
  * which tools answer. Authentication and dispatch live in
  * workers/lib/scoped-surface.ts. Non-POST methods are not registered.
  */
