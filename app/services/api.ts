@@ -7,7 +7,7 @@ import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { ItemStatus } from "shared/items";
-import type { AccessTokenRecord, AccessTokenScope } from "shared/access-tokens";
+import type { AccessTokenRecord } from "shared/access-tokens";
 import type { PushConfig, PushSubscriptionInput } from "shared/push";
 import type {
 	MailRule,
@@ -182,16 +182,9 @@ export type AccessToken = AccessTokenRecord;
  * One app-level access token, as the app-tokens routes answer it. Unlike
  * AccessToken above, it is bound to no mailbox: whoever holds one can act
  * on EVERY mailbox in the deployment, with exactly the scopes it was
- * minted with. The record is declared locally because shared/access-tokens
- * does not name an app-token record yet.
+ * minted with.
  */
-export interface AppAccessToken {
-	id: string;
-	name: string;
-	scopes: AccessTokenScope[];
-	created_at: string;
-	last_used_at: string | null;
-}
+export type AppAccessToken = AccessTokenRecord;
 
 // ---------- API client ----------
 
