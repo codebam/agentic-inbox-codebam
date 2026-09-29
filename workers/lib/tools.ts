@@ -50,6 +50,7 @@ import { applySignatureToBody } from "../../shared/signature";
 import { loadMailboxSignature, resolveMailboxModels } from "./mailbox-settings";
 import { sendEmail, type SendEmailParams } from "../email-sender";
 import { decodeBase64Bytes, storeAttachments } from "./attachments";
+import { proxyImage } from "./image-proxy";
 import { formatFileSize } from "../../app/lib/attachments";
 import { Folders } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
@@ -351,6 +352,60 @@ export async function toolGetAttachment(
 	}
 
 	return { mailboxId, attachment: metadata, content };
+}
+
+// ── get_image ──────────────────────────────────────────────────────
+
+/**
+ * Base64 for one image's bytes: the platform's native encoder when the
+ * runtime carries it, a chunked btoa otherwise.
+ */
+function base64OfBytes(bytes: ArrayBuffer): string {
+	const view = new Uint8Array(bytes);
+	const fast = (view as unknown as { toBase64?: () => string }).toBase64;
+	if (typeof fast === "function") return fast.call(view);
+	let binary = "";
+	for (let offset = 0; offset < view.length; offset += 0x8000) {
+		binary += String.fromCharCode(...view.subarray(offset, offset + 0x8000));
+	}
+	return btoa(binary);
+}
+
+/** One proxied image, ready for a token-authenticated client to inline. */
+export interface ImageToolResult {
+	contentType: string;
+	bytes: number;
+	cached: boolean;
+	dataBase64: string;
+}
+
+/**
+ * One remote image of a message, fetched through the shared SSRF guard
+ * and R2 cache (workers/lib/image-proxy.ts) and answered as base64 so a
+ * token-authenticated client can render it without ever talking to the
+ * sender's server itself. On-demand only: it runs when a caller names one
+ * URL from a message it is rendering — never on ingestion, never
+ * autonomously — and the URL is the same sender-controlled string the
+ * image-proxy route accepts, so the same guard applies (https only,
+ * public hosts only, no redirects, an image content-type allowlist, a
+ * hard byte cap). The name lives in SCOPED_SURFACE_ONLY_TOOL_SCOPES, so
+ * an operator-minted scoped token is the only credential that can reach
+ * it and no agent or MCP session ever can.
+ */
+export async function toolGetImage(
+	env: Env,
+	params: { url: string },
+): Promise<ImageToolResult | { error: string }> {
+	const url = params.url.trim();
+	if (!url) return { error: "url is required" };
+	const result = await proxyImage(env, url);
+	if (!result.ok) return { error: result.error };
+	return {
+		contentType: result.contentType,
+		bytes: result.bytes.byteLength,
+		cached: result.cached,
+		dataBase64: base64OfBytes(result.bytes),
+	};
 }
 
 // ── search_emails ──────────────────────────────────────────────────

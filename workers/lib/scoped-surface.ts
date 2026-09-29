@@ -37,10 +37,11 @@
  * draft verifier runs first, and a refusal comes back as an error answer, not
  * as a send.
  *
- * One tool never joins SCOPED_TOOL_SCOPES: unsubscribe_email fires the
- * RFC 8058 one-click POST to a URL taken from message content, and the
- * guardrail keeps that reachable only through an operator-minted token on an
- * explicit operator action, never by an agent or MCP session
+ * Two tools never join SCOPED_TOOL_SCOPES: unsubscribe_email fires the
+ * RFC 8058 one-click POST to a URL taken from message content, and
+ * get_image relays one message image through the shared SSRF guard. The
+ * guardrail keeps both reachable only through an operator-minted token on
+ * an explicit operator action, never by an agent or MCP session
  * (SCOPED_SURFACE_ONLY_TOOL_SCOPES, below).
  *
  * Mutating calls are recorded in the target mailbox's `agent_actions` log
@@ -66,6 +67,7 @@ import {
 	toolDraftReply,
 	toolGetAttachment,
 	toolGetEmail,
+	toolGetImage,
 	toolGetThread,
 	toolListEmails,
 	toolListMailboxes,
@@ -127,15 +129,19 @@ export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 
 /**
  * The tools this surface carries that the /mcp gate must never share, and
- * the scope each requires. unsubscribe_email fires a request to a URL taken
- * from message content (RFC 8058 one-click), and the guardrail is that only
- * an explicit operator action through an operator-minted token may do that:
- * the name stays out of SCOPED_TOOL_SCOPES, the map the /mcp gate reads, so
- * no agent or MCP session can ever call it.
+ * the scope each requires. Both fetch a URL taken from message content:
+ * unsubscribe_email fires the RFC 8058 one-click POST, get_image relays
+ * one message image through the SSRF guard and R2 cache. The guardrail is
+ * that only an explicit operator action through an operator-minted token
+ * may reach either: the names stay out of SCOPED_TOOL_SCOPES, the map the
+ * /mcp gate reads, so no agent or MCP session can ever call them.
  */
 export const SCOPED_SURFACE_ONLY_TOOL_SCOPES: Record<string, AccessTokenScope> = {
+	get_image: "read",
 	unsubscribe_email: "send",
 };
+// (get_image reuses the image-proxy guard and cache; it is read-scoped
+// because what it returns is message content, not a state change.)
 
 /**
  * The one message every authentication failure answers with. A bearer
@@ -383,6 +389,8 @@ async function invokeScopedTool(
 			return toolGetAttachment(env, mailboxId, {
 				attachmentId: stringArgument(params, "attachmentId"),
 			});
+		case "get_image":
+			return toolGetImage(env, { url: stringArgument(params, "url") });
 		case "draft_reply":
 			return runAudited(
 				env,
