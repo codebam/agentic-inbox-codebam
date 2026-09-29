@@ -5,16 +5,29 @@
 /**
  * The scoped automation surface: `POST /api/v1/scoped/<tool>`.
  *
- * An automation outside the Cloudflare Access boundary authenticates with a
- * per-mailbox access token instead of an Access session. The token string
- * carries the mailbox id it was minted for (shared/access-tokens.ts), so a
- * token is bound to exactly one mailbox: every call it makes runs in that
- * mailbox, and the request body can never name another. Each exposed tool
- * maps to one of the token's scopes:
+ * An automation outside the Cloudflare Access boundary authenticates with an
+ * access token instead of an Access session. Two kinds are accepted:
+ *
+ *     ain1_<hex mailbox id>_<43-char secret>   one mailbox (Settings tokens)
+ *     ain2_<43-char secret>                    every mailbox (app tokens)
+ *
+ * A mailbox token carries the mailbox id it was minted for
+ * (shared/access-tokens.ts), so it is bound to exactly one mailbox: every
+ * call it makes runs in that mailbox, and the request body can never name
+ * another. An app token names no mailbox at all: each mailbox-scoped call it
+ * makes must carry `mailboxId` in the body and runs against exactly the
+ * mailbox named. Each exposed tool maps to one of the token's scopes:
  *
  *     read   list_emails, get_email, get_thread, search_emails, get_attachment
  *     draft  draft_reply, create_draft, update_draft, discard_draft
  *     send   send_email, send_reply
+ *
+ * An app token may additionally call the two all-mailbox read tools —
+ * list_mailboxes and search_all_mailboxes, each requiring the read scope.
+ * They are deliberately absent from SCOPED_TOOL_SCOPES: that map is the /mcp
+ * gate's authority for a mailbox-bound session (workers/mcp/index.ts), so a
+ * name in it describes a tool a one-mailbox token may call. A mailbox token
+ * naming either all-mailbox name is refused like any other unknown tool.
  *
  * A scoped call only ever runs the tool the token-holding client asked for:
  * nothing on this surface schedules, drafts or sends mail on its own, and the
@@ -22,8 +35,8 @@
  * draft verifier runs first, and a refusal comes back as an error answer, not
  * as a send.
  *
- * Mutating calls are recorded in the mailbox's `agent_actions` log with
- * source "scoped" (workers/lib/agent-actions.ts), the same metadata-only
+ * Mutating calls are recorded in the target mailbox's `agent_actions` log
+ * with source "scoped" (workers/lib/agent-actions.ts), the same metadata-only
  * record the MCP surface writes for its own mutating tools, so the operator
  * can see what each token did.
  */
@@ -31,10 +44,12 @@
 import { Folders } from "../../shared/folders";
 import {
 	parseAccessToken,
+	parseAppAccessToken,
 	type AccessTokenScope,
 } from "../../shared/access-tokens";
 import { hashAccessToken } from "./access-tokens";
 import { runAudited } from "./agent-actions";
+import { verifyAppAccessToken } from "./app-tokens";
 import { getMailboxStub } from "./email-helpers";
 import {
 	toolDiscardDraft,
@@ -44,6 +59,8 @@ import {
 	toolGetEmail,
 	toolGetThread,
 	toolListEmails,
+	toolListMailboxes,
+	toolSearchAllMailboxes,
 	toolSearchEmails,
 	toolSendEmail,
 	toolSendReply,
@@ -54,9 +71,10 @@ import {
 import type { Env } from "../types";
 
 /**
- * The scope each scoped tool requires. Every tool this surface exposes is
- * listed here exactly once; a name that is not in the map is refused before
- * anything else about the request is looked at.
+ * The scope each mailbox-scoped tool requires. Every tool listed here is
+ * callable with either token kind, and a mailbox token can call nothing else:
+ * a name that is not in the map is refused before anything else about the
+ * request is looked at.
  */
 export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	list_emails: "read",
@@ -73,19 +91,55 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 };
 
 /**
+ * The two all-mailbox read tools an app-level token may additionally call,
+ * and the scope each requires. Deliberately separate from SCOPED_TOOL_SCOPES:
+ * that map is shared with the /mcp gate, where it describes what a
+ * mailbox-bound session may invoke, so an all-mailbox name must never join
+ * it.
+ */
+export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
+	list_mailboxes: "read",
+	search_all_mailboxes: "read",
+};
+
+/**
  * The one message every authentication failure answers with. A bearer
  * credential must not be an oracle: a missing header, another scheme, a
  * malformed token and a wrong or revoked secret all read the same.
  */
 const INVALID_ACCESS_TOKEN_ERROR = "Invalid or revoked access token";
 
-/** A verified scoped caller, bound to the mailbox its token was minted for. */
-export interface ScopedAuthSuccess {
+/**
+ * The refusal an app-token call that names no mailbox answers with. An app
+ * token reaches every mailbox, so it can never have one picked for it: every
+ * mailbox-scoped call names its target, and the message says how.
+ */
+const APP_MAILBOX_ID_REQUIRED_ERROR =
+	"This token reaches every mailbox; pass mailboxId to name the one this call acts on.";
+
+/** A verified mailbox-scoped caller, bound to the mailbox its token was minted for. */
+export interface ScopedMailboxAuthSuccess {
 	ok: true;
+	kind: "mailbox";
 	mailboxId: string;
 	scopes: AccessTokenScope[];
 	tokenId: string;
 }
+
+/**
+ * A verified app-level caller: one credential for every mailbox. It carries
+ * no mailbox of its own — each mailbox-scoped call names its target, and the
+ * two all-mailbox read tools need none.
+ */
+export interface ScopedAppAuthSuccess {
+	ok: true;
+	kind: "app";
+	scopes: AccessTokenScope[];
+	tokenId: string;
+}
+
+/** A verified scoped caller, of either kind. */
+export type ScopedAuthSuccess = ScopedMailboxAuthSuccess | ScopedAppAuthSuccess;
 
 /** The single 401 shape an unverifiable request answers with. */
 export interface ScopedAuthFailure {
@@ -120,12 +174,15 @@ function bearerToken(authorization: string | undefined): string | null {
 /**
  * Authenticate one scoped request from its raw `Authorization` header.
  *
- * The token string is the whole credential: its mailbox-id segment selects
- * the mailbox's Durable Object and the SHA-256 of the full string is the
- * lookup key, so a token only ever resolves in the mailbox it was minted
- * for. Every failure — missing header, another scheme, a token that is not
- * the wire shape, a secret that does not resolve, a revoked token — answers
- * the identical 401, so a near miss cannot be told from garbage.
+ * Either token kind is accepted, and the two parsers are disjoint, so a
+ * presented credential can never be read as the wrong kind. A mailbox token
+ * (`ain1`) selects the mailbox's Durable Object by its id segment and its
+ * SHA-256 is the lookup key there, so it only ever resolves in the mailbox it
+ * was minted for; an app token (`ain2`) carries no mailbox and resolves
+ * against the deployment's R2 store (workers/lib/app-tokens.ts). Every
+ * failure — missing header, another scheme, a token that is not either wire
+ * shape, a secret that does not resolve, a revoked token — answers the
+ * identical 401, so a near miss cannot be told from garbage.
  */
 export async function authenticateScopedRequest(
 	authorization: string | undefined,
@@ -141,18 +198,28 @@ export async function authenticateScopedRequest(
 	if (!token) return failure;
 
 	const parsed = parseAccessToken(token);
-	if (!parsed) return failure;
+	if (parsed) {
+		const record = await getMailboxStub(env, parsed.mailboxId).verifyAccessToken(
+			await hashAccessToken(token),
+		);
+		if (!record) return failure;
+		return {
+			ok: true,
+			kind: "mailbox",
+			mailboxId: parsed.mailboxId,
+			scopes: record.scopes,
+			tokenId: record.id,
+		};
+	}
 
-	const record = await getMailboxStub(env, parsed.mailboxId).verifyAccessToken(
-		await hashAccessToken(token),
-	);
-	if (!record) return failure;
-
+	if (!parseAppAccessToken(token)) return failure;
+	const appRecord = await verifyAppAccessToken(env.BUCKET, token);
+	if (!appRecord) return failure;
 	return {
 		ok: true,
-		mailboxId: parsed.mailboxId,
-		scopes: record.scopes,
-		tokenId: record.id,
+		kind: "app",
+		scopes: appRecord.scopes,
+		tokenId: appRecord.id,
 	};
 }
 
@@ -400,6 +467,30 @@ function invokeScopedTool(
 	}
 }
 
+/**
+ * Run one app-only tool: the two all-mailbox reads an app token may call,
+ * which no mailbox token and no mailbox-bound call can reach. list_mailboxes
+ * answers every mailbox in the deployment verbatim; search_all_mailboxes is
+ * the very function the MCP registration calls, with the request's search
+ * filters (searchArguments, whose mailboxId field is not a filter).
+ */
+function invokeAppOnlyScopedTool(
+	env: Env,
+	toolName: string,
+	params: Record<string, unknown>,
+): Promise<unknown> {
+	switch (toolName) {
+		case "list_mailboxes":
+			return toolListMailboxes(env);
+		case "search_all_mailboxes":
+			return toolSearchAllMailboxes(env, searchArguments(params));
+		default:
+			// Unreachable through runScopedTool, which only dispatches names
+			// the two scope maps carry.
+			throw new Error(`Unknown tool: ${toolName}`);
+	}
+}
+
 /** One address argument, as a lone address or a list of addresses. */
 function stringOrStringList(
 	args: Record<string, unknown>,
@@ -429,12 +520,17 @@ function errorMessage(value: unknown): string | null {
  * Dispatch one authenticated scoped call.
  *
  * The order is fixed: an unknown tool answers 404 (echoing only the tool
- * name), a body that carries a `mailboxId` answers 400 (the surface is bound
- * to one mailbox by its token), a token without the tool's scope answers 403,
- * and only then does the tool run. A tool answer that carries an `error`
- * field — the refusal shape every tool in workers/lib/tools.ts uses — is a
- * 400, a tool answer without one is a 200 carrying the tool's own return, and
- * a thrown error is logged and answered 500.
+ * name), a body the surface cannot act on answers 400, a token without the
+ * tool's scope answers 403, and only then does the tool run. What that 400
+ * body refuses depends on the token kind: a mailbox token naming a
+ * `mailboxId` (its token fixes the mailbox), or an app token not naming one
+ * with a string (the token reaches every mailbox, so the call must say
+ * which). A mailbox token runs every call in its own mailbox; an app token's
+ * mailbox-scoped calls run against the mailbox the body names, and its two
+ * all-mailbox tools run against all of them. A tool answer that carries an
+ * `error` field — the refusal shape every tool in workers/lib/tools.ts uses —
+ * is a 400, a tool answer without one is a 200 carrying the tool's own
+ * return, and a thrown error is logged and answered 500.
  */
 export async function runScopedTool(
 	env: Env,
@@ -442,20 +538,41 @@ export async function runScopedTool(
 	toolName: string,
 	args: unknown,
 ): Promise<ScopedToolResult> {
-	const scope = SCOPED_TOOL_SCOPES[toolName];
+	const sharedScope = SCOPED_TOOL_SCOPES[toolName];
+	const scope =
+		sharedScope ??
+		(auth.kind === "app" ? APP_ONLY_SCOPED_TOOL_SCOPES[toolName] : undefined);
 	if (!scope) {
 		return { status: 404, body: { error: `Unknown tool: ${toolName}` } };
 	}
 
+	// Only an app token ever gets this far with a name the shared map does
+	// not carry (a mailbox token would have answered 404 above): it is one of
+	// the two app-only tools.
+	const appOnly = sharedScope === undefined;
+
 	const params = argumentObject(args);
-	if ("mailboxId" in params) {
-		return {
-			status: 400,
-			body: {
-				error:
-					"The scoped surface is bound to one mailbox; mailboxId is not accepted.",
-			},
-		};
+	// The mailbox the call runs against: the token's own for a mailbox token,
+	// the body's for an app token's mailbox-scoped call, and none at all for
+	// an app-only tool (which reaches every mailbox by design).
+	let mailboxId: string | null = null;
+	if (auth.kind === "mailbox") {
+		if ("mailboxId" in params) {
+			return {
+				status: 400,
+				body: {
+					error:
+						"The scoped surface is bound to one mailbox; mailboxId is not accepted.",
+				},
+			};
+		}
+		mailboxId = auth.mailboxId;
+	} else if (!appOnly) {
+		const requested = params["mailboxId"];
+		if (typeof requested !== "string") {
+			return { status: 400, body: { error: APP_MAILBOX_ID_REQUIRED_ERROR } };
+		}
+		mailboxId = requested;
 	}
 
 	if (!auth.scopes.includes(scope)) {
@@ -466,7 +583,10 @@ export async function runScopedTool(
 	}
 
 	try {
-		const result = await invokeScopedTool(env, auth.mailboxId, toolName, params);
+		const result =
+			mailboxId === null
+				? await invokeAppOnlyScopedTool(env, toolName, params)
+				: await invokeScopedTool(env, mailboxId, toolName, params);
 		const failure = errorMessage(result);
 		if (failure !== null) {
 			return { status: 400, body: { error: failure } };
@@ -474,7 +594,7 @@ export async function runScopedTool(
 		return { status: 200, body: { ok: true, result } };
 	} catch (e) {
 		console.error(
-			`Scoped tool ${toolName} failed for ${auth.mailboxId}:`,
+			`Scoped tool ${toolName} failed for ${mailboxId ?? "every mailbox"}:`,
 			(e as Error).message,
 		);
 		return { status: 500, body: { error: (e as Error).message } };
