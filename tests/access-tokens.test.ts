@@ -178,7 +178,7 @@ async function deleteAccessToken(mailbox: string, id: string) {
 describe("access token wire format", () => {
 	it("keeps the frozen prefix and constants", () => {
 		expect(ACCESS_TOKEN_PREFIX).toBe("ain1");
-		expect(ACCESS_TOKEN_SCOPES).toEqual(["read", "draft", "send"]);
+		expect(ACCESS_TOKEN_SCOPES).toEqual(["read", "draft", "send", "manage"]);
 		expect(MAX_ACCESS_TOKENS).toBe(20);
 		expect(MAX_ACCESS_TOKEN_NAME_LENGTH).toBe(120);
 	});
@@ -241,6 +241,9 @@ describe("access token wire format", () => {
 			"send",
 		]);
 		expect(normalizeAccessTokenScopes(["draft"])).toEqual(["draft"]);
+		expect(
+			normalizeAccessTokenScopes(["manage", "send", "read", "draft"]),
+		).toEqual(["read", "draft", "send", "manage"]);
 		expect(
 			normalizeAccessTokenScopes(["send", "read", "draft", "read"]),
 		).toEqual(["read", "draft", "send"]);

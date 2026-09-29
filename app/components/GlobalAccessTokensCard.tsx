@@ -29,6 +29,10 @@ const SCOPES = [
 		value: "send",
 		label: "Send mail and replies (the operator's send guards still apply)",
 	},
+	{
+		value: "manage",
+		label: "Organise mail: move, delete, star, read state, snooze, sender policy",
+	},
 ] as const;
 
 /**

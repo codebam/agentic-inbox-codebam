@@ -489,7 +489,6 @@ describe("a scoped session's MCP surface", () => {
 		const session = await openSession(driver);
 		// All three scopes present, so only the tool set can be the reason.
 		const calls: Record<string, Record<string, unknown>> = {
-			delete_email: { mailboxId: mailbox, emailId: "missing" },
 			undo_action: { mailboxId: mailbox, actionId: "missing" },
 			list_rules: { mailboxId: mailbox },
 			list_snoozed: { mailboxId: mailbox },
@@ -757,13 +756,12 @@ describe("an app session's MCP surface", () => {
 		});
 		expect(refused.isError).toBe(true);
 		expect(errorOf(refused)).toBe(
-			'App access tokens cannot use the "list_rules" tool. An app token reaches every mailbox and may only call: create_draft, discard_draft, draft_reply, get_attachment, get_email, get_thread, list_emails, list_mailboxes, search_all_mailboxes, search_emails, send_email, send_reply, update_draft.',
+			'App access tokens cannot use the "list_rules" tool. An app token reaches every mailbox and may only call: create_draft, delete_email, discard_draft, draft_reply, get_attachment, get_email, get_thread, list_emails, list_mailboxes, mark_email_read, move_email, search_all_mailboxes, search_emails, send_email, send_reply, set_sender_policy, snooze_email, star_email, unsnooze_email, update_draft.',
 		);
 
 		// Every other operator-only tool reads the same way. All three
 		// scopes present, so only the tool set can be the reason.
 		const calls: Record<string, Record<string, unknown>> = {
-			delete_email: { mailboxId: mailbox, emailId: "missing" },
 			undo_action: { mailboxId: mailbox, actionId: "missing" },
 			list_snoozed: { mailboxId: mailbox },
 			search_contacts: { mailboxId: mailbox },

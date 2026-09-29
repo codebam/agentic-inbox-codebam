@@ -20,7 +20,9 @@
  *
  *     read   list_emails, get_email, get_thread, search_emails, get_attachment
  *     draft  draft_reply, create_draft, update_draft, discard_draft
- *     send   send_email, send_reply
+ *     send   send_email, send_reply, unsubscribe_email
+ *     manage mark_email_read, star_email, move_email, delete_email,
+ *            snooze_email, unsnooze_email, set_sender_policy
  *
  * An app token may additionally call the two all-mailbox read tools —
  * list_mailboxes and search_all_mailboxes, each requiring the read scope.
@@ -34,6 +36,12 @@
  * two send tools keep every guard the agent and MCP surfaces carry — the
  * draft verifier runs first, and a refusal comes back as an error answer, not
  * as a send.
+ *
+ * One tool never joins SCOPED_TOOL_SCOPES: unsubscribe_email fires the
+ * RFC 8058 one-click POST to a URL taken from message content, and the
+ * guardrail keeps that reachable only through an operator-minted token on an
+ * explicit operator action, never by an agent or MCP session
+ * (SCOPED_SURFACE_ONLY_TOOL_SCOPES, below).
  *
  * Mutating calls are recorded in the target mailbox's `agent_actions` log
  * with source "scoped" (workers/lib/agent-actions.ts), the same metadata-only
@@ -52,6 +60,7 @@ import { runAudited } from "./agent-actions";
 import { verifyAppAccessToken } from "./app-tokens";
 import { getMailboxStub } from "./email-helpers";
 import {
+	toolDeleteEmail,
 	toolDiscardDraft,
 	toolDraftEmail,
 	toolDraftReply,
@@ -60,10 +69,17 @@ import {
 	toolGetThread,
 	toolListEmails,
 	toolListMailboxes,
+	toolMarkEmailRead,
+	toolMoveEmail,
 	toolSearchAllMailboxes,
 	toolSearchEmails,
 	toolSendEmail,
 	toolSendReply,
+	toolSetSenderPolicy,
+	toolSnoozeEmail,
+	toolStarEmail,
+	toolUnsnoozeEmail,
+	toolUnsubscribeEmail,
 	toolUpdateDraft,
 	type SearchEmailParams,
 	type ToolSendEmailAttachment,
@@ -86,6 +102,13 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	create_draft: "draft",
 	update_draft: "draft",
 	discard_draft: "draft",
+	mark_email_read: "manage",
+	star_email: "manage",
+	move_email: "manage",
+	delete_email: "manage",
+	snooze_email: "manage",
+	unsnooze_email: "manage",
+	set_sender_policy: "manage",
 	send_email: "send",
 	send_reply: "send",
 };
@@ -100,6 +123,18 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	list_mailboxes: "read",
 	search_all_mailboxes: "read",
+};
+
+/**
+ * The tools this surface carries that the /mcp gate must never share, and
+ * the scope each requires. unsubscribe_email fires a request to a URL taken
+ * from message content (RFC 8058 one-click), and the guardrail is that only
+ * an explicit operator action through an operator-minted token may do that:
+ * the name stays out of SCOPED_TOOL_SCOPES, the map the /mcp gate reads, so
+ * no agent or MCP session can ever call it.
+ */
+export const SCOPED_SURFACE_ONLY_TOOL_SCOPES: Record<string, AccessTokenScope> = {
+	unsubscribe_email: "send",
 };
 
 /**
@@ -311,7 +346,20 @@ function attachmentArguments(
  * the scoped tool name, and metadata-only args (ids, a subject, a thread id —
  * never a message body).
  */
-function invokeScopedTool(
+/** One boolean argument; an absent or unusable value takes the fallback. */
+function booleanArgument(
+	args: Record<string, unknown>,
+	key: string,
+	fallback: boolean,
+): boolean {
+	const value = args[key];
+	if (typeof value === "boolean") return value;
+	if (value === "true") return true;
+	if (value === "false") return false;
+	return fallback;
+}
+
+async function invokeScopedTool(
 	env: Env,
 	mailboxId: string,
 	toolName: string,
@@ -459,6 +507,163 @@ function invokeScopedTool(
 						bodyHtml: stringArgument(params, "bodyHtml"),
 					}),
 			);
+		case "mark_email_read":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "mark_email_read",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						read: booleanArgument(params, "read", true),
+					},
+				},
+				() =>
+					toolMarkEmailRead(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						booleanArgument(params, "read", true),
+					),
+			);
+		case "star_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "star_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						starred: booleanArgument(params, "starred", true),
+					},
+				},
+				() =>
+					toolStarEmail(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						booleanArgument(params, "starred", true),
+					),
+			);
+		case "move_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "move_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						folderId: stringArgument(params, "folderId"),
+					},
+				},
+				() =>
+					toolMoveEmail(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						stringArgument(params, "folderId"),
+					),
+			);
+		case "delete_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "delete_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						permanent: booleanArgument(params, "permanent", false),
+					},
+				},
+				() =>
+					toolDeleteEmail(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						booleanArgument(params, "permanent", false),
+					),
+			);
+		case "snooze_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "snooze_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						until: stringArgument(params, "until"),
+					},
+				},
+				() =>
+					toolSnoozeEmail(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						stringArgument(params, "until"),
+					),
+			);
+		case "unsnooze_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "unsnooze_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: { emailId: stringArgument(params, "emailId") },
+				},
+				() =>
+					toolUnsnoozeEmail(env, mailboxId, stringArgument(params, "emailId")),
+			);
+		case "set_sender_policy": {
+			const policy = stringArgument(params, "policy");
+			if (policy !== "allow" && policy !== "block") {
+				return { error: 'policy must be "allow" or "block"' };
+			}
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "set_sender_policy",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						policy,
+					},
+				},
+				() =>
+					toolSetSenderPolicy(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						policy,
+					),
+			);
+		}
+		case "unsubscribe_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "unsubscribe_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: { emailId: stringArgument(params, "emailId") },
+				},
+				() =>
+					toolUnsubscribeEmail(env, mailboxId, stringArgument(params, "emailId")),
+			);
 		default:
 			// Unreachable through runScopedTool, which only dispatches names
 			// the scope map carries. A direct caller that bypasses it still
@@ -539,17 +744,18 @@ export async function runScopedTool(
 	args: unknown,
 ): Promise<ScopedToolResult> {
 	const sharedScope = SCOPED_TOOL_SCOPES[toolName];
-	const scope =
-		sharedScope ??
-		(auth.kind === "app" ? APP_ONLY_SCOPED_TOOL_SCOPES[toolName] : undefined);
+	const surfaceOnlyScope = SCOPED_SURFACE_ONLY_TOOL_SCOPES[toolName];
+	const appOnlyScope =
+		auth.kind === "app" ? APP_ONLY_SCOPED_TOOL_SCOPES[toolName] : undefined;
+	const scope = sharedScope ?? surfaceOnlyScope ?? appOnlyScope;
 	if (!scope) {
 		return { status: 404, body: { error: `Unknown tool: ${toolName}` } };
 	}
 
-	// Only an app token ever gets this far with a name the shared map does
-	// not carry (a mailbox token would have answered 404 above): it is one of
-	// the two app-only tools.
-	const appOnly = sharedScope === undefined;
+	// Only an app token ever gets this far with a name neither the shared
+	// map nor the surface-only map carries (a mailbox token would have
+	// answered 404 above): it is one of the two app-only tools.
+	const appOnly = appOnlyScope !== undefined;
 
 	const params = argumentObject(args);
 	// The mailbox the call runs against: the token's own for a mailbox token,

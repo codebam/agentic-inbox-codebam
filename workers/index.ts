@@ -178,9 +178,7 @@ import { handleInboundRuleOutbound } from "./lib/rule-outbound";
 import { captureSendMessageId } from "./lib/delivery-match";
 import {
 	extractUnsubscribeHeaders,
-	isOneClickUnsubscribe,
-	parseUnsubscribeHeader,
-	sendOneClickUnsubscribe,
+	performOneClickUnsubscribe,
 } from "./lib/unsubscribe";
 import {
 	IMAGE_PROXY_CACHE_CONTROL,
@@ -1459,32 +1457,23 @@ function unsubscribeStub(c: AppContext): MailboxUnsubscribeStub {
 /**
  * One-click unsubscribe for one stored message (RFC 8058).
  *
- * Operator-initiated only: this route is the sole caller of the SSRF guard
- * and performs the outbound POST itself — never the DO, never delivery,
- * never an agent/MCP tool — so a sender-controlled URL cannot be fetched
- * without an explicit click. `unsubscribed_at` is stamped only after the
- * sender's endpoint answered 2xx; every failure answers 502 and leaves the
- * row untouched. The mailto fallback is a UI concern and is never sent here.
+ * Operator-initiated only: the flow (workers/lib/unsubscribe.ts,
+ * `performOneClickUnsubscribe`) performs the outbound POST itself — never
+ * anything automatic and never an agent/MCP tool — so a sender-controlled
+ * URL cannot be fetched without an explicit operator action.
+ * `unsubscribed_at` is stamped only after the sender's endpoint answered
+ * 2xx; an upstream failure answers 502 and leaves the row untouched, and
+ * the mailto fallback is a UI concern that is never sent here.
  */
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe", async (c: AppContext) => {
 	const id = c.req.param("id")!;
-	const stub = unsubscribeStub(c);
-	const email = await stub.getEmail(id);
-	if (!email) return c.json({ error: "Email not found" }, 404);
-
-	const { httpsUrl } = parseUnsubscribeHeader(email.list_unsubscribe);
-	if (!httpsUrl || !isOneClickUnsubscribe(email.list_unsubscribe_post)) {
-		return c.json({ error: "This message has no one-click unsubscribe target" }, 400);
+	const outcome = await performOneClickUnsubscribe(unsubscribeStub(c), id);
+	if (!outcome.ok) {
+		const status =
+			outcome.reason === "not_found" ? 404 : outcome.reason === "no_target" ? 400 : 502;
+		return c.json({ error: outcome.error }, status);
 	}
-
-	const result = await sendOneClickUnsubscribe(httpsUrl);
-	if (!result.ok) {
-		return c.json({ error: `Unsubscribe request failed: ${result.error}` }, 502);
-	}
-
-	const updated = await stub.setUnsubscribed(id, new Date().toISOString());
-	if (!updated) return c.json({ error: "Email not found" }, 404);
-	return c.json({ status: "unsubscribed", email: updated });
+	return c.json({ status: "unsubscribed", email: outcome.email });
 });
 
 // -- Calendar invites (iMIP) ----------------------------------------

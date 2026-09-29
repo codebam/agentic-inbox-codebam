@@ -17,9 +17,11 @@
  * through the SSRF guard in ./ssrf-guard.
  *
  * Guardrails: nothing here runs automatically and no agent/MCP tool exposes
- * it. The only production caller is the explicit operator action
- * (POST /api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe), so a
- * sender-controlled URL can never be fetched by a model or by delivery.
+ * it. The production callers are the explicit operator action
+ * (POST /api/v1/mailboxes/:mailboxId/emails/:id/unsubscribe) and the scoped
+ * surface's unsubscribe_email tool, which the /mcp gate deliberately never
+ * shares, so a sender-controlled URL can never be fetched by a model or by
+ * delivery.
  */
 
 import { guardedFetch, type GuardedFetchResult } from "./ssrf-guard";
@@ -126,6 +128,61 @@ export async function sendOneClickUnsubscribe(
 		},
 		fetchImpl,
 	);
+}
+
+/** The store RPCs the one-click flow needs, as the mailbox DO exposes them. */
+export interface UnsubscribeStore {
+	getEmail: (id: string) => Promise<{
+		list_unsubscribe: string | null;
+		list_unsubscribe_post: string | null;
+	} | null>;
+	setUnsubscribed: (id: string, at: string) => Promise<unknown>;
+}
+
+/** One one-click unsubscribe outcome; each caller maps it to its own shape. */
+export type OneClickUnsubscribeOutcome =
+	| { ok: true; email: unknown; unsubscribedAt: string }
+	| { ok: false; reason: "not_found" | "no_target" | "request_failed"; error: string };
+
+/**
+ * Run the whole one-click flow against one mailbox store: read the stored
+ * headers, refuse without an https one-click target, POST through the SSRF
+ * guard, and stamp `unsubscribed_at` only after the sender answered 2xx.
+ * Never throws. Shared by the operator route (workers/index.ts) and the
+ * scoped surface's unsubscribe_email tool so the two can never drift, but
+ * both callers are explicit operator actions: nothing here runs
+ * automatically, and no agent/MCP tool reaches it.
+ */
+export async function performOneClickUnsubscribe(
+	store: UnsubscribeStore,
+	id: string,
+	fetchImpl?: typeof fetch,
+): Promise<OneClickUnsubscribeOutcome> {
+	const email = await store.getEmail(id);
+	if (!email) return { ok: false, reason: "not_found", error: "Email not found" };
+
+	const { httpsUrl } = parseUnsubscribeHeader(email.list_unsubscribe);
+	if (!httpsUrl || !isOneClickUnsubscribe(email.list_unsubscribe_post)) {
+		return {
+			ok: false,
+			reason: "no_target",
+			error: "This message has no one-click unsubscribe target",
+		};
+	}
+
+	const result = await sendOneClickUnsubscribe(httpsUrl, fetchImpl);
+	if (!result.ok) {
+		return {
+			ok: false,
+			reason: "request_failed",
+			error: `Unsubscribe request failed: ${result.error}`,
+		};
+	}
+
+	const at = new Date().toISOString();
+	const updated = await store.setUnsubscribed(id, at);
+	if (!updated) return { ok: false, reason: "not_found", error: "Email not found" };
+	return { ok: true, email: updated, unsubscribedAt: at };
 }
 
 /**

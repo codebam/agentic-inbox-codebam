@@ -32,6 +32,7 @@ import {
 	isSenderPolicyValidationError,
 	type SenderPolicy,
 } from "./sender-policy";
+import { performOneClickUnsubscribe } from "./unsubscribe";
 import {
 	getMailboxStub,
 	getFullEmail,
@@ -917,6 +918,32 @@ export async function toolDeleteEmail(
 		return { error: "Email not found", emailId };
 	}
 	return { status: "deleted_permanently", emailId };
+}
+
+// ── unsubscribe_email ──────────────────────────────────────────────
+
+/**
+ * One-click unsubscribe (RFC 8058) for one stored message, through the
+ * shared flow (workers/lib/unsubscribe.ts): read the stored headers, POST
+ * the one-click body through the SSRF guard, and stamp `unsubscribed_at`
+ * only after the sender's endpoint answered 2xx.
+ *
+ * The caller is an operator-action surface (the scoped token's explicit
+ * unsubscribe_email call); no agent or MCP tool exposes it. A failure
+ * comes back as `{ error }` — the same shape every tool here uses — with
+ * the upstream reason in the message.
+ */
+export async function toolUnsubscribeEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const outcome = await performOneClickUnsubscribe(stub, emailId);
+	if (!outcome.ok) {
+		return { error: outcome.error };
+	}
+	return { status: "unsubscribed", emailId, unsubscribedAt: outcome.unsubscribedAt };
 }
 
 // ── delete_spam_emails ─────────────────────────────────────────────

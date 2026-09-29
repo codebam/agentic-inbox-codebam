@@ -49,10 +49,15 @@ export const ACCESS_TOKEN_PREFIX = "ain1";
  */
 export const APP_ACCESS_TOKEN_PREFIX = "ain2";
 
-/** The scopes a token may carry, in canonical order. */
-export const ACCESS_TOKEN_SCOPES = ["read", "draft", "send"] as const;
+/**
+ * The scopes a token may carry, in canonical order. `manage` is the
+ * mailbox housekeeping scope (folders, read/starred state, snoozes,
+ * sender policy), so an automation credential can triage mail without
+ * being handed `send`.
+ */
+export const ACCESS_TOKEN_SCOPES = ["read", "draft", "send", "manage"] as const;
 
-/** One of the three scope strings a token may carry. */
+/** One of the scope strings a token may carry. */
 export type AccessTokenScope = (typeof ACCESS_TOKEN_SCOPES)[number];
 
 /** Most access tokens one mailbox can hold; createAccessToken refuses beyond it. */
@@ -78,14 +83,14 @@ export interface AccessTokenRecord {
 	id: string;
 	/** Trimmed, 1..MAX_ACCESS_TOKEN_NAME_LENGTH characters. */
 	name: string;
-	/** Canonical (read, draft, send) scope list; never empty. */
+	/** Canonical (read, draft, send, manage) scope list; never empty. */
 	scopes: AccessTokenScope[];
 	created_at: string;
 	/** ISO instant the token was last verified, or null when never used. */
 	last_used_at: string | null;
 }
 
-/** True when `value` is one of the three scope strings a token may carry. */
+/** True when `value` is one of the scope strings a token may carry. */
 export function isAccessTokenScope(value: unknown): value is AccessTokenScope {
 	return (
 		typeof value === "string" &&
@@ -95,8 +100,8 @@ export function isAccessTokenScope(value: unknown): value is AccessTokenScope {
 
 /**
  * Canonicalize a scope list from request input: deduplicated, ordered
- * (read, draft, send), and non-empty. Returns null when `value` is not an
- * array, is empty, or carries anything outside the three scope strings, so
+ * (read, draft, send, manage), and non-empty. Returns null when `value` is not an
+ * array, is empty, or carries anything outside the scope strings, so
  * an unusable request is refused rather than quietly narrowed.
  */
 export function normalizeAccessTokenScopes(
