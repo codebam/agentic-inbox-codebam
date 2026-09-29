@@ -7,7 +7,7 @@ import type { AttachmentPayload } from "~/lib/attachments";
 import type { GlobalModelSettings } from "shared/models";
 import type { GlobalEmailViewSettings } from "shared/email-view";
 import type { ItemStatus } from "shared/items";
-import type { AccessTokenRecord } from "shared/access-tokens";
+import type { AccessTokenRecord, AccessTokenScope } from "shared/access-tokens";
 import type { PushConfig, PushSubscriptionInput } from "shared/push";
 import type {
 	MailRule,
@@ -177,6 +177,21 @@ export interface SavedSearch {
  * what the routes actually return.
  */
 export type AccessToken = AccessTokenRecord;
+
+/**
+ * One app-level access token, as the app-tokens routes answer it. Unlike
+ * AccessToken above, it is bound to no mailbox: whoever holds one can act
+ * on EVERY mailbox in the deployment, with exactly the scopes it was
+ * minted with. The record is declared locally because shared/access-tokens
+ * does not name an app-token record yet.
+ */
+export interface AppAccessToken {
+	id: string;
+	name: string;
+	scopes: AccessTokenScope[];
+	created_at: string;
+	last_used_at: string | null;
+}
 
 // ---------- API client ----------
 
@@ -617,6 +632,19 @@ const api = {
 	/** Revoke one token; anything holding it stops working immediately. */
 	revokeAccessToken: (mailboxId: string, tokenId: string) =>
 		del<{ ok: boolean }>(`/api/v1/mailboxes/${mailboxId}/access-tokens/${tokenId}`),
+
+	// App-level access tokens — bearer credentials that reach every mailbox,
+	// for automation outside Cloudflare Access. Minted and revoked from
+	// Global Settings; the plaintext comes back from the create call alone.
+	// Nothing in this block sends mail.
+	/** Every app-level token; metadata only, never plaintext. */
+	listAppTokens: () => get<{ tokens: AppAccessToken[] }>("/api/v1/app-tokens"),
+	/** Mint an app-level token; the response carries the plaintext exactly once. */
+	createAppToken: (input: { name: string; scopes: string[] }) =>
+		post<{ token: string; record: AppAccessToken }>("/api/v1/app-tokens", input),
+	/** Revoke one app-level token; anything holding it stops working immediately. */
+	revokeAppToken: (tokenId: string) =>
+		del<{ ok: boolean }>(`/api/v1/app-tokens/${tokenId}`),
 
 	/** Embed one bounded batch of the mailbox's unembedded messages. */
 	semanticReindex: (mailboxId: string) =>
