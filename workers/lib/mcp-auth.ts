@@ -16,12 +16,16 @@
  * API, so we verify them by asking Cloudflare whether the token can read one
  * of the domains this inbox is configured to manage.
  *
- * As an alternative, an operator-minted Settings access token (the `ain1`
- * wire format, shared/access-tokens.ts) authenticates too. Such a token is
- * verified in the mailbox its string names, exactly like the scoped
- * automation surface verifies it (workers/lib/scoped-surface.ts), and the
- * session it authenticates is BOUND to that mailbox with the token's
- * read/draft/send scopes — never the full multi-mailbox operator surface.
+ * As alternatives, operator-minted access tokens (shared/access-tokens.ts)
+ * authenticate too, in either of their two kinds. A Settings access token
+ * (the `ain1` wire format) is verified in the mailbox its string names,
+ * exactly like the scoped automation surface verifies it
+ * (workers/lib/scoped-surface.ts), and the session it authenticates is BOUND
+ * to that mailbox with the token's read/draft/send scopes. An app-level token
+ * (the `ain2` wire format) is verified against the deployment-wide R2 store
+ * (workers/lib/app-tokens.ts), and the session it authenticates reaches
+ * EVERY mailbox with the token's read/draft/send scopes. Neither kind ever
+ * reaches the full multi-mailbox operator surface.
  *
  * The browser UI remains protected by Cloudflare Access. This module is only
  * used for `/mcp`, where browser cookies and Access JWTs are not available to
@@ -32,9 +36,11 @@ import { z } from "zod";
 import {
 	isAccessTokenScope,
 	parseAccessToken,
+	parseAppAccessToken,
 	type AccessTokenScope,
 } from "../../shared/access-tokens";
 import { hashAccessToken } from "./access-tokens";
+import { verifyAppAccessToken } from "./app-tokens";
 import { getMailboxStub } from "./email-helpers";
 import type { Env } from "../types";
 
@@ -75,6 +81,13 @@ export interface McpAuthEnv {
 	 * only the mailbox it was minted for can ever accept it.
 	 */
 	MAILBOX?: Env["MAILBOX"];
+	/**
+	 * R2 bucket holding the deployment-wide app access tokens
+	 * (`config/app-tokens.json`, workers/lib/app-tokens.ts). Required to
+	 * verify app-level (`ain2`) tokens: the token is matched against the
+	 * single stored object every mailbox shares.
+	 */
+	BUCKET?: Env["BUCKET"];
 }
 
 export type McpAuthErrorCode =
@@ -97,19 +110,32 @@ export interface McpAuthIdentity {
 }
 
 /**
- * The scoped binding a Settings access token carries into an MCP session.
- * The token string names one mailbox, and the Durable Object record that
- * verified the token holds its scopes and id; together they are the whole
- * surface the session may reach.
+ * The scoped binding an operator-minted access token carries into an MCP
+ * session, built from the verified stored record alone. Two kinds exist:
+ *
+ * - `mailbox` — a Settings access token (the `ain1` wire format). The token
+ *   string names one mailbox, and the session is BOUND to it: that mailbox
+ *   is the only one the session may act on (`mailboxId`).
+ * - `app` — an app-level token (the `ain2` wire format). The token carries
+ *   no mailbox segment, and the session reaches EVERY mailbox: there is
+ *   deliberately no `mailboxId` to bind, filter or widen by.
+ *
+ * Both carry the scopes the stored record holds (`read`, `draft`, `send`)
+ * and the id of that record, for the audit log.
  */
-export interface McpScopedBinding {
-	/** The mailbox the token was minted for; the only one the session may act on. */
-	mailboxId: string;
-	/** The scopes the token carries (`read`, `draft`, `send`). */
-	scopes: AccessTokenScope[];
-	/** Id of the stored token record that verified, for the audit log. */
-	tokenId: string;
-}
+export type McpScopedBinding =
+	| {
+			kind: "mailbox";
+			/** The mailbox the token was minted for; the only one the session may act on. */
+			mailboxId: string;
+			scopes: AccessTokenScope[];
+			tokenId: string;
+	  }
+	| {
+			kind: "app";
+			scopes: AccessTokenScope[];
+			tokenId: string;
+	  };
 
 export interface McpAuthSuccess {
 	ok: true;
@@ -592,7 +618,45 @@ async function verifyScopedAccessToken(
 	return {
 		ok: true,
 		binding: {
+			kind: "mailbox",
 			mailboxId,
+			scopes: record.scopes,
+			tokenId: record.id,
+		},
+	};
+}
+
+/**
+ * Verify an app-level access token against the deployment-wide R2 store
+ * (workers/lib/app-tokens.ts).
+ *
+ * The recipe mirrors the scoped surface's per-mailbox one — SHA-256 the FULL
+ * token string and trust only the record the store answers with — except
+ * that the store is the single R2 object every mailbox shares, so the token
+ * resolves deployment-wide and the session it binds reaches EVERY mailbox.
+ *
+ * Every failure answers the same indistinguishable 401 as the mailbox
+ * branch, including a deployment without the bucket binding: a token that
+ * cannot be verified is not a credential, and saying which failure it was
+ * would turn the endpoint into an oracle.
+ */
+async function verifyAppScopedAccessToken(
+	token: string,
+	env: McpAuthEnv,
+): Promise<McpAuthResult> {
+	if (!env.BUCKET) {
+		return failure(401, "invalid_token", INVALID_ACCESS_TOKEN_ERROR);
+	}
+
+	const record = await verifyAppAccessToken(env.BUCKET, token);
+	if (!record) {
+		return failure(401, "invalid_token", INVALID_ACCESS_TOKEN_ERROR);
+	}
+
+	return {
+		ok: true,
+		binding: {
+			kind: "app",
 			scopes: record.scopes,
 			tokenId: record.id,
 		},
@@ -605,9 +669,9 @@ async function verifyScopedAccessToken(
  *
  * INTERNAL ONLY. It is never itself a credential: the middleware deletes any
  * client-supplied copy of this header from every /mcp request before it
- * authenticates anything, and writes its own value only once a Settings
- * access token verified. The /mcp route turns the middleware's header into
- * the per-request props McpAgent.serve reads, so a client can neither forge a
+ * authenticates anything, and writes its own value only once an access
+ * token verified. The /mcp route turns the middleware's header into the
+ * per-request props McpAgent.serve reads, so a client can neither forge a
  * binding nor widen the one its token holds.
  */
 export const MCP_SESSION_HEADER = "x-agentic-inbox-mcp-session";
@@ -630,10 +694,11 @@ export function stripMcpSessionMarker(request: Request): Request {
 /**
  * The request as the MCP handler should see it: the client's copy of the
  * internal session marker is gone either way, and only a verified scoped
- * result gets a marker of this code's own — carrying exactly the mailbox,
- * scopes and token id the token's record holds, never anything the client
- * asked for. A Cloudflare-credential (or Access JWT) request stays untagged:
- * the full multi-mailbox operator session.
+ * result gets a marker of this code's own — carrying exactly the binding
+ * the token's record verified (a mailbox for an `ain1` Settings token, the
+ * scopes and token id either way), never anything the client asked for. A
+ * Cloudflare-credential (or Access JWT) request stays untagged: the full
+ * multi-mailbox operator session.
  */
 export function bindMcpSessionMarker(
 	request: Request,
@@ -646,22 +711,42 @@ export function bindMcpSessionMarker(
 	return new Request(stripped, { headers });
 }
 
-/** True when `value` is a scoped binding this module could have written. */
+/**
+ * True when `value` is a scoped binding this module could have written.
+ *
+ * The two kinds are validated strictly and disjointly: a `mailbox` binding
+ * requires a non-empty string mailboxId, an `app` binding requires NO string
+ * mailboxId, and anything else — a missing or unknown `kind` included — is
+ * not a binding. Both require a non-empty token id and a non-empty list of
+ * known scopes.
+ */
 function isMcpScopedBinding(value: unknown): value is McpScopedBinding {
 	if (typeof value !== "object" || value === null) return false;
 	const binding = value as {
+		kind?: unknown;
 		mailboxId?: unknown;
 		scopes?: unknown;
 		tokenId?: unknown;
 	};
-	return (
-		typeof binding.mailboxId === "string" &&
-		binding.mailboxId.length > 0 &&
-		typeof binding.tokenId === "string" &&
-		Array.isArray(binding.scopes) &&
-		binding.scopes.length > 0 &&
-		binding.scopes.every(isAccessTokenScope)
-	);
+	if (
+		typeof binding.tokenId !== "string" ||
+		binding.tokenId.length === 0 ||
+		!Array.isArray(binding.scopes) ||
+		binding.scopes.length === 0 ||
+		!binding.scopes.every(isAccessTokenScope)
+	) {
+		return false;
+	}
+	if (binding.kind === "mailbox") {
+		return typeof binding.mailboxId === "string" && binding.mailboxId.length > 0;
+	}
+	if (binding.kind === "app") {
+		// An app token reaches every mailbox, so a binding carrying one
+		// would be a value no reader may honor: not one this module could
+		// have written.
+		return typeof binding.mailboxId !== "string";
+	}
+	return false;
 }
 
 /**
@@ -684,11 +769,14 @@ export function mcpSessionProps(request: Request): McpSessionProps | undefined {
  * Convenience wrapper for the Hono middleware: validates the `Authorization`
  * header shape and then verifies the credential with Cloudflare.
  *
- * A bearer that is the Settings access-token wire format (`ain1`) is verified
- * against its mailbox instead (see verifyScopedAccessToken) and is never
- * cached: the auth cache exists to keep the Cloudflare API lookups cheap, and
- * caching a scoped success would keep a revoked token working until its TTL
- * lapsed. Everything else keeps today's path: the cache, then Cloudflare.
+ * A bearer that is one of the access-token wire formats is verified against
+ * its own store instead of Cloudflare — `ain1` against the mailbox its
+ * string names (see verifyScopedAccessToken), `ain2` against the
+ * deployment-wide R2 store (see verifyAppScopedAccessToken) — and is never
+ * cached: the auth cache exists to keep the Cloudflare API lookups cheap,
+ * and caching a scoped success would keep a revoked token working until its
+ * TTL lapsed. Everything else keeps today's path: the cache, then
+ * Cloudflare.
  */
 export async function authenticateMcpRequest(
 	authorizationHeader: string | null | undefined,
@@ -715,6 +803,13 @@ export async function authenticateMcpRequest(
 	const parsedAccessToken = parseAccessToken(token);
 	if (parsedAccessToken) {
 		return verifyScopedAccessToken(token, parsedAccessToken.mailboxId, env);
+	}
+
+	// The app-token parser is disjoint from the ain1 one above, so an
+	// `ain2_<secret>` string — and only that shape — reaches the app store.
+	const parsedAppToken = parseAppAccessToken(token);
+	if (parsedAppToken) {
+		return verifyAppScopedAccessToken(token, env);
 	}
 
 	const cached = await readAuthCache(token, env, options);

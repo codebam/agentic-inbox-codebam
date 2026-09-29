@@ -17,6 +17,16 @@
  * gated by the scope it assigns, list_mailboxes answering the bound mailbox
  * alone, other tools, other mailboxes and forged markers refused.
  *
+ * App-level (`ain2`) tokens get the same treatment in their own describes:
+ * the app branch of authenticateMcpRequest (a minted token binding its
+ * scopes and no mailbox, a revoked token and a never-minted secret answering
+ * the same one no-oracle 401), an app session's MCP surface (list_mailboxes
+ * answering every mailbox, the scoped tools running against any mailbox,
+ * search_all_mailboxes passing through, everything outside the app set
+ * refused with the app message, a missing scope refused exactly as a mailbox
+ * token refuses it), and forged markers unable to bind or widen an app
+ * session either.
+ *
  * One thing the pool cannot run end to end, named rather than faked: the
  * /mcp middleware's auth branch is compiled out of a pool run
  * (`import.meta.env.DEV` is true), so a test request cannot *become* scoped
@@ -35,6 +45,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
 	formatAccessToken,
+	formatAppAccessToken,
 	type AccessTokenScope,
 } from "../shared/access-tokens";
 import { Folders } from "../shared/folders";
@@ -118,6 +129,37 @@ async function mintAccessToken(mailbox: string, scopes: AccessTokenScope[]) {
 	});
 	if (!created) throw new Error(`could not mint a token for ${mailbox}`);
 	return created;
+}
+
+/** The app-token admin route the Global Settings card calls. */
+const APP_TOKENS_URL = "http://example.com/api/v1/app-tokens";
+
+/**
+ * Mint one app-level access token through the real admin route — the same
+ * POST /api/v1/app-tokens a client calls — so the tests authenticate the
+ * exact wire format a 201 hands out, never a store-side shortcut.
+ */
+async function mintAppToken(scopes: AccessTokenScope[]) {
+	const response = await SELF.fetch(APP_TOKENS_URL, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ name: "MCP app auth test", scopes }),
+	});
+	expect(response.status).toBe(201);
+	const body = (await response.json()) as {
+		token: string;
+		record: { id: string };
+	};
+	expect(body.token.startsWith("ain2_")).toBe(true);
+	return body;
+}
+
+/** Revoke one app token through the real admin route. */
+async function revokeAppToken(tokenId: string) {
+	const response = await SELF.fetch(`${APP_TOKENS_URL}/${tokenId}`, {
+		method: "DELETE",
+	});
+	expect(response.status).toBe(200);
 }
 
 /** Seed one stored message. */
@@ -267,6 +309,7 @@ describe("Settings access tokens on /mcp", () => {
 		// A scoped token has no Cloudflare identity: it is the binding.
 		expect(result.identity).toBeUndefined();
 		expect(result.binding).toEqual({
+			kind: "mailbox",
 			mailboxId: mailbox,
 			scopes: ["read", "draft"],
 			tokenId: record.id,
@@ -366,7 +409,12 @@ describe("the internal session marker", () => {
 
 		const props = await propsForToken(token, forged);
 		expect(props).toEqual({
-			scopedSession: { mailboxId: mailbox, scopes: ["read"], tokenId: record.id },
+			scopedSession: {
+				kind: "mailbox",
+				mailboxId: mailbox,
+				scopes: ["read"],
+				tokenId: record.id,
+			},
 		});
 	});
 
@@ -380,6 +428,19 @@ describe("the internal session marker", () => {
 			JSON.stringify({ mailboxId: "a@b.c", scopes: ["admin"], tokenId: "x" }),
 			JSON.stringify({ mailboxId: "a@b.c", scopes: ["read"] }),
 			JSON.stringify({ mailboxId: "a@b.c", scopes: ["read"], tokenId: 7 }),
+			// The union is strict: no kind, an unknown kind, a mailbox
+			// binding missing its mailboxId, and an app binding carrying
+			// one (a value no reader may honor) are all junk.
+			JSON.stringify({ scopes: ["read"], tokenId: "x" }),
+			JSON.stringify({ kind: "admin", scopes: ["read"], tokenId: "x" }),
+			JSON.stringify({ kind: "mailbox", scopes: ["read"], tokenId: "x" }),
+			JSON.stringify({
+				kind: "app",
+				mailboxId: "a@b.c",
+				scopes: ["read"],
+				tokenId: "x",
+			}),
+			JSON.stringify({ kind: "app", scopes: ["read"], tokenId: "" }),
 		]) {
 			const request = new Request(MCP_URL, {
 				headers: { [MCP_SESSION_HEADER]: junk },
@@ -548,5 +609,310 @@ describe("forged markers cannot escalate", () => {
 		expect(
 			(JSON.parse(listed.text) as { id: string }[]).map((row) => row.id),
 		).toEqual([mailbox]);
+	});
+});
+
+describe("app-level access tokens on /mcp", () => {
+	it("accepts a minted app token and binds the session to its scopes — and to no mailbox", async () => {
+		const { record, token } = await mintAppToken(["read", "draft"]);
+
+		const result = await authenticateMcpRequest(`Bearer ${token}`, env);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		// An app token has no Cloudflare identity: it is the binding, and
+		// the binding deliberately carries no mailboxId.
+		expect(result.identity).toBeUndefined();
+		expect(result.binding).toEqual({
+			kind: "app",
+			scopes: ["read", "draft"],
+			tokenId: record.id,
+		});
+	});
+
+	it("answers the scoped surface's one 401 once the app token is revoked, with no cached success in between", async () => {
+		const { record, token } = await mintAppToken(["read"]);
+
+		// A verified success first: if this branch consulted the auth
+		// cache, the revocation below would have to wait out a TTL.
+		expect((await authenticateMcpRequest(`Bearer ${token}`, env)).ok).toBe(true);
+		await revokeAppToken(record.id);
+
+		const result = await authenticateMcpRequest(`Bearer ${token}`, env);
+		expect(result).toMatchObject({
+			ok: false,
+			status: 401,
+			error: "invalid_token",
+			message: "Invalid or revoked access token",
+		});
+	});
+
+	it("answers the same 401 for an app token whose secret was never minted", async () => {
+		// The right shape, a secret no create ever stored: the same
+		// refusal as a revoked token, so the endpoint is no oracle.
+		const never = formatAppAccessToken("A".repeat(43));
+
+		const result = await authenticateMcpRequest(`Bearer ${never}`, env);
+		expect(result).toMatchObject({
+			ok: false,
+			status: 401,
+			error: "invalid_token",
+			message: "Invalid or revoked access token",
+		});
+	});
+
+	it("only the exact app-token shape is app-scoped: an ain2 lookalike stays a Wrangler credential", async () => {
+		// Near misses are not guessed at: a bearer that is not exactly the
+		// `ain2_<43 chars>` wire format never reaches the app-token store,
+		// and goes down the unchanged Cloudflare path.
+		const result = await verifyWranglerCredential("ain2_zz_lookalike");
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.binding).toBeUndefined();
+	});
+});
+
+describe("an app session's MCP surface", () => {
+	it("completes the handshake and answers list_mailboxes with every mailbox, while the mailbox-bound token still answers one", async () => {
+		const mailbox = "mcp-app-all@example.com";
+		const other = "mcp-app-other@example.com";
+		await registerMailbox(mailbox);
+		await registerMailbox(other);
+
+		const { token: appToken } = await mintAppToken(["read"]);
+		const appDriver = scopedDriver(await propsForToken(appToken));
+		const appSession = await openSession(appDriver);
+		const appAnswer = await callTool(appDriver, appSession, "list_mailboxes", {});
+		expect(appAnswer.isError).toBe(false);
+		// Every mailbox is present: this test's two and whatever other
+		// tests seeded before it (the pool shares one storage bucket).
+		const appIds = (JSON.parse(appAnswer.text) as { id: string }[]).map(
+			(row) => row.id,
+		);
+		expect(appIds).toContain(mailbox);
+		expect(appIds).toContain(other);
+
+		const { token: scopedToken } = await mintAccessToken(mailbox, ["read"]);
+		const mailboxDriver = scopedDriver(await propsForToken(scopedToken));
+		const mailboxSession = await openSession(mailboxDriver);
+		const mailboxAnswer = await callTool(
+			mailboxDriver,
+			mailboxSession,
+			"list_mailboxes",
+			{},
+		);
+		expect(JSON.parse(mailboxAnswer.text)).toEqual([{ id: mailbox, email: mailbox }]);
+	});
+
+	it("runs a scoped tool against any mailbox, while the mailbox-bound token still refuses another", async () => {
+		const bound = "mcp-app-bound@example.com";
+		const other = "mcp-app-target@example.com";
+		await registerMailbox(bound);
+		await registerMailbox(other);
+		await seedEmail(other, "app-target-1", "App reaches this mailbox");
+
+		const { token: appToken } = await mintAppToken(["read"]);
+		const appDriver = scopedDriver(await propsForToken(appToken));
+		const appSession = await openSession(appDriver);
+		const appAnswer = await callTool(appDriver, appSession, "list_emails", {
+			mailboxId: other,
+		});
+		expect(appAnswer.isError).toBe(false);
+		expect(appAnswer.text).toContain("App reaches this mailbox");
+
+		const { token: scopedToken } = await mintAccessToken(bound, ["read"]);
+		const mailboxDriver = scopedDriver(await propsForToken(scopedToken));
+		const mailboxSession = await openSession(mailboxDriver);
+		const refused = await callTool(mailboxDriver, mailboxSession, "list_emails", {
+			mailboxId: other,
+		});
+		expect(refused.isError).toBe(true);
+		expect(errorOf(refused)).toContain(`bound to mailbox "${bound}"`);
+	});
+
+	it("passes search_all_mailboxes through to the deployment-wide handler", async () => {
+		const mailbox = "mcp-app-search-all@example.com";
+		await registerMailbox(mailbox);
+		await seedEmail(mailbox, "app-search-1", "App search across mailboxes");
+
+		const { token } = await mintAppToken(["read"]);
+		const driver = scopedDriver(await propsForToken(token));
+		const session = await openSession(driver);
+		const answer = await callTool(driver, session, "search_all_mailboxes", {
+			query: "across mailboxes",
+		});
+		expect(answer.isError).toBe(false);
+		expect(answer.text).toContain("App search across mailboxes");
+	});
+
+	it("refuses every tool outside the app set, naming the allowed set exactly", async () => {
+		const mailbox = "mcp-app-closed@example.com";
+		await registerMailbox(mailbox);
+		const { token } = await mintAppToken(["read", "draft", "send"]);
+		const driver = scopedDriver(await propsForToken(token));
+		const session = await openSession(driver);
+
+		// The pinned app refusal: prose plus the full allowed set.
+		const refused = await callTool(driver, session, "list_rules", {
+			mailboxId: mailbox,
+		});
+		expect(refused.isError).toBe(true);
+		expect(errorOf(refused)).toBe(
+			'App access tokens cannot use the "list_rules" tool. An app token reaches every mailbox and may only call: create_draft, discard_draft, draft_reply, get_attachment, get_email, get_thread, list_emails, list_mailboxes, search_all_mailboxes, search_emails, send_email, send_reply, update_draft.',
+		);
+
+		// Every other operator-only tool reads the same way. All three
+		// scopes present, so only the tool set can be the reason.
+		const calls: Record<string, Record<string, unknown>> = {
+			delete_email: { mailboxId: mailbox, emailId: "missing" },
+			undo_action: { mailboxId: mailbox, actionId: "missing" },
+			list_snoozed: { mailboxId: mailbox },
+			search_contacts: { mailboxId: mailbox },
+		};
+		for (const [name, args] of Object.entries(calls)) {
+			const answer = await callTool(driver, session, name, args);
+			expect(answer.isError).toBe(true);
+			expect(errorOf(answer)).toContain(
+				`App access tokens cannot use the "${name}" tool`,
+			);
+			expect(errorOf(answer)).toContain("An app token reaches every mailbox");
+		}
+	});
+
+	it("refuses a tool the app token's scopes do not reach, exactly as a mailbox token does", async () => {
+		const mailbox = "mcp-app-scope@example.com";
+		await registerMailbox(mailbox);
+
+		const { token: appToken } = await mintAppToken(["read"]);
+		const appDriver = scopedDriver(await propsForToken(appToken));
+		const appSession = await openSession(appDriver);
+		const draftRefusal = await callTool(appDriver, appSession, "create_draft", {
+			mailboxId: mailbox,
+			subject: "Not allowed",
+			bodyHtml: "<p>hi</p>",
+		});
+		expect(draftRefusal.isError).toBe(true);
+		expect(errorOf(draftRefusal)).toContain("lacks the draft scope");
+
+		const { token: scopedToken } = await mintAccessToken(mailbox, ["read"]);
+		const mailboxDriver = scopedDriver(await propsForToken(scopedToken));
+		const mailboxSession = await openSession(mailboxDriver);
+
+		const sendArgs = {
+			mailboxId: mailbox,
+			to: "someone@example.org",
+			subject: "Not allowed",
+			bodyHtml: "<p>no</p>",
+		};
+		const appAnswer = await callTool(appDriver, appSession, "send_email", sendArgs);
+		const mailboxAnswer = await callTool(
+			mailboxDriver,
+			mailboxSession,
+			"send_email",
+			sendArgs,
+		);
+		expect(appAnswer.isError).toBe(true);
+		expect(mailboxAnswer.isError).toBe(true);
+		// The identical wording either way: the scope check does not
+		// distinguish the token kind.
+		expect(errorOf(appAnswer)).toBe(
+			'This token lacks the send scope, which "send_email" requires.',
+		);
+		expect(errorOf(appAnswer)).toBe(errorOf(mailboxAnswer));
+	});
+});
+
+describe("forged markers cannot escalate an app session", () => {
+	it("cannot give an unauthenticated /mcp session an app binding", async () => {
+		const mailbox = "mcp-app-forge-bound@example.com";
+		const other = "mcp-app-forge-other@example.com";
+		await registerMailbox(mailbox);
+		await registerMailbox(other);
+
+		// A forged app marker on the session's very first request. If the
+		// middleware did not delete the client's copy, this read-scoped
+		// session would refuse list_rules with the app message; unbound,
+		// it is the full operator surface.
+		const forged = JSON.stringify({
+			kind: "app",
+			scopes: ["read"],
+			tokenId: "forged",
+		});
+		const session = await openSession(selfDriver, {
+			[MCP_SESSION_HEADER]: forged,
+		});
+
+		const listed = await callTool(selfDriver, session, "list_mailboxes", {});
+		expect(listed.isError).toBe(false);
+		const ids = (JSON.parse(listed.text) as { id: string }[]).map((row) => row.id);
+		expect(ids).toContain(mailbox);
+		expect(ids).toContain(other);
+
+		const rules = await callTool(selfDriver, session, "list_rules", {
+			mailboxId: mailbox,
+		});
+		expect(rules.isError).toBe(false);
+	});
+
+	it("cannot widen an app session with a marker claiming more scopes or a mailbox", async () => {
+		const mailbox = "mcp-app-forge-scoped@example.com";
+		const other = "mcp-app-forge-widened@example.com";
+		await registerMailbox(mailbox);
+		await registerMailbox(other);
+		const { token } = await mintAppToken(["read"]);
+		const driver = scopedDriver(await propsForToken(token));
+		const session = await openSession(driver);
+
+		const forged = JSON.stringify({
+			kind: "app",
+			scopes: ["read", "draft", "send"],
+			tokenId: "forged",
+		});
+
+		// Every further request carries the forgery, through the real
+		// middleware (which deletes it) and the real route.
+		const refusedScope = await callTool(
+			selfDriver,
+			session,
+			"create_draft",
+			{ mailboxId: mailbox, subject: "Widened?", bodyHtml: "<p>no</p>" },
+			{ [MCP_SESSION_HEADER]: forged },
+		);
+		expect(refusedScope.isError).toBe(true);
+		expect(errorOf(refusedScope)).toContain("lacks the draft scope");
+
+		const refusedTool = await callTool(
+			selfDriver,
+			session,
+			"list_rules",
+			{ mailboxId: mailbox },
+			{ [MCP_SESSION_HEADER]: forged },
+		);
+		expect(refusedTool.isError).toBe(true);
+		expect(errorOf(refusedTool)).toContain(
+			'App access tokens cannot use the "list_rules" tool',
+		);
+
+		// A forged mailbox binding cannot narrow the app session either:
+		// list_mailboxes still answers the whole deployment.
+		const narrowed = await callTool(
+			selfDriver,
+			session,
+			"list_mailboxes",
+			{},
+			{
+				[MCP_SESSION_HEADER]: JSON.stringify({
+					kind: "mailbox",
+					mailboxId: other,
+					scopes: ["read"],
+					tokenId: "forged",
+				}),
+			},
+		);
+		expect(narrowed.isError).toBe(false);
+		const narrowedIds = (JSON.parse(narrowed.text) as { id: string }[]).map(
+			(row) => row.id,
+		);
+		expect(narrowedIds).toContain(mailbox);
+		expect(narrowedIds).toContain(other);
 	});
 });

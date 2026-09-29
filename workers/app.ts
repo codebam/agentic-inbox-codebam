@@ -157,18 +157,19 @@ const app = new Hono<{ Bindings: Env }>();
 // * `/mcp` is agent-facing and authenticates with a Wrangler credential via
 //   `Authorization: Bearer <wrangler auth token>`. Cloudflare Access JWTs are
 //   accepted as a fallback for clients already inside the Access boundary.
-//   An operator-minted Settings access token (the `ain1` wire format) is the
-//   third credential: the session it authenticates is bound to the token's
-//   mailbox and scopes, and never to the multi-mailbox operator surface.
+//   Operator-minted access tokens authenticate as well: a Settings token
+//   (the `ain1` wire format) binds the session to its mailbox and scopes,
+//   and an app-level token (the `ain2` wire format) reaches every mailbox
+//   with its scopes. Neither is the multi-mailbox operator surface.
 // * All other routes keep the original Cloudflare Access gate.
 app.use("*", async (c: AuthContext, next) => {
 	const pathname = new URL(c.req.url).pathname;
 
 	// The internal scoped-session marker (workers/lib/mcp-auth.ts) is
 	// deleted from every /mcp request here — in development too. Only the
-	// branch below, after a Settings access token verified, may write one
-	// back, so no client-supplied copy can ever reach the MCP handler and
-	// no client can forge or widen a session binding.
+	// branch below, after an access token verified, may write one back, so
+	// no client-supplied copy can ever reach the MCP handler and no client
+	// can forge or widen a session binding.
 	if (isMcpPath(pathname)) {
 		c.req.raw = stripMcpSessionMarker(c.req.raw);
 	}
