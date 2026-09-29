@@ -66,6 +66,7 @@ import {
 } from "../lib/contacts";
 import type { McpScopedBinding, McpSessionProps } from "../lib/mcp-auth";
 import { SCOPED_TOOL_SCOPES } from "../lib/scoped-surface";
+import type { AccessTokenScope } from "../../shared/access-tokens";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
 import type { Env } from "../types";
@@ -129,17 +130,49 @@ type ToolRegistrar = <Shape extends ZodRawShapeCompat>(
 ) => RegisteredTool;
 
 /**
- * The MCP surface's rules for a session bound by a Settings access token
- * (`ain1`, workers/lib/mcp-auth.ts).
+ * The extra tools an app-token session may call beyond SCOPED_TOOL_SCOPES,
+ * each gated by the scope it requires. Both are read-only answers over every
+ * mailbox — exactly the reach an app token exists for — so both count as
+ * `read`.
+ */
+const APP_SESSION_EXTRA_TOOL_SCOPES: Record<string, AccessTokenScope> = {
+	list_mailboxes: "read",
+	search_all_mailboxes: "read",
+};
+
+/**
+ * Every tool name an app-token session may invoke: the SCOPED_TOOL_SCOPES
+ * keys plus the extras above, sorted so the refusal message is stable.
+ */
+const APP_SESSION_ALLOWED_TOOLS: string[] = [
+	...Object.keys(SCOPED_TOOL_SCOPES),
+	...Object.keys(APP_SESSION_EXTRA_TOOL_SCOPES),
+].sort();
+
+/**
+ * The MCP surface's rules for a session bound by an operator-minted access
+ * token (workers/lib/mcp-auth.ts).
  *
- * The binding names one mailbox and the read/draft/send scopes the token's
- * stored record holds. Inside such a session:
+ * A `mailbox` binding (an `ain1` Settings token) names one mailbox and the
+ * read/draft/send scopes the token's stored record holds. Inside such a
+ * session:
  *   - only the tools of SCOPED_TOOL_SCOPES — the very map the scoped
  *     automation surface uses (workers/lib/scoped-surface.ts), never a copy —
  *     plus `list_mailboxes` may be invoked, each gated by the scope the map
  *     assigns it;
  *   - `list_mailboxes` answers the bound mailbox alone;
  *   - every argument naming another mailbox is refused.
+ *
+ * An `app` binding (an `ain2` app-level token) carries scopes but no
+ * mailbox: the session reaches EVERY mailbox. Inside such a session:
+ *   - the SCOPED_TOOL_SCOPES tools plus `list_mailboxes` and
+ *     `search_all_mailboxes` may be invoked, each gated by the scope the
+ *     maps assign (the two extras are reads);
+ *   - `mailboxId` arguments are NOT equality-checked — any mailbox is the
+ *     point — so a scoped tool runs wherever it points, and `list_mailboxes`
+ *     and `search_all_mailboxes` fall through to their real, deployment-wide
+ *     handlers;
+ *   - every other tool is refused, naming the allowed set.
  *
  * Returns the error result to answer with, or null when the call may run. An
  * unbound session — a Wrangler credential — is the full multi-mailbox
@@ -151,6 +184,20 @@ async function scopedSessionRefusal(
 	toolName: string,
 	args: unknown,
 ): Promise<CallToolResult | null> {
+	if (binding.kind === "app") {
+		const scope =
+			SCOPED_TOOL_SCOPES[toolName] ?? APP_SESSION_EXTRA_TOOL_SCOPES[toolName];
+		if (!scope) {
+			return mcpError(
+				`App access tokens cannot use the "${toolName}" tool. An app token reaches every mailbox and may only call: ${APP_SESSION_ALLOWED_TOOLS.join(", ")}.`,
+			);
+		}
+		if (!binding.scopes.includes(scope)) {
+			return mcpError(`This token lacks the ${scope} scope, which "${toolName}" requires.`);
+		}
+		return null;
+	}
+
 	const scope = SCOPED_TOOL_SCOPES[toolName];
 	if (!scope && toolName !== "list_mailboxes") {
 		return mcpError(
@@ -251,10 +298,11 @@ const searchFilterShape = {
  * draft replies, send messages, and manage folders.
  *
  * A session authenticated by a Wrangler credential is the full operator
- * surface. A session authenticated by an operator-minted Settings access
- * token carries `props.scopedSession` instead — set by the /mcp middleware
- * from the token's verified record, never by a client — and every tool
- * registration below is gated by it (see scopedSessionRefusal).
+ * surface. A session authenticated by an operator-minted access token — a
+ * Settings token (`ain1`) or an app-level token (`ain2`) — carries
+ * `props.scopedSession` instead — set by the /mcp middleware from the
+ * token's verified record, never by a client — and every tool registration
+ * below is gated by it (see scopedSessionRefusal).
  */
 export class EmailMCP extends McpAgent<Env, unknown, McpSessionProps> {
 	server = new McpServer(
@@ -299,8 +347,8 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 
 		/**
 		 * Register one MCP tool through the scoped-session guard: a session
-		 * bound by a Settings access token (workers/lib/mcp-auth.ts) may only
-		 * reach the tools scopedSessionRefusal allows. The binding is read
+		 * bound by an operator-minted access token (workers/lib/mcp-auth.ts)
+		 * may only reach the tools scopedSessionRefusal allows. The binding is read
 		 * from this agent's props at call time — props are set by the /mcp
 		 * middleware, never by a client — so every tool registered in this
 		 * method is covered, including any added later.
