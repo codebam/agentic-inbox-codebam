@@ -203,8 +203,15 @@ import {
 	ACCESS_TOKEN_SCOPES,
 	MAX_ACCESS_TOKENS,
 	MAX_ACCESS_TOKEN_NAME_LENGTH,
+	MAX_APP_ACCESS_TOKENS,
 	normalizeAccessTokenScopes,
 } from "../shared/access-tokens";
+import {
+	createAppAccessToken,
+	listAppAccessTokens,
+	revokeAppAccessToken,
+	type AppAccessTokenInput,
+} from "./lib/app-tokens";
 import {
 	authenticateScopedRequest,
 	runScopedTool,
@@ -2114,6 +2121,81 @@ app.delete(
 			: c.json({ error: "Access token not found" }, 404);
 	},
 );
+
+
+// -- App access tokens (all-mailbox bearer credentials) --------------
+
+/**
+ * The reason an app-token create body is unusable, or null when it is fine.
+ * The bounds mirror the R2 store's own validators (shared/access-tokens.ts),
+ * so the 400 can name the field: createAppAccessToken answers null for an
+ * unusable value and for its cap alike, and only this pre-check can tell the
+ * two apart.
+ */
+function appTokenCreateError(body: unknown): string | null {
+	if (body === null || typeof body !== "object") return "Invalid app access token";
+	const input = body as { name?: unknown; scopes?: unknown };
+	const name = typeof input.name === "string" ? input.name.trim() : "";
+	if (!name) return "An app access token name is required";
+	if (name.length > MAX_ACCESS_TOKEN_NAME_LENGTH) {
+		return `An app access token name can be at most ${MAX_ACCESS_TOKEN_NAME_LENGTH} characters`;
+	}
+	if (normalizeAccessTokenScopes(input.scopes) === null) {
+		return `Scopes must be a non-empty subset of ${ACCESS_TOKEN_SCOPES.join(", ")}`;
+	}
+	return null;
+}
+
+
+/**
+ * The deployment's app access tokens, newest first. A token is a bearer
+ * credential, so this answer is metadata only: the plaintext is shown once
+ * by the create route and the stored hash never leaves R2. Admin surface
+ * behind Cloudflare Access like every other /api/v1 route.
+ */
+app.get("/api/v1/app-tokens", async (c: AppContext) => {
+	return c.json({ tokens: await listAppAccessTokens(c.env.BUCKET) });
+});
+
+
+/**
+ * Mint one app access token — one credential for every mailbox. The name
+ * (1..120 characters, trimmed) and the scopes (a non-empty subset of read,
+ * draft, send) are validated here so the 400 names the reason, and the
+ * 20-token cap is enforced by the store; the 201 is the only answer that
+ * ever carries the plaintext token — it is shown once and cannot be read
+ * back.
+ */
+app.post("/api/v1/app-tokens", async (c: AppContext) => {
+	const body = (await c.req.json().catch(() => null)) as unknown;
+	const error = appTokenCreateError(body);
+	if (error) return c.json({ error }, 400);
+	const created = await createAppAccessToken(
+		c.env.BUCKET,
+		body as AppAccessTokenInput,
+	);
+	return created
+		? c.json(created, 201)
+		: c.json(
+				{ error: `At most ${MAX_APP_ACCESS_TOKENS} app access tokens` },
+				400,
+			);
+});
+
+
+/**
+ * Revoke one app access token. 404 when there is nothing to revoke; nothing
+ * else is touched, and the revoked token stops resolving immediately.
+ */
+app.delete("/api/v1/app-tokens/:tokenId", async (c: AppContext) => {
+	const revoked = await revokeAppAccessToken(
+		c.env.BUCKET,
+		c.req.param("tokenId")!,
+	);
+	return revoked
+		? c.json({ ok: true })
+		: c.json({ error: "Access token not found" }, 404);
+});
 
 
 // -- Mailbox export (mbox and EML) -----------------------------------
