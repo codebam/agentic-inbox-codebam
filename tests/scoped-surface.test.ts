@@ -18,12 +18,14 @@
 
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
 import {
 	formatAccessToken,
+	formatAppAccessToken,
 	type AccessTokenRecord,
 } from "../shared/access-tokens";
+import { APP_ACCESS_TOKENS_KEY } from "../workers/lib/app-tokens";
 import { setToolSendEmailSenderFactory } from "../workers/lib/tools";
 import type { SendEmailParams } from "../workers/email-sender";
 
@@ -107,6 +109,37 @@ async function revokeToken(mailbox: string, id: string): Promise<number> {
 		{ method: "DELETE" },
 	);
 	return response.status;
+}
+
+/** Mint one app-level token through the admin route and keep its plaintext. */
+async function mintAppToken(
+	scopes: string[],
+	name = "Scoped app test token",
+): Promise<{ token: string; record: AccessTokenRecord }> {
+	const response = await SELF.fetch("http://example.com/api/v1/app-tokens", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ name, scopes }),
+	});
+	expect(response.status).toBe(201);
+	return (await response.json()) as {
+		token: string;
+		record: AccessTokenRecord;
+	};
+}
+
+/** Revoke one app token through the admin route; answers the status. */
+async function revokeAppToken(id: string): Promise<number> {
+	const response = await SELF.fetch(
+		`http://example.com/api/v1/app-tokens/${id}`,
+		{ method: "DELETE" },
+	);
+	return response.status;
+}
+
+/** Empty the app-token store so a test starts from a known object. */
+async function resetAppTokens(): Promise<void> {
+	await env.BUCKET.delete(APP_ACCESS_TOKENS_KEY);
 }
 
 /** POST one scoped call with the raw header value and body text a test needs. */
@@ -414,5 +447,236 @@ describe("scoped surface audit", () => {
 		const listed = await scopedCall("list_emails", token);
 		expect(listed.status).toBe(200);
 		expect(await auditRows(stub)).toHaveLength(1);
+	});
+});
+
+// ── App-level (all-mailbox) tokens ─────────────────────────────────
+
+describe("scoped surface app tokens", () => {
+	beforeEach(resetAppTokens);
+
+	it("runs a mailbox-scoped call against whichever mailbox the body names", async () => {
+		const alpha = "scoped-app-alpha@example.com";
+		const beta = "scoped-app-beta@example.com";
+		await seedEmail(stubFor(alpha), "scoped-app-alpha-1");
+		await seedEmail(stubFor(beta), "scoped-app-beta-1");
+		const { token } = await mintAppToken(["read"], "All-mailbox read token");
+
+		const fromAlpha = await scopedCall("list_emails", token, {
+			mailboxId: alpha,
+		});
+		expect(fromAlpha.status).toBe(200);
+		expect(fromAlpha.body.ok).toBe(true);
+		expect(
+			(fromAlpha.body.result as { id: string }[]).map((row) => row.id),
+		).toEqual(["scoped-app-alpha-1"]);
+		expect(JSON.stringify(fromAlpha.body.result)).toContain(
+			"Subject scoped-app-alpha-1",
+		);
+
+		// The same token reaches the other mailbox just as directly — that
+		// reach is the difference between it and a mailbox token.
+		const fromBeta = await scopedCall("list_emails", token, {
+			mailboxId: beta,
+		});
+		expect(fromBeta.status).toBe(200);
+		expect(
+			(fromBeta.body.result as { id: string }[]).map((row) => row.id),
+		).toEqual(["scoped-app-beta-1"]);
+		expect(JSON.stringify(fromBeta.body.result)).toContain(
+			"Subject scoped-app-beta-1",
+		);
+	});
+
+	it("refuses a call that names no mailbox, with the one app-token message", async () => {
+		const mailbox = "scoped-app-nobody@example.com";
+		await registerMailbox(mailbox);
+		const { token } = await mintAppToken(["read"], "Names its mailboxes");
+
+		const missing = await scopedCall("list_emails", token);
+		expect(missing.status).toBe(400);
+		expect(missing.body.error).toBe(
+			"This token reaches every mailbox; pass mailboxId to name the one this call acts on.",
+		);
+
+		// A mailboxId of the wrong JSON type is no name either.
+		const notAString = await scopedCall("list_emails", token, { mailboxId: 7 });
+		expect(notAString.status).toBe(400);
+		expect(notAString.body.error).toBe(
+			"This token reaches every mailbox; pass mailboxId to name the one this call acts on.",
+		);
+	});
+
+	it("gates an app token's tools by their scope, as a mailbox token's are", async () => {
+		const mailbox = "scoped-app-scopes@example.com";
+		await seedEmail(stubFor(mailbox), "scoped-app-scopes-1");
+		const { token } = await mintAppToken(["read"], "Read-only app token");
+
+		const denied = await scopedCall("send_email", token, {
+			mailboxId: mailbox,
+			to: "recipient@example.org",
+			subject: "Nope",
+			bodyHtml: "<p>Nope</p>",
+		});
+		expect(denied.status).toBe(403);
+		expect(denied.body.error).toMatch(/lacks the send scope/);
+
+		// The read tool the token does cover still runs, in the named mailbox.
+		const allowed = await scopedCall("list_emails", token, {
+			mailboxId: mailbox,
+		});
+		expect(allowed.status).toBe(200);
+		expect(allowed.body.ok).toBe(true);
+	});
+
+	it("answers the same 404 for an unknown tool", async () => {
+		const { token } = await mintAppToken(["read"], "Unknown-tool caller");
+
+		const unknown = await scopedCall("delete_everything", token, {
+			mailboxId: "scoped-app-nobody@example.com",
+		});
+		expect(unknown.status).toBe(404);
+		expect(unknown.body).toEqual({ error: "Unknown tool: delete_everything" });
+	});
+
+	it("stops resolving a revoked app token, answering the same 401 as garbage", async () => {
+		const mailbox = "scoped-app-revoked@example.com";
+		await registerMailbox(mailbox);
+		await seedEmail(stubFor(mailbox), "scoped-app-revoked-1");
+		const { token, record } = await mintAppToken(["read"], "Soon revoked");
+
+		const before = await scopedCall("list_emails", token, { mailboxId: mailbox });
+		expect(before.status).toBe(200);
+
+		expect(await revokeAppToken(record.id)).toBe(200);
+		const revoked = await scopedCall("list_emails", token, { mailboxId: mailbox });
+		expect(revoked.status).toBe(401);
+
+		// A well-formed ain2 token whose secret was never minted, and a
+		// malformed one, read exactly like the revoked token.
+		const neverMinted = await scopedPost("list_emails", {
+			authorization: `Bearer ${formatAppAccessToken(WRONG_SECRET)}`,
+			body: JSON.stringify({ mailboxId: mailbox }),
+		});
+		expect(neverMinted.status).toBe(401);
+		const malformed = await scopedPost("list_emails", {
+			authorization: "Bearer ain2_not-a-secret",
+		});
+		expect(malformed.status).toBe(401);
+
+		for (const answer of [revoked, neverMinted, malformed]) {
+			expect(answer.body).toEqual({ error: "Invalid or revoked access token" });
+			expect(answer.wwwAuthenticate).toBe("Bearer");
+		}
+	});
+
+	it("lists every mailbox in the deployment", async () => {
+		const alpha = "scoped-app-list-alpha@example.com";
+		const beta = "scoped-app-list-beta@example.com";
+		await registerMailbox(alpha);
+		await registerMailbox(beta);
+		const { token } = await mintAppToken(["read"], "Mailbox lister");
+
+		const listed = await scopedCall("list_mailboxes", token);
+		expect(listed.status).toBe(200);
+		const ids = (listed.body.result as { id: string; email: string }[]).map(
+			(row) => row.id,
+		);
+		expect(ids).toContain(alpha);
+		expect(ids).toContain(beta);
+	});
+
+	it("searches across every mailbox and tags each row with its mailbox", async () => {
+		const alpha = "scoped-app-search-alpha@example.com";
+		const beta = "scoped-app-search-beta@example.com";
+		await registerMailbox(alpha);
+		await registerMailbox(beta);
+		await seedEmail(stubFor(alpha), "app-search-pineapple-alpha");
+		await seedEmail(stubFor(beta), "app-search-pineapple-beta");
+		const { token } = await mintAppToken(["read"], "Cross-mailbox searcher");
+
+		const searched = await scopedCall("search_all_mailboxes", token, {
+			query: "pineapple",
+		});
+		expect(searched.status).toBe(200);
+		const result = searched.body.result as {
+			emails: { id: string; mailboxId: string }[];
+			totalCount: number;
+		};
+		const found = result.emails.map((row) => row.id);
+		expect(found).toContain("app-search-pineapple-alpha");
+		expect(found).toContain("app-search-pineapple-beta");
+		expect(
+			result.emails.find((row) => row.id === "app-search-pineapple-alpha")
+				?.mailboxId,
+		).toBe(alpha);
+		expect(
+			result.emails.find((row) => row.id === "app-search-pineapple-beta")
+				?.mailboxId,
+		).toBe(beta);
+	});
+
+	it("records an app-token mutation in the target mailbox's audit log", async () => {
+		const target = "scoped-app-audit@example.com";
+		const other = "scoped-app-audit-other@example.com";
+		const targetStub = stubFor(target);
+		const otherStub = stubFor(other);
+		const { token } = await mintAppToken(["draft"], "Drafting app token");
+
+		const created = await scopedCall("create_draft", token, {
+			mailboxId: target,
+			to: "recipient@example.org",
+			subject: "App-scoped draft",
+			bodyHtml: "<p>Short draft</p>",
+		});
+		expect(created.status).toBe(200);
+		const { draftId } = created.body.result as { draftId: string };
+
+		// The draft landed in the NAMED mailbox, and so did its audit row.
+		const draft = (await targetStub.getEmail(draftId)) as {
+			folder_id: string;
+			subject: string;
+		} | null;
+		expect(draft?.folder_id).toBe(Folders.DRAFT);
+		expect(draft?.subject).toBe("App-scoped draft");
+
+		const rows = await auditRows(targetStub);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.source).toBe("scoped");
+		expect(rows[0]?.tool).toBe("create_draft");
+
+		// Nothing reached the mailbox the call did not name.
+		expect(await otherStub.getEmail(draftId)).toBeNull();
+		expect(await auditRows(otherStub)).toHaveLength(0);
+	});
+
+	it("keeps both app-only tools away from mailbox tokens", async () => {
+		const mailbox = "scoped-app-mailbox-only@example.com";
+		await seedEmail(stubFor(mailbox), "scoped-app-mailbox-only-1");
+		const { token } = await mintToken(mailbox, ["read", "draft"]);
+
+		// The all-mailbox names stay unknown to a one-mailbox token:
+		// today's 404, the same one any unknown name answers.
+		for (const tool of ["list_mailboxes", "search_all_mailboxes"]) {
+			const answer = await scopedCall(tool, token);
+			expect(answer.status).toBe(404);
+			expect(answer.body).toEqual({ error: `Unknown tool: ${tool}` });
+		}
+
+		// A mailboxId body is still the existing 400, and the token's own
+		// mailbox still reads without one.
+		const bound = await scopedCall("list_emails", token, {
+			mailboxId: "other@example.com",
+		});
+		expect(bound.status).toBe(400);
+		expect(bound.body.error).toBe(
+			"The scoped surface is bound to one mailbox; mailboxId is not accepted.",
+		);
+
+		const own = await scopedCall("list_emails", token);
+		expect(own.status).toBe(200);
+		expect((own.body.result as { id: string }[]).map((row) => row.id)).toEqual([
+			"scoped-app-mailbox-only-1",
+		]);
 	});
 });
