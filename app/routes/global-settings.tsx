@@ -19,6 +19,7 @@ import { DEFAULT_EMAIL_VIEW, type EmailViewMode } from "shared/email-view";
 import AiModelsCard from "~/components/AiModelsCard";
 import CategoryEditor from "~/components/CategoryEditor";
 import EmailViewCard from "~/components/EmailViewCard";
+import GlobalAccessTokensCard from "~/components/GlobalAccessTokensCard";
 import {
 	useGlobalCategorization,
 	useUpdateGlobalCategorization,
@@ -150,6 +151,12 @@ export default function GlobalSettingsRoute() {
 						onChange={(value) => setEmailViewDraft({ value })}
 						inherited={DEFAULT_EMAIL_VIEW}
 					/>
+				</div>
+
+				{/* Minting and revoking here are immediate actions; the card
+				    never feeds the page's draft state or the Save button. */}
+				<div className="mt-6">
+					<GlobalAccessTokensCard />
 				</div>
 
 				<div className="flex justify-end mt-6">
