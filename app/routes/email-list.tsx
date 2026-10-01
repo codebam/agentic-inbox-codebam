@@ -102,7 +102,7 @@ const FOLDER_EMPTY_STATES: Record<
 		icon: <ProhibitIcon size={48} weight="thin" className="text-kumo-subtle" />,
 		title: "No spam",
 		description:
-			"Emails that Jev flags as spam will be routed here when spam detection is enabled.",
+			"Emails that Clef-flash flags as spam will be routed here when spam detection is enabled.",
 	},
 	[SNOOZE_FOLDER_ID]: {
 		icon: (

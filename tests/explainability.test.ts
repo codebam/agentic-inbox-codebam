@@ -25,7 +25,7 @@ const GOOGLE_HEADER = [
 
 
 const CLASSIFICATION = JSON.stringify({
-	model: "typesafe/jev",
+	model: "@cf/cloudflare/clef-flash",
 	is_spam: true,
 	spam_probability: 0.94,
 	category: "spam",
@@ -253,7 +253,7 @@ describe("summarizeClassification", () => {
 		expect(summary.confidence).toBe(0.94);
 		expect(summary.category).toBe("spam");
 		expect(summary.categoryName).toBe("Spam");
-		expect(summary.model).toBe("typesafe/jev");
+		expect(summary.model).toBe("@cf/cloudflare/clef-flash");
 		expect(summary.source).toBe("classification");
 	});
 

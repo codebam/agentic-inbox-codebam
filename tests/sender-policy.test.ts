@@ -478,7 +478,7 @@ describe("inbound ingest with a blocked sender", () => {
 		expect(rows).toHaveLength(1);
 		expect(rows[0].folder_id).toBe(Folders.SPAM);
 		expect(rows[0].category).toBe(SPAM_CATEGORY_ID);
-		// Classification was skipped entirely (no Jev call, no audit trail).
+		// Classification was skipped entirely (no Clef-flash call, no audit trail).
 		expect(rows[0].classification).toBeNull();
 	});
 });

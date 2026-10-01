@@ -7,7 +7,7 @@
  * Turn the stored classification audit into a human-readable verdict.
  *
  * Inputs are the columns written when an email arrives:
- *   - `classification` — the serialized Jev answer (see
+ *   - `classification` — the serialized Clef-flash answer (see
  *     `workers/lib/categorize.ts`): `{ is_spam, spam_probability, category,
  *     category_name, category_confidence, model, ... }`. Legacy rows may hold
  *     a plain string token (`spam`, `not_spam`) instead.

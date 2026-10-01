@@ -196,18 +196,20 @@ describe("storedExpectsReply", () => {
 	});
 });
 
-describe("Jev reply gate on the receive path", () => {
-	/** A Workers AI double: answers Jev questions, quiets other callers. */
-	function fakeJevAi(
+describe("Clef-flash reply gate on the receive path", () => {
+	/** A Workers AI double: answers Clef-flash questions, quiets other callers. */
+	function fakeClefAi(
 		answers: Record<string, unknown>,
 		questions: string[][] = [],
+		selectors: (string | undefined)[] = [],
 	) {
 		return {
 			run: async (_model: string, params: unknown) => {
-				const input = params as { questions?: Record<string, unknown> } | null;
+				const input = params as { model?: string; questions?: Record<string, unknown> } | null;
 				if (input && typeof input === "object" && input.questions) {
 					questions.push(Object.keys(input.questions));
-					return { model: "typesafe/jev", answers };
+					selectors.push(input.model);
+					return { model: "@cf/cloudflare/clef-flash", answers };
 				}
 				// The items extractor asks with `messages`; answer it with an
 				// empty extraction so the off-path stays quiet.
@@ -230,26 +232,29 @@ describe("Jev reply gate on the receive path", () => {
 		});
 	}
 
-	it("holds the auto-draft trigger back when Jev says no reply is expected", async () => {
+	it("holds the auto-draft trigger back when Clef-flash says no reply is expected", async () => {
 		const mailbox = "reply-gate-hold@example.com";
 		await registerMailbox(mailbox, { categorization: {} });
 		const questions: string[][] = [];
+		const selectors: (string | undefined)[] = [];
 		await deliverWith(
 			mailbox,
 			{
 				...env,
-				AI: fakeJevAi(
+				AI: fakeClefAi(
 					{
 						is_spam: { type: "noul", noul: 0.02 },
 						expects_reply: { type: "noul", noul: 0.05 },
 					},
 					questions,
+					selectors,
 				),
 			},
 			rawMessage(mailbox),
 		);
 
 		expect(questions[0]).toEqual(["is_spam", "expects_reply"]);
+		expect(selectors[0]).toBe("clef-flash");
 		expect(await agentTouched(mailbox)).toBe(false);
 		const stored = await storedClassification(mailbox);
 		expect(storedExpectsReply(stored)).toBe(false);
@@ -259,14 +264,14 @@ describe("Jev reply gate on the receive path", () => {
 		});
 	});
 
-	it("keeps drafting when Jev expects a reply", async () => {
+	it("keeps drafting when Clef-flash expects a reply", async () => {
 		const mailbox = "reply-gate-go@example.com";
 		await registerMailbox(mailbox, { categorization: {} });
 		await deliverWith(
 			mailbox,
 			{
 				...env,
-				AI: fakeJevAi({
+				AI: fakeClefAi({
 					is_spam: { type: "noul", noul: 0.02 },
 					expects_reply: { type: "noul", noul: 0.92 },
 				}),
@@ -304,22 +309,25 @@ describe("Jev reply gate on the receive path", () => {
 			categorization: { expectsReply: { enabled: false } },
 		});
 		const questions: string[][] = [];
+		const selectors: (string | undefined)[] = [];
 		await deliverWith(
 			mailbox,
 			{
 				...env,
-				AI: fakeJevAi(
+				AI: fakeClefAi(
 					{
 						is_spam: { type: "noul", noul: 0.02 },
 						expects_reply: { type: "noul", noul: 0.05 },
 					},
 					questions,
+					selectors,
 				),
 			},
 			rawMessage(mailbox),
 		);
 
 		expect(questions[0]).toEqual(["is_spam"]);
+		expect(selectors[0]).toBe("clef-flash");
 		expect(await agentTouched(mailbox)).toBe(true);
 		expect(storedExpectsReply(await storedClassification(mailbox))).toBeNull();
 	});

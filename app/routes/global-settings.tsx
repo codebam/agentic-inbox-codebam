@@ -127,7 +127,7 @@ export default function GlobalSettingsRoute() {
 				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
 					<CategoryEditor
 						title="Global categories"
-						description="Jev considers these categories for every mailbox that has global categories enabled."
+						description="Clef-flash considers these categories for every mailbox that has global categories enabled."
 						emptyText='No global categories yet. Add one (for example "Work" or "Newsletters") to share it across every mailbox.'
 						categories={categories}
 						onChange={(next) => setCategoryDraft(next)}

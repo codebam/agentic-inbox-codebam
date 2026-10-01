@@ -125,7 +125,7 @@ export const attachments = sqliteTable("attachments", {
 /**
  * Per-mailbox sender allow/block policy. `policy` is `allow` or `block`;
  * addresses are stored trimmed + lowercased (see workers/lib/sender-policy.ts).
- * The inbound pipeline reads this table before the Jev classifier runs.
+ * The inbound pipeline reads this table before the Clef-flash classifier runs.
  */
 export const senderPolicy = sqliteTable("sender_policy", {
 	address: text("address").primaryKey(),

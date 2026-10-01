@@ -11,7 +11,7 @@
  * workers/index.ts (the ingest decision), and — for types only — the frontend,
  * so the stored shape and the API/UI shape cannot drift apart.
  *
- * Ingest decision (evaluated before the Jev classifier runs):
+ * Ingest decision (evaluated before the Clef-flash classifier runs):
  *   - `block` → the message is filed straight into Spam, classification is
  *     skipped entirely, and no auto-draft is requested. The message is still
  *     STORED — blocked mail is never silently dropped.
@@ -99,7 +99,7 @@ export interface SenderPolicyDecision {
 	 * `block` always wins over classifier and rule routing.
 	 */
 	folder: string | null;
-	/** False when the Jev classifier must not run at all (block). */
+	/** False when the Clef-flash classifier must not run at all (block). */
 	classify: boolean;
 	/** True when the spam question must be dropped for this message. */
 	forceNotSpam: boolean;
@@ -144,7 +144,7 @@ export function senderPolicyVerdict(policy: unknown): SenderPolicyDecision {
 
 
 /**
- * Copy of the categorization settings with the Jev spam question turned off.
+ * Copy of the categorization settings with the Clef-flash spam question turned off.
  *
  * Used for `allow` senders (and harmless for `block`, which skips the
  * classifier anyway): categories are still classified, but the message can

@@ -23,7 +23,7 @@ export const DEFAULT_MODELS = {
 	/** Model that scans inbound mail for prompt injection. */
 	promptInjection: "@cf/meta/llama-3.1-8b-instruct-fast",
 	/** Model that classifies inbound mail (spam + categories). */
-	classifier: "typesafe/jev",
+	classifier: "@cf/cloudflare/clef-flash",
 	/** Model that extracts tasks and deadlines from inbound mail. */
 	extractor: "@cf/meta/llama-3.1-8b-instruct-fast",
 	/** Model that summarizes a thread on demand. */
@@ -167,7 +167,7 @@ export function validateModelId(value: string): string | null {
 		return "Model IDs may only contain letters, numbers and . _ : @ / -";
 	}
 	if (!trimmed.includes("/")) {
-		return 'Model IDs look like "provider/model" (for example @cf/meta/llama-3.1-8b-instruct-fast or typesafe/jev).';
+		return 'Model IDs look like "provider/model" (for example @cf/meta/llama-3.1-8b-instruct-fast or @cf/cloudflare/clef-flash).';
 	}
 	return null;
 }

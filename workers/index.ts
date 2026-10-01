@@ -3516,7 +3516,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	//      stored and no attachment bytes reach R2 (this block runs before
 	//      the attachment upload below).
 	//   2. Any other matched rule shapes the stored row (folder, category,
-	//      read, starred) and is authoritative — the Jev classifier is
+	//      read, starred) and is authoritative — the Clef-flash classifier is
 	//      skipped for messages a rule already routed, so AI never overrides
 	//      user-authored automation.
 	//   3. Only messages no rule matched reach the classifier.
@@ -3696,7 +3696,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	}
 	const senderDecision = senderPolicyVerdict(senderPolicy);
 
-	// Best-effort Jev classification, skipped for messages a rule already
+	// Best-effort Clef-flash classification, skipped for messages a rule already
 	// routed (see the precedence note above) and for blocked senders. A null
 	// result (disabled, failed, or skipped) still delivers the email.
 	const classification = ruleResult.routed || !senderDecision.classify
@@ -3924,7 +3924,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	// blocked sender (senderDecision.autoDraft). A discard rule has already
 	// returned above. The mailbox switch turns this off entirely.
 	//
-	// The Jev reply gate holds the trigger back for mail the classifier read
+	// The Clef-flash reply gate holds the trigger back for mail the classifier read
 	// as not expecting a reply: confirmations, receipts, alerts, newsletters
 	// and other one-way notifications. A null verdict (categorization off,
 	// question disabled, or a failed classification) keeps drafting, matching
@@ -3942,7 +3942,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 			body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
 		})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
 	} else if (canAutoDraft) {
-		console.log(`Auto-draft skipped for ${mailboxId}: Jev says no reply is expected (p=${classification?.expectsReplyProbability ?? "n/a"})`);
+		console.log(`Auto-draft skipped for ${mailboxId}: Clef-flash says no reply is expected (p=${classification?.expectsReplyProbability ?? "n/a"})`);
 	}
 
 	// Outbound webhook notification for this arrival — notification only,

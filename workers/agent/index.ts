@@ -1354,12 +1354,12 @@ export class EmailAgent extends AIChatAgent<Env> {
 				return { status: "skipped_spam" as const };
 			}
 
-			// Same defense in depth for the Jev reply gate: a direct
+			// Same defense in depth for the Clef-flash reply gate: a direct
 			// /onNewEmail invocation must not draft for mail the classifier
 			// read as not expecting a reply (confirmations, receipts, alerts).
 			if (storedExpectsReply(email?.classification) === false) {
 				console.warn(
-					"Skipping auto-draft: Jev says no reply is expected:",
+					"Skipping auto-draft: Clef-flash says no reply is expected:",
 					emailData.emailId,
 				);
 				return { status: "skipped_no_reply_expected" as const };

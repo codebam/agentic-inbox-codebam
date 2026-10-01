@@ -3,11 +3,13 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 /**
- * Inbound email categorization with TypeSafe's Jev model
- * (`typesafe/jev`, https://developers.cloudflare.com/ai/models/typesafe/jev/).
+ * Inbound email categorization with Cloudflare's Clef-flash decision
+ * model (`@cf/cloudflare/clef-flash`,
+ * https://developers.cloudflare.com/workers-ai/models/clef-flash/).
  *
- * Jev evaluates a `state` against typed `noul`, `choice`, and `score`
- * questions and returns calibrated answers. We ask:
+ * Clef-flash follows the System One API: it evaluates a `state` against
+ * typed `noul`, `choice`, and `score` questions and returns calibrated
+ * answers. We ask:
  *   - `is_spam`: noul question with a probability in [0, 1]
  *   - `expects_reply`: noul question deciding whether the recipient is
  *     expected to reply; the auto-draft gate reads this verdict
@@ -34,23 +36,23 @@ export interface IncomingEmailForClassification {
 	body: string;
 }
 
-interface JevNoulAnswer {
+interface ClefNoulAnswer {
 	type: "noul";
 	noul: number;
 }
 
-interface JevChoiceAnswer {
+interface ClefChoiceAnswer {
 	type: "choice";
 	choice: string;
 	confidence?: number;
 	probabilities?: Record<string, number>;
 }
 
-type JevAnswer = JevNoulAnswer | JevChoiceAnswer;
+type ClefAnswer = ClefNoulAnswer | ClefChoiceAnswer;
 
-interface JevResponse {
+interface ClefResponse {
 	model?: string;
-	answers?: Record<string, JevAnswer | undefined>;
+	answers?: Record<string, ClefAnswer | undefined>;
 	usage?: { input_tokens?: number; output_tokens?: number };
 }
 
@@ -64,7 +66,7 @@ export interface EmailClassification {
 	isSpam: boolean;
 	spamProbability: number | null;
 	/**
-	 * Jev's reply-expectation verdict: true when a reply is expected, false
+	 * Clef-flash's reply-expectation verdict: true when a reply is expected, false
 	 * when the mail is one-way (auto-draft skips it), null when the question
 	 * was not asked or no verdict could be read.
 	 */
@@ -72,11 +74,11 @@ export interface EmailClassification {
 	/** Raw probability behind `expectsReply`; null when the question was not asked. */
 	expectsReplyProbability: number | null;
 	model: string | null;
-	answers: Record<string, JevAnswer> | null;
+	answers: Record<string, ClefAnswer> | null;
 	usage: { input_tokens?: number; output_tokens?: number } | null;
 }
 
-/** Keep the state comfortably inside Jev's 32k-token context window. */
+/** Keep the state comfortably inside Clef-flash's 64k-token context window. */
 const MAX_BODY_CHARS = 12_000;
 
 /** Don't hold up email delivery for a slow model. */
@@ -116,6 +118,22 @@ const CATEGORY_INSTRUCTIONS =
 function clampProbability(value: number): number {
 	if (!Number.isFinite(value)) return 0;
 	return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * The body-level selector Clef requires (`clef` or `clef-flash`), derived
+ * from the model id the mailbox resolved to. Null for every other model:
+ * a non-Clef schema may reject unknown fields, so it must not receive one.
+ */
+function clefModelSelector(model: string): "clef" | "clef-flash" | null {
+	switch (model.trim()) {
+		case "@cf/cloudflare/clef":
+			return "clef";
+		case "@cf/cloudflare/clef-flash":
+			return "clef-flash";
+		default:
+			return null;
+	}
 }
 
 /**
@@ -174,6 +192,8 @@ export async function classifyIncomingEmail(
 		};
 	}
 
+	const selector = clefModelSelector(model);
+
 	const state = {
 		sender: email.senderName
 			? `${email.senderName} <${email.sender}>`
@@ -186,14 +206,14 @@ export async function classifyIncomingEmail(
 	try {
 		const response = (await ai.run(
 			model,
-			{ state, questions },
+			{ ...(selector ? { model: selector } : {}), state, questions },
 			{ signal: AbortSignal.timeout(CLASSIFICATION_TIMEOUT_MS) },
-		)) as unknown as JevResponse;
+		)) as unknown as ClefResponse;
 
-		return interpretJevResponse(response, settings);
+		return interpretClefResponse(response, settings);
 	} catch (error) {
 		console.error(
-			"Jev email classification failed; leaving email uncategorized:",
+			"Clef-flash email classification failed; leaving email uncategorized:",
 			(error as Error).message,
 		);
 		return null;
@@ -223,9 +243,9 @@ usage: classification.usage,
 });
 }
 
-/** Translate the raw Jev answers into the shape stored on the email row. */
-function interpretJevResponse(
-	response: JevResponse,
+/** Translate the raw Clef answers into the shape stored on the email row. */
+function interpretClefResponse(
+	response: ClefResponse,
 	settings: CategorizationSettings,
 ): EmailClassification {
 	const answers = response?.answers ?? {};
@@ -265,7 +285,7 @@ function interpretJevResponse(
 			if (validIds.has(choiceAnswer.choice)) {
 				selected = choiceAnswer.choice;
 			} else if (choiceAnswer.probabilities) {
-				// Defensive fallback: if Jev returns an unknown key, pick the
+				// Defensive fallback: if Clef-flash returns an unknown key, pick the
 				// highest-probability valid category instead of dropping the result.
 				selected = Object.entries(choiceAnswer.probabilities)
 					.filter(
@@ -287,7 +307,7 @@ function interpretJevResponse(
 
 	const compactAnswers = Object.fromEntries(
 		Object.entries(answers).filter(([, answer]) => answer != null),
-	) as Record<string, JevAnswer>;
+	) as Record<string, ClefAnswer>;
 
 	return {
 		category,

@@ -15,7 +15,7 @@ interface AiCategorizationCardProps {
 }
 
 /**
- * Per-mailbox controls for Jev inbound classification: a master switch,
+ * Per-mailbox controls for Clef-flash inbound classification: a master switch,
  * spam-detection threshold/behavior, app-wide global category opt-in, and
  * mailbox-specific categories.
  */
@@ -52,15 +52,15 @@ export default function AiCategorizationCard({
 					<span className="text-sm font-medium text-kumo-default">
 						AI Categorization
 					</span>
-					<Badge variant="secondary">Jev</Badge>
+					<Badge variant="secondary">Clef-flash</Badge>
 				</div>
 			</div>
 			<p className="text-xs text-kumo-subtle mb-4">
-				Classify incoming email as it arrives using TypeSafe's Jev model (
-				<code>typesafe/jev</code>). Email content is sent to Workers AI for
+				Classify incoming email as it arrives using Cloudflare's Clef-flash model (
+				<code>@cf/cloudflare/clef-flash</code>). Email content is sent to Workers AI for
 				classification. Spam can be filed automatically; custom categories are
 				applied as labels. The reply gate holds auto-draft back for one-way
-				mail Jev reads as not expecting a reply.
+				mail Clef-flash reads as not expecting a reply.
 			</p>
 
 			<div className="space-y-5">
@@ -110,7 +110,7 @@ export default function AiCategorizationCard({
 											size="sm"
 										/>
 										<span className="text-xs text-kumo-subtle">
-											Jev probability at or above which an email is spam
+											Clef-flash probability at or above which an email is spam
 											(0.5–1).
 										</span>
 									</div>
@@ -133,7 +133,7 @@ export default function AiCategorizationCard({
 								size="sm"
 							/>
 							<p className="text-xs text-kumo-subtle">
-								Auto-draft skips one-way mail Jev reads as not expecting a reply:
+								Auto-draft skips one-way mail Clef-flash reads as not expecting a reply:
 								confirmations, receipts, alerts, verification codes, newsletters and
 								other notifications. Only auto-draft is affected; drafting on request
 								in chat or over MCP still works.
@@ -162,7 +162,7 @@ export default function AiCategorizationCard({
 										size="sm"
 									/>
 									<span className="text-xs text-kumo-subtle">
-										Jev probability at or above which a reply is expected (0.05 to 0.95).
+										Clef-flash probability at or above which a reply is expected (0.05 to 0.95).
 									</span>
 								</div>
 							)}

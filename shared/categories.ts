@@ -6,10 +6,10 @@
  * AI email categorization settings shared by the Worker, Durable Object,
  * Agent/MCP tools, and frontend settings UI.
  *
- * Incoming email is classified with TypeSafe's Jev model
- * (`typesafe/jev`) through the Workers AI binding. Jev answers typed
- * questions, so spam is a `noul` (boolean/probability) question and custom
- * categories are a `choice` question. A second `noul` question
+ * Incoming email is classified with Cloudflare's Clef-flash model
+ * (`@cf/cloudflare/clef-flash`) through the Workers AI binding. Clef-flash
+ * answers typed questions: spam is a `noul` (boolean/probability) question
+ * and custom categories are a `choice` question. A second `noul` question
  * (`expects_reply`) decides whether the recipient is expected to reply; the
  * auto-draft gate consults that verdict before drafting.
  */
@@ -25,19 +25,19 @@ const MAX_CATEGORY_NAME_LENGTH = 60;
 const MAX_CATEGORY_DESCRIPTION_LENGTH = 600;
 
 export interface EmailCategory {
-	/** Stable identifier stored on emails and used as the Jev criteria key. */
+	/** Stable identifier stored on emails and used as the classifier's criteria key. */
 	id: string;
 	/** Human-readable label shown in the UI. */
 	name: string;
-	/** Guidance Jev uses to decide whether an email belongs to this category. */
+	/** Guidance Clef-flash uses to decide whether an email belongs to this category. */
 	description: string;
 }
 
 export interface SpamCategorizationSettings {
-	/** Run the Jev spam question. */
+	/** Run the Clef-flash spam question. */
 	enabled: boolean;
 	/**
-	 * Jev returns a calibrated probability in [0, 1]. At or above this
+	 * Clef-flash returns a calibrated probability in [0, 1]. At or above this
 	 * threshold the email is considered spam. The UI enforces >= 0.5 so a
 	 * stale setting can never mark every email as spam.
 	 */
@@ -46,12 +46,12 @@ export interface SpamCategorizationSettings {
 	moveToSpam: boolean;
 }
 
-/** The Jev reply-expectation question that gates auto-draft. */
+/** The Clef-flash reply-expectation question that gates auto-draft. */
 export interface ExpectsReplyCategorizationSettings {
-	/** Run the Jev reply-expectation question (asked on arrival). */
+	/** Run the Clef-flash reply-expectation question (asked on arrival). */
 	enabled: boolean;
 	/**
-	 * Jev returns a calibrated probability in [0, 1]. At or above this
+	 * Clef-flash returns a calibrated probability in [0, 1]. At or above this
 	 * threshold a reply is considered expected and auto-draft runs; below it
 	 * the auto-draft trigger is held back. The UI enforces 0.05 to 0.95 so a
 	 * stale setting can never skip (or keep) every auto-draft.
@@ -63,7 +63,7 @@ export interface CategorizationSettings {
 	/** Master switch for inbound email classification. */
 	enabled: boolean;
 	spam: SpamCategorizationSettings;
-	/** Jev question deciding whether new mail warrants an auto-drafted reply. */
+	/** Clef-flash question deciding whether new mail warrants an auto-drafted reply. */
 	expectsReply: ExpectsReplyCategorizationSettings;
 	/** Optional mailbox-specific categories in addition to the spam/not-spam question. */
 	categories: EmailCategory[];
@@ -84,7 +84,7 @@ export const MAX_MERGED_CATEGORIES = MAX_EMAIL_CATEGORIES * 2;
 
 export const DEFAULT_SPAM_THRESHOLD = 0.8;
 
-/** Jev probability at or above which auto-draft considers a reply expected. */
+/** Clef-flash probability at or above which auto-draft considers a reply expected. */
 export const DEFAULT_EXPECTS_REPLY_THRESHOLD = 0.5;
 
 /** Fresh default settings. `enabled` defaults on so spam is filtered on arrival. */
@@ -245,7 +245,7 @@ function normalizeCategoryList(rawCategories: unknown): EmailCategory[] {
 	return categories;
 }
 
-/** Build a safe URL/SQL/Jev-key friendly category ID from a display name. */
+/** Build a safe URL/SQL/criteria-key friendly category ID from a display name. */
 export function slugifyCategoryId(name: string): string {
 	return name
 		.toLowerCase()

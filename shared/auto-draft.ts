@@ -7,7 +7,7 @@
  *
  * New mail normally makes the agent draft a reply for the operator to review
  * before sending. Only an explicit `false` turns that off, so mailboxes whose
- * stored settings predate the switch keep auto-drafting. The Jev reply gate
+ * stored settings predate the switch keep auto-drafting. The Clef-flash reply gate
  * (see `shared/categories.ts` and `workers/lib/categorize.ts`) can hold
  * individual drafts back; `storedExpectsReply` reads its verdict off a
  * stored email row.
@@ -19,7 +19,7 @@ export function normalizeAutoDraft(value: unknown): boolean {
 }
 
 /**
- * Read the Jev "reply expected" verdict stored in an email row's
+ * Read the Clef-flash "reply expected" verdict stored in an email row's
  * classification audit trail (serialized by `workers/lib/categorize.ts`).
  *
  * Returns the recorded boolean when the classifier stored one, and null when

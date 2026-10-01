@@ -169,7 +169,7 @@ export const mailboxMigrations: Migration[] = [
         `,
 	},
 	{
-		// Jev classification results. `category` is `spam` or a configured
+		// Clef-flash classification results. `category` is `spam` or a configured
 		// category ID; `classification` stores the raw model answer for audit
 		// and future reprocessing.
 		name: "9_add_email_categorization",
@@ -230,7 +230,7 @@ export const mailboxMigrations: Migration[] = [
 	},
 	{
 		// Per-mailbox sender allow/block policy (workers/lib/sender-policy.ts).
-		// The inbound pipeline reads this before the Jev classifier: `block`
+		// The inbound pipeline reads this before the Clef-flash classifier: `block`
 		// files mail straight into Spam (still stored — never dropped) and
 		// skips classification + auto-draft; `allow` skips the spam question
 		// but keeps category classification. Addresses are stored trimmed and

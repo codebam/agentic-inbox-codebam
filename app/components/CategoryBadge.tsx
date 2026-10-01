@@ -18,7 +18,7 @@ interface CategoryBadgeProps {
 }
 
 /**
- * Small Jev category label used in email lists and panels. Falls back to a
+ * Small Clef-flash category label used in email lists and panels. Falls back to a
  * readable form of the stored ID when the category was removed or is not
  * available in the current settings.
  */
