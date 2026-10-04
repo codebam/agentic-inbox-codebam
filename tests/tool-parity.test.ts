@@ -36,6 +36,7 @@ const MCP_TOOLS = [
 	"get_storage",
 	"get_thread",
 	"list_agent_actions",
+	"list_all_emails",
 	"list_emails",
 	"list_folders",
 	"list_items",
@@ -152,7 +153,11 @@ const AGENT_SCOPED_TOOLS = [
 ];
 
 /** Agent tools that only make sense when the chat spans mailboxes. */
-const AGENT_GLOBAL_ONLY = ["list_mailboxes", "search_all_mailboxes"];
+const AGENT_GLOBAL_ONLY = [
+	"list_all_emails",
+	"list_mailboxes",
+	"search_all_mailboxes",
+];
 
 function parseSse(text: string) {
 	return text

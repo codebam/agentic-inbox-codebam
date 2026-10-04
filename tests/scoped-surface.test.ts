@@ -616,6 +616,60 @@ describe("scoped surface app tokens", () => {
 		).toBe(beta);
 	});
 
+	it("lists across every mailbox and tags each row with its mailbox", async () => {
+		const alpha = "scoped-app-all-alpha@example.com";
+		const beta = "scoped-app-all-beta@example.com";
+		await registerMailbox(alpha);
+		await registerMailbox(beta);
+		await seedEmail(stubFor(alpha), "app-all-inbox-alpha");
+		await seedEmail(stubFor(alpha), "app-all-archive-alpha", Folders.ARCHIVE);
+		await seedEmail(stubFor(beta), "app-all-inbox-beta");
+		const { token } = await mintAppToken(["read"], "Cross-mailbox lister");
+
+		const listed = await scopedCall("list_all_emails", token, { limit: 100 });
+		expect(listed.status).toBe(200);
+		const result = listed.body.result as {
+			emails: { id: string; mailboxId: string }[];
+			totalCount: number;
+		};
+		const found = result.emails.map((row) => row.id);
+		expect(found).toContain("app-all-inbox-alpha");
+		expect(found).toContain("app-all-inbox-beta");
+		expect(found).toContain("app-all-archive-alpha");
+		for (const [id, mailbox] of [
+			["app-all-inbox-alpha", alpha],
+			["app-all-inbox-beta", beta],
+			["app-all-archive-alpha", alpha],
+		] as const) {
+			expect(result.emails.find((row) => row.id === id)?.mailboxId).toBe(mailbox);
+		}
+		expect(result.totalCount).toBeGreaterThanOrEqual(3);
+
+		// A folder applies to every mailbox: the inbox listing keeps only the
+		// inbox conversations, and "all" merges every folder like an omission.
+		const inbox = await scopedCall("list_all_emails", token, {
+			folder: "inbox",
+			limit: 100,
+		});
+		expect(inbox.status).toBe(200);
+		const inboxIds = (
+			inbox.body.result as { emails: { id: string }[] }
+		).emails.map((row) => row.id);
+		expect(inboxIds).toContain("app-all-inbox-alpha");
+		expect(inboxIds).toContain("app-all-inbox-beta");
+		expect(inboxIds).not.toContain("app-all-archive-alpha");
+
+		const all = await scopedCall("list_all_emails", token, {
+			folder: "all",
+			limit: 100,
+		});
+		expect(all.status).toBe(200);
+		const allIds = (
+			all.body.result as { emails: { id: string }[] }
+		).emails.map((row) => row.id);
+		expect(allIds).toContain("app-all-archive-alpha");
+	});
+
 	it("records an app-token mutation in the target mailbox's audit log", async () => {
 		const target = "scoped-app-audit@example.com";
 		const other = "scoped-app-audit-other@example.com";
@@ -650,14 +704,18 @@ describe("scoped surface app tokens", () => {
 		expect(await auditRows(otherStub)).toHaveLength(0);
 	});
 
-	it("keeps both app-only tools away from mailbox tokens", async () => {
+	it("keeps the app-only tools away from mailbox tokens", async () => {
 		const mailbox = "scoped-app-mailbox-only@example.com";
 		await seedEmail(stubFor(mailbox), "scoped-app-mailbox-only-1");
 		const { token } = await mintToken(mailbox, ["read", "draft"]);
 
 		// The all-mailbox names stay unknown to a one-mailbox token:
 		// today's 404, the same one any unknown name answers.
-		for (const tool of ["list_mailboxes", "search_all_mailboxes"]) {
+		for (const tool of [
+			"list_mailboxes",
+			"search_all_mailboxes",
+			"list_all_emails",
+		]) {
 			const answer = await scopedCall(tool, token);
 			expect(answer.status).toBe(404);
 			expect(answer.body).toEqual({ error: `Unknown tool: ${tool}` });
