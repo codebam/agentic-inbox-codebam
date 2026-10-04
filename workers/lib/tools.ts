@@ -32,6 +32,8 @@ import {
 	isSenderPolicyValidationError,
 	type SenderPolicy,
 } from "./sender-policy";
+import { isLabelValidationError } from "./labels";
+import { isTemplateValidationError } from "./templates";
 import { performOneClickUnsubscribe } from "./unsubscribe";
 import {
 	getMailboxStub,
@@ -1462,6 +1464,120 @@ export async function toolListTemplates(env: Env, mailboxId: string) {
 }
 
 
+// ── template management (create_template, update_template, delete_template) ──
+
+/**
+ * The template-administration RPCs the template management tools call.
+ * Declared structurally for the same reason as the read-only template list:
+ * the stub's own RPC result types carry `& Disposable`, which the MCP result
+ * wrapper cannot accept.
+ */
+type MailboxTemplateAdminStub = {
+	createTemplate(input: {
+		name?: unknown;
+		subject?: unknown;
+		body?: unknown;
+	}): Promise<MailboxTemplateRow>;
+	updateTemplate(
+		id: string,
+		patch: { name?: unknown; subject?: unknown; body?: unknown },
+	): Promise<MailboxTemplateRow | null>;
+	deleteTemplate(id: string): Promise<boolean>;
+};
+
+function mailboxTemplateAdminStub(
+	env: Env,
+	mailboxId: string,
+): MailboxTemplateAdminStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * The stored row a template write answers with — the same shape the web
+ * routes return. Mapped out field by field so the result is a plain object
+ * the MCP result wrapper accepts.
+ */
+function templateToolRow(template: MailboxTemplateRow) {
+	return {
+		id: template.id,
+		name: template.name,
+		subject: template.subject,
+		body: template.body,
+		created_at: template.created_at,
+		updated_at: template.updated_at,
+	};
+}
+
+/**
+ * Create one template. The name (1..120 characters, trimmed), the optional
+ * subject (at most 500) and the body (1..100000) are validated and bounded
+ * by the Durable Object, which also refuses a mailbox already holding 200
+ * templates; an unusable payload comes back as `{ error }` carrying the same
+ * message the web route answers with. Nothing here sends mail.
+ */
+export async function toolCreateTemplate(
+	env: Env,
+	mailboxId: string,
+	input: { name?: unknown; subject?: unknown; body?: unknown },
+) {
+	const stub = mailboxTemplateAdminStub(env, mailboxId);
+	try {
+		return templateToolRow(await stub.createTemplate(input));
+	} catch (e) {
+		if (isTemplateValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+/**
+ * Apply a partial change to one template: omitted fields keep their stored
+ * value, an explicit null (or blank) subject clears it, and every supplied
+ * field is validated and bounded by the Durable Object. An unknown id is
+ * `{ error: "Template not found" }` and a refused write carries the same
+ * message the web route answers with. Nothing here sends mail.
+ */
+export async function toolUpdateTemplate(
+	env: Env,
+	mailboxId: string,
+	input: {
+		templateId: string;
+		name?: unknown;
+		subject?: unknown;
+		body?: unknown;
+	},
+) {
+	const stub = mailboxTemplateAdminStub(env, mailboxId);
+	const patch: { name?: unknown; subject?: unknown; body?: unknown } = {};
+	if (input.name !== undefined) patch.name = input.name;
+	if (input.subject !== undefined) patch.subject = input.subject;
+	if (input.body !== undefined) patch.body = input.body;
+	try {
+		const template = await stub.updateTemplate(input.templateId, patch);
+		if (!template) return { error: "Template not found" };
+		return templateToolRow(template);
+	} catch (e) {
+		if (isTemplateValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+/**
+ * Remove one template by id. The row is deleted and nothing else changes;
+ * nothing here sends mail. An unknown id is `{ error: "Template not found" }`
+ * — the same message the web route answers with.
+ */
+export async function toolDeleteTemplate(
+	env: Env,
+	mailboxId: string,
+	input: { templateId: string },
+) {
+	const stub = mailboxTemplateAdminStub(env, mailboxId);
+	const deleted = await stub.deleteTemplate(input.templateId);
+	if (!deleted) return { error: "Template not found" };
+	return { ok: true };
+}
+
+
 // ── labels (list_labels, add_label, remove_label) ──────────────────
 
 /** One stored label row, as MailboxDO.listLabels returns it. */
@@ -1568,6 +1684,115 @@ export async function toolRemoveLabel(
 		label: { id: existing.id, name: existing.name, color: existing.color },
 		labels: result.labels,
 	};
+}
+
+
+// ── label management (create_label, update_label, delete_label) ────
+
+/**
+ * The label-administration RPCs the label management tools call. Declared
+ * structurally for the same reason as the read-only label list: the stub's
+ * own RPC result types carry `& Disposable`, which the MCP result wrapper
+ * cannot accept.
+ */
+type MailboxLabelAdminStub = {
+	listLabels(): Promise<MailboxLabelRow[]>;
+	createLabel(input: {
+		name?: unknown;
+		color?: unknown;
+	}): Promise<MailboxLabelRow>;
+	updateLabel(
+		id: string,
+		patch: { name?: unknown; color?: unknown },
+	): Promise<MailboxLabelRow | null>;
+	deleteLabel(id: string): Promise<boolean>;
+};
+
+function mailboxLabelAdminStub(env: Env, mailboxId: string): MailboxLabelAdminStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * The stored row a label write answers with — the same shape the web routes
+ * return. Mapped out field by field so the result is a plain object the MCP
+ * result wrapper accepts.
+ */
+function labelToolRow(label: MailboxLabelRow) {
+	return {
+		id: label.id,
+		name: label.name,
+		color: label.color,
+		created_at: label.created_at,
+	};
+}
+
+/**
+ * Create one label. The name (1..50 characters, trimmed, unique per mailbox
+ * case-insensitively) and the color (at most 32 characters) are validated by
+ * the Durable Object, which also refuses a mailbox already holding 100
+ * labels; an unusable payload comes back as `{ error }` carrying the same
+ * message the web route answers with. Nothing here sends mail.
+ */
+export async function toolCreateLabel(
+	env: Env,
+	mailboxId: string,
+	input: { name?: unknown; color?: unknown },
+) {
+	const stub = mailboxLabelAdminStub(env, mailboxId);
+	try {
+		return labelToolRow(await stub.createLabel(input));
+	} catch (e) {
+		if (isLabelValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+/**
+ * Apply a partial change to one label, resolved by its current name (matched
+ * case-insensitively) or its id. Omitted fields keep their stored value; an
+ * explicit null (or blank) color clears it. A rename that collides with
+ * another label's name and every other refused write comes back as
+ * `{ error }` with the same message the web route answers with; an unknown
+ * label is `{ error: "Label not found" }`. Nothing here sends mail.
+ */
+export async function toolUpdateLabel(
+	env: Env,
+	mailboxId: string,
+	input: { label: string; name?: unknown; color?: unknown },
+) {
+	const stub = mailboxLabelAdminStub(env, mailboxId);
+	const existing = findLabel(await stub.listLabels(), input.label);
+	if (!existing) return { error: "Label not found" };
+	const patch: { name?: unknown; color?: unknown } = {};
+	if (input.name !== undefined) patch.name = input.name;
+	if (input.color !== undefined) patch.color = input.color;
+	try {
+		const label = await stub.updateLabel(existing.id, patch);
+		if (!label) return { error: "Label not found" };
+		return labelToolRow(label);
+	} catch (e) {
+		if (isLabelValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+/**
+ * Remove one label, resolved by its name (matched case-insensitively) or its
+ * id, and every assignment of it; the messages it tagged are never touched.
+ * An unknown label is `{ error: "Label not found" }` — the same message the
+ * web route answers with. Nothing here sends mail.
+ */
+export async function toolDeleteLabel(
+	env: Env,
+	mailboxId: string,
+	input: { label: string },
+) {
+	const stub = mailboxLabelAdminStub(env, mailboxId);
+	const existing = findLabel(await stub.listLabels(), input.label);
+	if (!existing) return { error: "Label not found" };
+	const deleted = await stub.deleteLabel(existing.id);
+	if (!deleted) return { error: "Label not found" };
+	return { ok: true };
 }
 
 
