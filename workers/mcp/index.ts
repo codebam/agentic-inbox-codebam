@@ -71,6 +71,12 @@ import {
 	toolCreateRule,
 	toolUpdateRule,
 	toolUndoAgentAction,
+	toolUpdateItem,
+	toolEmptyTrash,
+	toolRestoreEmail,
+	toolGetDigest,
+	toolGetStorage,
+	toolExportEmail,
 	toolSearchContacts,
 	toolListTemplates,
 	toolListLabels,
@@ -765,6 +771,77 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 						args: { emailId, permanent: permanent === true },
 					},
 					() => toolDeleteEmail(env, mailboxId, emailId, permanent === true),
+				);
+				return mcpResult(result);
+			},
+		);
+
+		// ── update_item ────────────────────────────────────────────
+		registerTool(
+			"update_item",
+			"Move a task or deadline extracted from this mailbox's mail to a new state: open, done or dismissed. Answers the stored item. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				itemId: z.string().describe("The item ID from list_items"),
+				status: z
+					.enum(["open", "done", "dismissed"])
+					.describe("The item's new state"),
+			},
+			async ({ mailboxId, itemId, status }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolUpdateItem(env, mailboxId, { itemId, status }),
+				);
+			},
+		);
+
+		// ── empty_trash ────────────────────────────────────────────
+		registerTool(
+			"empty_trash",
+			"Permanently delete every email in the Trash folder, including its attachments. Irreversible — trashed mail cannot be restored afterwards. Only call this when the operator explicitly asks to empty the Trash; nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "empty_trash",
+						mailboxId,
+						emailId: null,
+						args: {},
+					},
+					() => toolEmptyTrash(env, mailboxId),
+				);
+				return mcpResult(result);
+			},
+		);
+
+		// ── restore_email ──────────────────────────────────────────
+		registerTool(
+			"restore_email",
+			"Move a trashed email back to the Inbox. Only a message in Trash can be restored; nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID to restore"),
+			},
+			async ({ mailboxId, emailId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "restore_email",
+						mailboxId,
+						emailId,
+						args: { emailId },
+					},
+					() => toolRestoreEmail(env, mailboxId, { emailId }),
 				);
 				return mcpResult(result);
 			},
@@ -1779,6 +1856,49 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				return mcpText(
 					await toolListItems(env, mailboxId, { status, due, limit }),
 				);
+			},
+		);
+
+		// ── get_digest ─────────────────────────────────────────────
+		registerTool(
+			"get_digest",
+			"The mailbox's morning brief for the trailing 24 hours: arrivals, what still needs a reply, the category breakdown, fired reminders and the items due. Read-only — nothing is stored or sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolGetDigest(env, mailboxId));
+			},
+		);
+
+		// ── get_storage ────────────────────────────────────────────
+		registerTool(
+			"get_storage",
+			"The mailbox's storage footprint: SQLite database bytes, attachment bytes and count, stored message count and the settings JSON size in R2. Read-only.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolGetStorage(env, mailboxId));
+			},
+		);
+
+		// ── export_email ───────────────────────────────────────────
+		registerTool(
+			"export_email",
+			"One stored message as a reconstructed RFC 5322 (EML) block under the `eml` key — rebuilt from the stored fields, never the wire source. An unknown id is an error. Read-only.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID to export"),
+			},
+			async ({ mailboxId, emailId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolExportEmail(env, mailboxId, { emailId }));
 			},
 		);
 	}

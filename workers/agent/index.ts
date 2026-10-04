@@ -76,6 +76,12 @@ import {
 	toolUpdateRule,
 	toolUndoAgentAction,
 	toolSearchContacts,
+	toolUpdateItem,
+	toolEmptyTrash,
+	toolRestoreEmail,
+	toolGetDigest,
+	toolGetStorage,
+	toolExportEmail,
 	toolListTemplates,
 	toolListLabels,
 	toolAddLabel,
@@ -893,6 +899,80 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 
 
+		update_item: defineTool({
+			description:
+				"Move a task or deadline extracted from this mailbox's mail to a new state: open, done or dismissed. Answers the stored item. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				itemId: z.string().describe("The item ID from list_items"),
+				status: z
+					.enum(["open", "done", "dismissed"])
+					.describe("The item's new state"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUpdateItem(env, mailboxId, {
+					itemId: args.itemId,
+					status: args.status,
+				});
+			},
+		}),
+
+
+
+
+		empty_trash: defineTool({
+			description:
+				"Permanently delete every email in the Trash folder, including its attachments. Irreversible — trashed mail cannot be restored afterwards. Only call this when the operator explicitly asks to empty the Trash; nothing is sent.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "empty_trash",
+						mailboxId,
+						emailId: null,
+						args: {},
+					},
+					() => toolEmptyTrash(env, mailboxId),
+				);
+			},
+		}),
+
+
+
+
+		restore_email: defineTool({
+			description:
+				"Move a trashed email back to the Inbox. Only a message in Trash can be restored; nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID to restore"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "restore_email",
+						mailboxId,
+						emailId: args.emailId,
+						args: { emailId: args.emailId },
+					},
+					() => toolRestoreEmail(env, mailboxId, { emailId: args.emailId }),
+				);
+			},
+		}),
+
+
+
+
 		delete_spam_emails: defineTool({
 			description:
 				"Permanently delete every email marked as spam (Spam folder, category 'spam', or classifier audit is_spam: true). Permanent deletion is irreversible — spam mail is not moved to Trash. In all-mailbox mode, omit mailboxId to clear spam from every mailbox. Only call this when the operator explicitly asks to delete spam; never delete non-spam mail with it.",
@@ -1628,6 +1708,48 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					due: args.due,
 					limit: args.limit,
 				});
+			},
+		}),
+
+
+
+		get_digest: defineTool({
+			description:
+				"The mailbox's morning brief for the trailing 24 hours: arrivals, what still needs a reply, the category breakdown, fired reminders and the items due. Read-only — nothing is stored or sent.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetDigest(env, mailboxId);
+			},
+		}),
+
+
+
+		get_storage: defineTool({
+			description:
+				"The mailbox's storage footprint: SQLite database bytes, attachment bytes and count, stored message count and the settings JSON size in R2. Read-only.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetStorage(env, mailboxId);
+			},
+		}),
+
+
+
+		export_email: defineTool({
+			description:
+				"One stored message as a reconstructed RFC 5322 (EML) block under the `eml` key — rebuilt from the stored fields, never the wire source. An unknown id is an error. Read-only.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID to export"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolExportEmail(env, mailboxId, { emailId: args.emailId });
 			},
 		}),
 	};
