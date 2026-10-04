@@ -37,6 +37,12 @@ import {
 	toolDiscardDraft,
 	toolDeleteSpamEmails,
 	toolSnoozeEmail,
+	toolCreateLabel,
+	toolUpdateLabel,
+	toolDeleteLabel,
+	toolCreateTemplate,
+	toolUpdateTemplate,
+	toolDeleteTemplate,
 	toolUnsnoozeEmail,
 	toolSetReminder,
 	toolClearReminder,
@@ -1197,6 +1203,81 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 
+		// ── create_template ────────────────────────────────────────
+		registerTool(
+			"create_template",
+			"Create one message template — an operator-authored reusable snippet with a name, an optional subject and a body. The name is limited to 120 characters, the subject to 500 and the body to 100000, and one mailbox holds at most 200 templates. Nothing here sends mail.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z.string().describe("The template name (at most 120 characters)"),
+				subject: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("Optional subject line (at most 500 characters)"),
+				body: z
+					.string()
+					.describe("The template body as HTML (at most 100000 characters)"),
+			},
+			async ({ mailboxId, name, subject, body }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolCreateTemplate(env, mailboxId, { name, subject, body }),
+				);
+			},
+		);
+
+
+		// ── update_template ────────────────────────────────────────
+		registerTool(
+			"update_template",
+			"Update one message template by id: rename it, change its optional subject or rewrite its body. Omitted fields keep their stored value; an explicit null subject clears it. Nothing here sends mail.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				templateId: z.string().describe("The template id"),
+				name: z.string().optional().describe("New name (at most 120 characters)"),
+				subject: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("New subject line (at most 500 characters); null clears it"),
+				body: z
+					.string()
+					.optional()
+					.describe("New body as HTML (at most 100000 characters)"),
+			},
+			async ({ mailboxId, templateId, name, subject, body }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolUpdateTemplate(env, mailboxId, {
+						templateId,
+						name,
+						subject,
+						body,
+					}),
+				);
+			},
+		);
+
+
+		// ── delete_template ────────────────────────────────────────
+		registerTool(
+			"delete_template",
+			"Delete one message template by id. The template row is removed; nothing here sends mail.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				templateId: z.string().describe("The template id"),
+			},
+			async ({ mailboxId, templateId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolDeleteTemplate(env, mailboxId, { templateId }));
+			},
+		);
+
+
 		// ── list_labels ────────────────────────────────────────────
 		registerTool(
 			"list_labels",
@@ -1264,6 +1345,69 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					() => toolRemoveLabel(env, mailboxId, emailId, label),
 				);
 				return mcpResult(result);
+			},
+		);
+
+
+		// ── create_label ───────────────────────────────────────────
+		registerTool(
+			"create_label",
+			"Create one label for the mailbox — a user/agent-applied tag on messages. The name is 1-50 characters, unique per mailbox case-insensitively, and one mailbox holds at most 100 labels; the color is optional. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z
+					.string()
+					.describe("The label name (at most 50 characters, unique case-insensitively)"),
+				color: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("Optional color token (e.g. \"#f59e0b\")"),
+			},
+			async ({ mailboxId, name, color }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolCreateLabel(env, mailboxId, { name, color }));
+			},
+		);
+
+
+		// ── update_label ───────────────────────────────────────────
+		registerTool(
+			"update_label",
+			"Update one label, resolved by its current name (matched case-insensitively) or its id: rename it and/or change its color. Omitted fields keep their stored value; an explicit null color clears it. A rename that collides with another label's name is refused. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				label: z.string().describe("The label's current name or id"),
+				name: z.string().optional().describe("New name (at most 50 characters)"),
+				color: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("New color token; null clears it"),
+			},
+			async ({ mailboxId, label, name, color }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolUpdateLabel(env, mailboxId, { label, name, color }),
+				);
+			},
+		);
+
+
+		// ── delete_label ───────────────────────────────────────────
+		registerTool(
+			"delete_label",
+			"Delete one label, resolved by its name (matched case-insensitively) or its id, and detach it from every message. The messages themselves are not touched. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				label: z.string().describe("The label's name or id"),
+			},
+			async ({ mailboxId, label }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolDeleteLabel(env, mailboxId, { label }));
 			},
 		);
 

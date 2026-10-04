@@ -43,6 +43,12 @@ import {
 	toolDeleteEmail,
 	toolDeleteSpamEmails,
 	toolSnoozeEmail,
+	toolCreateLabel,
+	toolUpdateLabel,
+	toolDeleteLabel,
+	toolCreateTemplate,
+	toolUpdateTemplate,
+	toolDeleteTemplate,
 	toolUnsnoozeEmail,
 	toolSetReminder,
 	toolClearReminder,
@@ -1122,6 +1128,80 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 		}),
 
 
+		create_template: defineTool({
+			description:
+				"Create one message template — an operator-authored reusable snippet with a name, an optional subject and a body. The name is limited to 120 characters, the subject to 500 and the body to 100000, and one mailbox holds at most 200 templates. Nothing here sends mail.",
+			parameters: z.object({
+				...mailboxIdField,
+				name: z.string().describe("The template name (at most 120 characters)"),
+				subject: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("Optional subject line (at most 500 characters)"),
+				body: z
+					.string()
+					.describe("The template body as HTML (at most 100000 characters)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolCreateTemplate(env, mailboxId, {
+					name: args.name,
+					subject: args.subject,
+					body: args.body,
+				});
+			},
+		}),
+
+
+		update_template: defineTool({
+			description:
+				"Update one message template by id: rename it, change its optional subject or rewrite its body. Omitted fields keep their stored value; an explicit null subject clears it. Nothing here sends mail.",
+			parameters: z.object({
+				...mailboxIdField,
+				templateId: z.string().describe("The template id"),
+				name: z.string().optional().describe("New name (at most 120 characters)"),
+				subject: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("New subject line (at most 500 characters); null clears it"),
+				body: z
+					.string()
+					.optional()
+					.describe("New body as HTML (at most 100000 characters)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUpdateTemplate(env, mailboxId, {
+					templateId: args.templateId,
+					name: args.name,
+					subject: args.subject,
+					body: args.body,
+				});
+			},
+		}),
+
+
+		delete_template: defineTool({
+			description:
+				"Delete one message template by id. The template row is removed; nothing here sends mail.",
+			parameters: z.object({
+				...mailboxIdField,
+				templateId: z.string().describe("The template id"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteTemplate(env, mailboxId, {
+					templateId: args.templateId,
+				});
+			},
+		}),
+
+
 		list_labels: defineTool({
 			description:
 				"The mailbox's labels — user/agent-applied tags on messages (id, name, color, created_at), ordered by name. Read-only: labels are created and removed by the operator in the app. Use a label's name or id with add_label or remove_label to tag a message.",
@@ -1182,6 +1262,71 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					},
 					() => toolRemoveLabel(env, mailboxId, args.emailId, args.label),
 				);
+			},
+		}),
+
+
+		create_label: defineTool({
+			description:
+				"Create one label for the mailbox — a user/agent-applied tag on messages. The name is 1-50 characters, unique per mailbox case-insensitively, and one mailbox holds at most 100 labels; the color is optional. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				name: z
+					.string()
+					.describe("The label name (at most 50 characters, unique case-insensitively)"),
+				color: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("Optional color token (e.g. \"#f59e0b\")"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolCreateLabel(env, mailboxId, {
+					name: args.name,
+					color: args.color,
+				});
+			},
+		}),
+
+
+		update_label: defineTool({
+			description:
+				"Update one label, resolved by its current name (matched case-insensitively) or its id: rename it and/or change its color. Omitted fields keep their stored value; an explicit null color clears it. A rename that collides with another label's name is refused. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				label: z.string().describe("The label's current name or id"),
+				name: z.string().optional().describe("New name (at most 50 characters)"),
+				color: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("New color token; null clears it"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUpdateLabel(env, mailboxId, {
+					label: args.label,
+					name: args.name,
+					color: args.color,
+				});
+			},
+		}),
+
+
+		delete_label: defineTool({
+			description:
+				"Delete one label, resolved by its name (matched case-insensitively) or its id, and detach it from every message. The messages themselves are not touched. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				label: z.string().describe("The label's name or id"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteLabel(env, mailboxId, { label: args.label });
 			},
 		}),
 
