@@ -689,11 +689,14 @@ describe("scheduled-send tools", () => {
 	});
 
 
-	it("is on the agent map and the live /mcp handshake, and nothing schedules", async () => {
+	it("is on the agent map and the live /mcp handshake; scheduling is MCP-only", async () => {
 		const tools = createEmailTools(env, MAILBOX);
 		expect(Object.keys(tools)).toEqual(
 			expect.arrayContaining(["list_scheduled_sends", "cancel_scheduled_send"]),
 		);
+		// Creating and retrying schedules stays off the agent surface.
+		expect(Object.keys(tools)).not.toContain("schedule_send");
+		expect(Object.keys(tools)).not.toContain("retry_scheduled_send");
 
 		const init = await SELF.fetch("http://example.com/mcp", {
 			method: "POST",
@@ -738,11 +741,14 @@ describe("scheduled-send tools", () => {
 		expect(names).toEqual(
 			expect.arrayContaining(["list_scheduled_sends", "cancel_scheduled_send"]),
 		);
-		// Sending stays operator-only: the only scheduled-send tools are the
-		// read-only list and the cancel.
+		// Scheduling is MCP-only since wave 17: the handshake carries the
+		// create and retry tools; the agent surface keeps just the read-only
+		// list and the cancel.
 		expect(names.filter((name) => name.includes("schedul")).sort()).toEqual([
 			"cancel_scheduled_send",
 			"list_scheduled_sends",
+			"retry_scheduled_send",
+			"schedule_send",
 		]);
 	});
 });
