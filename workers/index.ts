@@ -69,7 +69,7 @@ import { normalizeItemsSettings } from "../shared/items";
 import { normalizeSemanticSearchSettings, SEMANTIC_SEARCH_LIMIT_MAX } from "../shared/semantic";
 import { DEFAULT_ATTACHMENT_TYPE } from "../app/lib/attachments";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
-import { Folders } from "../shared/folders";
+import { Folders, slugify } from "../shared/folders";
 import { parseSearchQuery } from "../shared/search-query";
 import {
 	DEFAULT_CONTACT_SEARCH_LIMIT,
@@ -226,12 +226,6 @@ const CreateMailboxBody = z.object({
 });
 
 // -- Helpers --------------------------------------------------------
-
-function slugify(text: string) { // can return "" for non-alphanumeric input
-	return text.toString().toLowerCase()
-		.replace(/\s+/g, "-").replace(/[^\w-]+/g, "")
-		.replace(/--+/g, "-").replace(/^-+/, "").replace(/-+$/, "");
-}
 
 function intQuery(c: AppContext, key: string): number | undefined {
 	const v = c.req.query(key);

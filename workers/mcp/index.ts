@@ -27,6 +27,13 @@ import {
 	toolDraftReply,
 	toolDraftEmail,
 	toolUpdateDraft,
+	toolDeleteRule,
+	toolPreviewRule,
+	toolReorderRules,
+	toolListFolders,
+	toolCreateFolder,
+	toolUpdateFolder,
+	toolDeleteFolder,
 	toolDeleteEmail,
 	toolSendReply,
 	toolSendEmail,
@@ -529,6 +536,66 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				return mcpText(await toolSemanticSearch(env, mailboxId, { query, limit }));
+			},
+		);
+
+		// ── list_folders ───────────────────────────────────────────
+		registerTool(
+			"list_folders",
+			"List the mailbox's folders — the system set (inbox, sent, draft, archive, snoozed, spam, trash) plus every user folder — each with its name and unread count. Read-only: it changes nothing.",
+			{ mailboxId: z.string().describe("The mailbox email address") },
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListFolders(env, mailboxId));
+			},
+		);
+
+		// ── create_folder ──────────────────────────────────────────
+		registerTool(
+			"create_folder",
+			"Create a user folder. The folder id is the slug of the name (lowercase, whitespace to hyphens, non-alphanumerics stripped); a name with no alphanumeric characters is refused, and a colliding id or name answers an error. Nothing is moved.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z.string().describe("The new folder's display name"),
+			},
+			async ({ mailboxId, name }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolCreateFolder(env, mailboxId, { name }));
+			},
+		);
+
+		// ── update_folder ──────────────────────────────────────────
+		registerTool(
+			"update_folder",
+			"Rename a folder by id. The id never changes — only the display name — and an unknown id answers an error. Nothing is moved.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				folderId: z.string().describe("The folder id to rename"),
+				name: z.string().describe("The new display name"),
+			},
+			async ({ mailboxId, folderId, name }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolUpdateFolder(env, mailboxId, { folderId, name }),
+				);
+			},
+		);
+
+		// ── delete_folder ──────────────────────────────────────────
+		registerTool(
+			"delete_folder",
+			"Delete a user folder by id. System folders (inbox, sent, draft, archive, snoozed, spam, trash) cannot be deleted, and neither can an unknown id. Message contents are not deleted by this call.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				folderId: z.string().describe("The folder id to delete"),
+			},
+			async ({ mailboxId, folderId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolDeleteFolder(env, mailboxId, { folderId }));
 			},
 		);
 
@@ -1103,6 +1170,65 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					patch,
 				);
 				return mcpResult(result);
+			},
+		);
+
+
+		// ── delete_rule ────────────────────────────────────────────
+		registerTool(
+			"delete_rule",
+			"Delete one deterministic rule by id. An unknown id answers an error. Nothing is sent and no mail is changed; the rule's firing statistics go with it.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				ruleId: z.string().describe("The rule id to delete"),
+			},
+			async ({ mailboxId, ruleId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolDeleteRule(env, mailboxId, { ruleId }));
+			},
+		);
+
+
+		// ── preview_rule ───────────────────────────────────────────
+		registerTool(
+			"preview_rule",
+			"Dry-run a rule draft against the mailbox's stored mail: returns the matching message summaries (up to 200) and how many messages the draft matches, writing nothing and sending nothing. The draft is the create_rule shape; validation and errors mirror POST /rules/preview, and no action is ever executed. forward_to and auto_reply_text are operator-only and are stripped.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z.string().optional().describe("Short human-readable rule name"),
+				match: ruleToolMatchSchema,
+				actions: ruleToolActionsSchema.optional(),
+			},
+			async ({ mailboxId, name, match, actions }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolPreviewRule(env, mailboxId, {
+					name,
+					match,
+					actions,
+				});
+				return "error" in result ? mcpResult(result) : mcpText(result);
+			},
+		);
+
+
+		// ── reorder_rules ──────────────────────────────────────────
+		registerTool(
+			"reorder_rules",
+			"Rewrite rule priorities to follow the given id order (the first id evaluates first) and return the reordered list. Unknown or repeated ids are ignored; rules missing from the list keep their relative order after the listed ones.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				ruleIds: z
+					.array(z.string().min(1))
+					.min(1)
+					.max(200)
+					.describe("Rule ids in their new evaluation order"),
+			},
+			async ({ mailboxId, ruleIds }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolReorderRules(env, mailboxId, { ruleIds }));
 			},
 		);
 

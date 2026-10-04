@@ -65,3 +65,15 @@ export const MOVE_FOLDER_TOOL_DESCRIPTION =
 export function getFolderDisplayName(folderId: string): string {
 	return FOLDER_DISPLAY_NAMES[folderId.toLowerCase()] || folderId.charAt(0).toUpperCase() + folderId.slice(1);
 }
+
+/**
+ * Slugify a folder name into its folder id: lowercase, whitespace to
+ * hyphens, non-word characters stripped, runs collapsed, edges trimmed.
+ * Can return "" for non-alphanumeric input, which callers reject (see the
+ * POST /folders route and the create_folder tool).
+ */
+export function slugify(text: string) {
+	return text.toString().toLowerCase()
+		.replace(/\s+/g, "-").replace(/[^\w-]+/g, "")
+		.replace(/--+/g, "-").replace(/^-+/, "").replace(/-+$/, "");
+}

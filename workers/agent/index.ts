@@ -36,6 +36,13 @@ import {
 	toolDraftEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolDeleteRule,
+	toolPreviewRule,
+	toolReorderRules,
+	toolListFolders,
+	toolCreateFolder,
+	toolUpdateFolder,
+	toolDeleteFolder,
 	toolUpdateDraft,
 	toolStarEmail,
 	toolSetSenderPolicy,
@@ -522,6 +529,63 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					query: args.query,
 					limit: args.limit,
 				});
+			},
+		}),
+
+		list_folders: defineTool({
+			description:
+				"List the mailbox's folders — the system set (inbox, sent, draft, archive, snoozed, spam, trash) plus every user folder — each with its name and unread count. Read-only: it changes nothing.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListFolders(env, mailboxId);
+			},
+		}),
+
+		create_folder: defineTool({
+			description:
+				"Create a user folder. The folder id is the slug of the name (lowercase, whitespace to hyphens, non-alphanumerics stripped); a name with no alphanumeric characters is refused, and a colliding id or name answers an error. Nothing is moved.",
+			parameters: z.object({
+				...mailboxIdField,
+				name: z.string().describe("The new folder's display name"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolCreateFolder(env, mailboxId, { name: args.name });
+			},
+		}),
+
+		update_folder: defineTool({
+			description:
+				"Rename a folder by id. The id never changes — only the display name — and an unknown id answers an error. Nothing is moved.",
+			parameters: z.object({
+				...mailboxIdField,
+				folderId: z.string().describe("The folder id to rename"),
+				name: z.string().describe("The new display name"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUpdateFolder(env, mailboxId, {
+					folderId: args.folderId,
+					name: args.name,
+				});
+			},
+		}),
+
+		delete_folder: defineTool({
+			description:
+				"Delete a user folder by id. System folders (inbox, sent, draft, archive, snoozed, spam, trash) cannot be deleted, and neither can an unknown id. Message contents are not deleted by this call.",
+			parameters: z.object({
+				...mailboxIdField,
+				folderId: z.string().describe("The folder id to delete"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteFolder(env, mailboxId, { folderId: args.folderId });
 			},
 		}),
 
@@ -1036,6 +1100,61 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					}).filter(([, value]) => value !== undefined),
 				) as RulePatch;
 				return toolUpdateRule(env, mailboxId, args.ruleId, patch);
+			},
+		}),
+
+
+		delete_rule: defineTool({
+			description:
+				"Delete one deterministic rule by id. An unknown id answers an error. Nothing is sent and no mail is changed; the rule's firing statistics go with it.",
+			parameters: z.object({
+				...mailboxIdField,
+				ruleId: z.string().describe("The rule id to delete"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteRule(env, mailboxId, { ruleId: args.ruleId });
+			},
+		}),
+
+
+		preview_rule: defineTool({
+			description:
+				"Dry-run a rule draft against the mailbox's stored mail: returns the matching message summaries (up to 200) and how many messages the draft matches, writing nothing and sending nothing. The draft is the create_rule shape; validation and errors mirror the preview route, and no action is ever executed. forward_to and auto_reply_text are operator-only and are stripped.",
+			parameters: z.object({
+				...mailboxIdField,
+				name: z.string().optional().describe("Short human-readable rule name"),
+				match: ruleToolMatchSchema,
+				actions: ruleToolActionsSchema.optional(),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolPreviewRule(env, mailboxId, {
+					name: args.name,
+					match: args.match,
+					actions: args.actions,
+				});
+			},
+		}),
+
+
+		reorder_rules: defineTool({
+			description:
+				"Rewrite rule priorities to follow the given id order (the first id evaluates first) and return the reordered list. Unknown or repeated ids are ignored; rules missing from the list keep their relative order after the listed ones.",
+			parameters: z.object({
+				...mailboxIdField,
+				ruleIds: z
+					.array(z.string().min(1))
+					.min(1)
+					.max(200)
+					.describe("Rule ids in their new evaluation order"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolReorderRules(env, mailboxId, { ruleIds: args.ruleIds });
 			},
 		}),
 
