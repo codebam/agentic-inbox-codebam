@@ -3856,7 +3856,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 	/**
 	 * Retroactively run a stored rule's local actions over the mailbox's
-	 * existing mail — the operator-only counterpart of the arrival-time
+	 * existing mail — the retroactive counterpart of the arrival-time
 	 * pipeline.
 	 *
 	 * Bounded per call: the newest `RULE_PREVIEW_SCAN_LIMIT` messages are
