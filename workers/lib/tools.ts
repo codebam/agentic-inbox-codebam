@@ -16,7 +16,11 @@
 
 import { z } from "zod";
 import type { EmailFull } from "./schemas";
-import { PreviewRuleSchema, ReorderRulesSchema } from "./schemas";
+import {
+	PreviewRuleSchema,
+	ReorderRulesSchema,
+	ScheduleSendRequestSchema,
+} from "./schemas";
 import type { MailboxDO } from "../durableObject";
 import {
 	hasActiveActions,
@@ -50,10 +54,13 @@ import {
 	generateMessageId,
 	buildReferencesChain,
 	buildThreadingHeaders,
+	validateSender,
+	SenderValidationError,
 } from "./email-helpers";
 import { captureSendMessageId } from "./delivery-match";
 import { verifyDraft } from "./ai";
 import { applySignatureToBody } from "../../shared/signature";
+import { ensureMessageBody } from "../../shared/compose-body";
 import { loadMailboxSignature, resolveMailboxModels } from "./mailbox-settings";
 import { sendEmail, type SendEmailParams } from "../email-sender";
 import { decodeBase64Bytes, storeAttachments } from "./attachments";
@@ -72,6 +79,7 @@ import {
 } from "./items";
 import {
 	DEFAULT_SCHEDULED_SEND_LIMIT,
+	serializeScheduledSendPayload,
 	type ScheduledSendActionResult,
 	type ScheduledSendRow,
 } from "./scheduled-sends";
@@ -1497,6 +1505,137 @@ export async function toolCancelScheduledSend(
 	const result = await mailboxScheduledSendsStub(env, mailboxId).cancelScheduledSend(id);
 	if (!result.ok) return { error: result.error };
 	return { status: "cancelled", send: result.send };
+}
+
+// ── schedule_send / retry_scheduled_send ───────────────────────────
+
+/**
+ * The scheduled-send write RPCs these tools call, declared structurally for
+ * the same reason as the read tools above: the stub's own RPC result types
+ * carry `& Disposable`, which the MCP result wrapper cannot accept.
+ */
+type MailboxScheduledSendWriteStub = {
+	scheduleSend: (input: {
+		sendAt: string;
+		payload: string;
+	}) => Promise<ScheduledSendRow>;
+	retryScheduledSend: (id: string) => Promise<ScheduledSendActionResult>;
+};
+
+function mailboxScheduledSendWriteStub(
+	env: Env,
+	mailboxId: string,
+): MailboxScheduledSendWriteStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * Queue a new outbound message for a future instant, mirroring
+ * POST /api/v1/mailboxes/:mailboxId/scheduled-sends (workers/index.ts): the
+ * same sender validation and send rate limit run here, `sendAt` must be a
+ * future ISO 8601 instant, and attachments are never queued — a stored
+ * payload holds the send parameters only. The MCP body arrives as
+ * `bodyHtml` and is verified the way send_email verifies MCP bodies; the
+ * plain-text alternative is derived the way the composer derives it for
+ * every message it queues (shared/compose-body). Nothing is sent here: the
+ * mailbox's alarm (or the cron sweep) fires the send when it comes due.
+ * Returns the stored row, exactly as the route's 201 answers.
+ */
+export async function toolScheduleSend(
+	env: Env,
+	mailboxId: string,
+	params: {
+		to: string;
+		subject: string;
+		bodyHtml: string;
+		cc?: string | string[] | undefined;
+		bcc?: string | string[] | undefined;
+		sendAt: string;
+	},
+) {
+	// The sender is the mailbox itself — the MCP surface has no `from`
+	// field — checked exactly like the route checks it. It runs before the
+	// schema below so a mailbox that cannot be a sender is reported the way
+	// the route reports it.
+	try {
+		validateSender(
+			typeof params.to === "string" ? params.to : "",
+			mailboxId,
+			mailboxId,
+		);
+	} catch (e) {
+		if (e instanceof SenderValidationError) return { error: e.message };
+		throw e;
+	}
+
+	const parsed = ScheduleSendRequestSchema.safeParse({
+		to: params.to,
+		cc: params.cc,
+		bcc: params.bcc,
+		from: mailboxId,
+		subject: params.subject,
+		html: params.bodyHtml,
+		send_at: params.sendAt,
+	});
+	if (!parsed.success) return { error: "Invalid scheduled send request" };
+
+	// `sendAt` mirrors the route's futureTimestamp: a past or unusable
+	// instant is refused, never treated as "due immediately".
+	const parsedSendAt = Date.parse(parsed.data.send_at);
+	if (Number.isNaN(parsedSendAt) || parsedSendAt <= Date.now()) {
+		return { error: "`sendAt` must be a future ISO 8601 timestamp" };
+	}
+	const sendAt = new Date(parsedSendAt).toISOString();
+
+	// The same rate limit the immediate and queued send paths run.
+	const stub = mailboxScheduledSendWriteStub(env, mailboxId);
+	const rateLimitError = await (stub as unknown as RateLimitStub).checkSendRateLimit();
+	if (rateLimitError) return { error: rateLimitError };
+
+	// The body is verified the way send_email verifies MCP bodies, then the
+	// html/text pair is derived the way the composer derives it for every
+	// queued message; no signature is applied — the route stores the body
+	// as given, like the immediate tool send paths.
+	const sanitizedBody = await verifyDraft(env.AI, params.bodyHtml);
+	if (!sanitizedBody) {
+		return {
+			error:
+				"Draft verification failed — refusing to send unverified content. Please try again.",
+		};
+	}
+	const { html, text } = ensureMessageBody(sanitizedBody);
+
+	const payload = serializeScheduledSendPayload({
+		to: parsed.data.to,
+		cc: parsed.data.cc,
+		bcc: parsed.data.bcc,
+		from: mailboxId,
+		subject: parsed.data.subject,
+		html,
+		text,
+	});
+	if ("error" in payload) return { error: payload.error };
+
+	const send = await stub.scheduleSend({ sendAt, payload: payload.payload });
+	return { ...send };
+}
+
+/**
+ * Re-arm one failed scheduled send: it becomes pending and due immediately,
+ * so the mailbox's alarm (or the sweep) retries it. Only a failed send can
+ * be retried; an unknown id or an already-terminal row answers `{ error }`.
+ * The queued message is resent exactly as it was stored — the payload is
+ * never touched.
+ */
+export async function toolRetryScheduledSend(
+	env: Env,
+	mailboxId: string,
+	sendId: string,
+) {
+	const result = await mailboxScheduledSendWriteStub(env, mailboxId)
+		.retryScheduledSend(sendId);
+	if (!result.ok) return { error: result.error };
+	return { status: "pending", send: result.send };
 }
 
 // ── agent action audit (list_agent_actions / undo_action) ──────────

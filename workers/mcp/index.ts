@@ -18,6 +18,8 @@ import { z } from "zod";
 import {
 	toolListMailboxes,
 	toolListEmails,
+	toolScheduleSend,
+	toolRetryScheduledSend,
 	toolGetEmail,
 	toolGetAttachment,
 	toolGetThread,
@@ -1200,6 +1202,60 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				if (denied) return denied;
 				return mcpResult(
 					await toolCancelScheduledSend(env, mailboxId, scheduledSendId),
+				);
+			},
+		);
+
+		// ── schedule_send ──────────────────────────────────────────
+		registerTool(
+			"schedule_send",
+			"Queue a new email (not a reply) for delivery at a future time. The message is stored pending and the mailbox sends it when sendAt arrives; it can still be cancelled with cancel_scheduled_send before then. `sendAt` must be a future ISO 8601 instant (e.g. 2026-10-04T09:00:00Z). Attachments cannot be scheduled — a queued send stores parameters only. Only call after the human operator has explicitly confirmed the exact recipient, subject, body and send time.",
+			{
+				mailboxId: z.string().describe("The mailbox email address to send from"),
+				to: z.string().email().describe("Recipient email address"),
+				cc: z
+					.union([z.string().email(), z.array(z.string().email()).min(1)])
+					.optional()
+					.describe("CC recipients: one address or a list"),
+				bcc: z
+					.union([z.string().email(), z.array(z.string().email()).min(1)])
+					.optional()
+					.describe("BCC recipients: one address or a list"),
+				subject: z.string().describe("Subject line"),
+				bodyHtml: z.string().describe("The HTML body of the email"),
+				sendAt: z
+					.string()
+					.describe("Future ISO 8601 instant to send at, e.g. 2026-10-04T09:00:00Z"),
+			},
+			async ({ mailboxId, to, cc, bcc, subject, bodyHtml, sendAt }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolScheduleSend(env, mailboxId, {
+						to,
+						cc,
+						bcc,
+						subject,
+						bodyHtml,
+						sendAt,
+					}),
+				);
+			},
+		);
+
+		// ── retry_scheduled_send ───────────────────────────────────
+		registerTool(
+			"retry_scheduled_send",
+			"Re-arm a failed scheduled send: it becomes pending and due immediately, so the mailbox retries it. Only a failed send can be retried, and it is resent exactly as it was queued — nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				scheduledSendId: z.string().describe("The scheduled send ID to retry"),
+			},
+			async ({ mailboxId, scheduledSendId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolRetryScheduledSend(env, mailboxId, scheduledSendId),
 				);
 			},
 		);
