@@ -32,6 +32,8 @@ import {
 	toolSendEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolGetSenderPolicy,
+	toolRemoveSenderPolicy,
 	toolStarEmail,
 	toolSetSenderPolicy,
 	toolDiscardDraft,
@@ -405,11 +407,17 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					.describe(
 						"Optional category ID to filter by (spam or a configured category from an email's category field)",
 					),
+				stream: z
+					.enum(["priority", "other"])
+					.optional()
+					.describe(
+						"Optional stream to split the folder list by: priority (conversations whose newest in-folder message is unread or starred, or that need a reply) or other (the rest). Omit for the whole folder; streamed results are one row per conversation.",
+					),
 			},
-			async ({ mailboxId, folder, limit, page, category }) => {
+			async ({ mailboxId, folder, limit, page, category, stream }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
-				const result = await toolListEmails(env, mailboxId, { folder, limit, page, category });
+				const result = await toolListEmails(env, mailboxId, { folder, limit, page, category, stream });
 				return mcpText(result);
 			},
 		);
@@ -483,6 +491,12 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				...searchFilterShape,
+				label: z
+					.string()
+					.optional()
+					.describe(
+						"Only emails carrying this label — exact label name, case-insensitive (a label name from list_labels)",
+					),
 			},
 			async ({ mailboxId, ...filters }) => {
 				const denied = await verifyMailbox(mailboxId);
@@ -927,6 +941,39 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				const result = await toolSetSenderPolicy(env, mailboxId, emailId, action);
+				return mcpResult(result);
+			},
+		);
+
+		// ── get_sender_policy ──────────────────────────────────────
+		registerTool(
+			"get_sender_policy",
+			"List the mailbox's sender allow/block entries (address, policy, created_at), oldest first. Read-only — use it to review which senders skip spam classification or are filed straight into Spam.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolGetSenderPolicy(env, mailboxId);
+				return mcpText(result);
+			},
+		);
+
+		// ── remove_sender_policy ───────────────────────────────────
+		registerTool(
+			"remove_sender_policy",
+			"Remove one sender allow/block entry by address, so future mail from that sender is classified normally again. Nothing else changes — no mail is moved or deleted. Use get_sender_policy for the stored addresses.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				address: z
+					.string()
+					.describe("The sender address whose entry to remove"),
+			},
+			async ({ mailboxId, address }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolRemoveSenderPolicy(env, mailboxId, { address });
 				return mcpResult(result);
 			},
 		);

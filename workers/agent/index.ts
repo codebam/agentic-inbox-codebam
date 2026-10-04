@@ -40,6 +40,8 @@ import {
 	toolStarEmail,
 	toolSetSenderPolicy,
 	toolDiscardDraft,
+	toolGetSenderPolicy,
+	toolRemoveSenderPolicy,
 	toolDeleteEmail,
 	toolDeleteSpamEmails,
 	toolSnoozeEmail,
@@ -315,7 +317,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		list_emails: defineTool({
 			description:
-				"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, folder_id, category). Use folder='spam' to review the Spam folder.",
+				"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id, folder_id, category). Use folder='spam' to review the Spam folder. With a stream, results are one row per conversation.",
 			parameters: z.object({
 				...mailboxIdField,
 				folder: z
@@ -336,6 +338,12 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.describe(
 						"Optional category ID to filter by (spam or a configured category from an email's category field)",
 					),
+				stream: z
+					.enum(["priority", "other"])
+					.optional()
+					.describe(
+						"Optional stream to split the folder list by: priority (conversations whose newest in-folder message is unread or starred, or that need a reply) or other (the rest). Omit for the whole folder.",
+					),
 			}),
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
@@ -345,6 +353,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					limit: args.limit ?? 20,
 					page: args.page ?? 1,
 					category: args.category,
+					stream: args.stream,
 				});
 			},
 		}),
@@ -432,6 +441,12 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.string()
 					.optional()
 					.describe("Optional category ID to restrict search to"),
+				label: z
+					.string()
+					.optional()
+					.describe(
+						"Only emails carrying this label — exact label name, case-insensitive (a label name from list_labels)",
+					),
 				from: z
 					.string()
 					.optional()
@@ -480,6 +495,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					query: args.query,
 					folder: args.folder,
 					category: args.category,
+					label: args.label,
 					from: args.from,
 					to: args.to,
 					subject: args.subject,
@@ -745,6 +761,32 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				return toolSetSenderPolicy(env, mailboxId, args.emailId, args.action);
 			},
 		}),
+
+		get_sender_policy: defineTool({
+			description:
+				"The mailbox's sender allow/block entries (address, policy, created_at), oldest first. Read-only — entries are added by the operator from the message panel ('Not spam' / 'Block sender') or by set_sender_policy.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetSenderPolicy(env, mailboxId);
+			},
+		}),
+
+		remove_sender_policy: defineTool({
+			description:
+				"Remove one sender allow/block entry by address, so future mail from that sender is classified normally again. Nothing else changes — no mail is moved or deleted. Use get_sender_policy for the stored addresses.",
+			parameters: z.object({
+				...mailboxIdField,
+				address: z.string().describe("The sender address whose entry to remove"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolRemoveSenderPolicy(env, mailboxId, { address: args.address });
+			},
+		}),
+
 
 
 

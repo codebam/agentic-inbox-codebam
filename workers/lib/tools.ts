@@ -180,9 +180,33 @@ export async function toolListMailboxes(env: Env) {
 export async function toolListEmails(
 	env: Env,
 	mailboxId: string,
-	params: { folder: string; limit: number; page: number; category?: string | undefined },
+	params: {
+		folder: string;
+		limit: number;
+		page: number;
+		category?: string | undefined;
+		/**
+		 * Priority/other split, as the web list's tabs: a conversation is
+		 * priority when its newest in-folder message is unread or starred, or
+		 * when it needs a reply; other is the complement.
+		 */
+		stream?: "priority" | "other" | undefined;
+	},
 ) {
 	const stub = getMailboxStub(env, mailboxId);
+	// The split is a property of a conversation, so a streamed list is the
+	// threaded list the web's tabs render: the same RPC (and option) the
+	// emails route uses for `threaded=true&stream=...`. The plain getEmails
+	// query takes no stream, so with one the threaded RPC answers instead.
+	if (params.stream) {
+		return stub.getThreadedEmails({
+			folder: params.folder,
+			category: params.category,
+			stream: params.stream,
+			limit: params.limit,
+			page: params.page,
+		});
+	}
 	return stub.getEmails({
 		folder: params.folder,
 		category: params.category,
@@ -416,6 +440,8 @@ export interface SearchEmailParams {
 	query?: string | undefined;
 	folder?: string | undefined;
 	category?: string | undefined;
+	/** Exact, case-insensitive match on one label name the message carries. */
+	label?: string | undefined;
 	from?: string | undefined;
 	to?: string | undefined;
 	subject?: string | undefined;
@@ -441,6 +467,7 @@ function buildSearchFilters(params: SearchEmailParams) {
 		query: parsed.query,
 		folder: params.folder ?? parsed.folder,
 		category: params.category,
+		label: params.label,
 		from: params.from ?? parsed.from,
 		to: params.to ?? parsed.to,
 		subject: params.subject ?? parsed.subject,
@@ -906,6 +933,36 @@ export async function toolSetSenderPolicy(
 		if (isSenderPolicyValidationError(e)) return { error: (e as Error).message };
 		throw e;
 	}
+}
+
+// ── get_sender_policy ──────────────────────────────────────────────
+
+/**
+ * Every allow/block entry for the mailbox, oldest first — the same entries
+ * array GET /api/v1/mailboxes/:mailboxId/sender-policy answers with.
+ * Read-only.
+ */
+export async function toolGetSenderPolicy(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	return stub.listSenderPolicy();
+}
+
+// ── remove_sender_policy ───────────────────────────────────────────
+
+/**
+ * Remove one entry by address, mirroring the DELETE sender-policy route:
+ * an address with no entry changes nothing and answers the route's
+ * not-found error.
+ */
+export async function toolRemoveSenderPolicy(
+	env: Env,
+	mailboxId: string,
+	params: { address: string },
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const removed = await stub.removeSenderPolicy(params.address);
+	if (!removed) return { error: "Sender policy entry not found" };
+	return { status: "removed", address: params.address };
 }
 
 // ── move_email ─────────────────────────────────────────────────────
