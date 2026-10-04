@@ -16,17 +16,22 @@
 
 import { z } from "zod";
 import type { EmailFull } from "./schemas";
+import { PreviewRuleSchema, ReorderRulesSchema } from "./schemas";
 import type { MailboxDO } from "../durableObject";
 import {
 	hasActiveActions,
 	hasOutboundActions,
 	isRuleValidationError,
 	normalizeRuleActions,
+	resolveRuleFolderId,
 	stripOutboundActions,
 	type MailRule,
 	type RuleActions,
 	type RuleDraft,
+	type RuleMatchSpec,
 	type RulePatch,
+	type RulePreviewDraft,
+	type RulePreviewResult,
 } from "./rules";
 import {
 	isSenderPolicyValidationError,
@@ -54,7 +59,7 @@ import { sendEmail, type SendEmailParams } from "../email-sender";
 import { decodeBase64Bytes, storeAttachments } from "./attachments";
 import { proxyImage } from "./image-proxy";
 import { formatFileSize } from "../../app/lib/attachments";
-import { Folders } from "../../shared/folders";
+import { Folders, slugify } from "../../shared/folders";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
@@ -780,6 +785,104 @@ export async function toolDraftEmail(
 			body: params.isPlainText ? params.body.trim() : processedBody,
 		},
 	};
+}
+
+// ── folders (list / create / update / delete) ──────────────────────
+
+/** A folder row as MailboxDO.getFolders returns it. */
+export interface MailboxFolderRow {
+	id: string;
+	name: string;
+	unreadCount: number;
+}
+
+/** DO methods the folder tools use (RPC stub surface). */
+type MailboxFoldersStub = {
+	getFolders: () => Promise<MailboxFolderRow[]>;
+	createFolder: (
+		id: string,
+		name: string,
+	) => Promise<MailboxFolderRow | null>;
+	updateFolder: (
+		id: string,
+		name: string,
+	) => Promise<{ id: string; name: string } | null>;
+	deleteFolder: (id: string) => Promise<boolean>;
+};
+
+function mailboxFoldersStub(env: Env, mailboxId: string): MailboxFoldersStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * The mailbox's folders — the system set (inbox, sent, draft, archive,
+ * snoozed, spam, trash) plus every user folder — each with its name and
+ * unread count, the same rows the sidebar renders and the GET /folders
+ * route serves. Read-only: it changes nothing.
+ */
+export async function toolListFolders(env: Env, mailboxId: string) {
+	const folders = await mailboxFoldersStub(env, mailboxId).getFolders();
+	return { mailboxId, folders };
+}
+
+/**
+ * Create a user folder. The id is the slug of the name — lowercase,
+ * whitespace to hyphens, non-alphanumerics stripped — exactly like the
+ * POST /folders route. A name with no alphanumeric characters is refused
+ * with the route's message, and an id or name that already exists answers
+ * the route's duplicate error. Nothing is moved.
+ */
+export async function toolCreateFolder(
+	env: Env,
+	mailboxId: string,
+	params: { name: string },
+) {
+	const slug = slugify(params.name);
+	if (!slug) {
+		return { error: "Folder name must contain alphanumeric characters" };
+	}
+	const folder = await mailboxFoldersStub(env, mailboxId).createFolder(
+		slug,
+		params.name,
+	);
+	return folder ? { folder } : { error: "Folder with this name already exists" };
+}
+
+/**
+ * Rename a folder by id. The id never changes — only the display name —
+ * and an unknown id answers the route's `Folder not found`. Nothing is
+ * moved.
+ */
+export async function toolUpdateFolder(
+	env: Env,
+	mailboxId: string,
+	params: { folderId: string; name: string },
+) {
+	const folder = await mailboxFoldersStub(env, mailboxId).updateFolder(
+		params.folderId,
+		params.name,
+	);
+	return folder ? { folder } : { error: "Folder not found" };
+}
+
+/**
+ * Delete a user folder by id. System folders (inbox, sent, draft, archive,
+ * snoozed, spam, trash) carry is_deletable = 0 and refuse, and so does an
+ * unknown id — both answer the route's exact
+ * `Folder not found or cannot be deleted`. Nothing else is deleted by this
+ * call.
+ */
+export async function toolDeleteFolder(
+	env: Env,
+	mailboxId: string,
+	params: { folderId: string },
+) {
+	const deleted = await mailboxFoldersStub(env, mailboxId).deleteFolder(
+		params.folderId,
+	);
+	return deleted
+		? { status: "deleted", folderId: params.folderId }
+		: { error: "Folder not found or cannot be deleted" };
 }
 
 // ── update_draft ───────────────────────────────────────────────────
@@ -2572,4 +2675,136 @@ export async function toolUpdateRule(
 		if (isRuleValidationError(e)) return { error: (e as Error).message };
 		throw e;
 	}
+}
+
+// ── delete_rule / preview_rule / reorder_rules ─────────────────────
+
+/** DO methods the rule admin tools use, on top of the shared rule CRUD. */
+type MailboxRuleAdminStub = MailboxRuleStub & {
+	deleteRule: (id: string) => Promise<boolean>;
+	reorderRules: (orderedIds: string[]) => Promise<MailRule[]>;
+	previewRule: (draft: RulePreviewDraft) => Promise<RulePreviewResult>;
+};
+
+function mailboxRuleAdminStub(
+	env: Env,
+	mailboxId: string,
+): MailboxRuleAdminStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * The route's 400 message for a failed rule body parse (the route-local
+ * `ruleErrorMessage` in workers/index.ts): `Invalid rule — <path>: <reason>`.
+ * Kept here because that helper is not exported; the agent and MCP rule
+ * tools answer the same strings the API does.
+ */
+function ruleToolErrorMessage(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Invalid rule";
+	const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+	return `Invalid rule — ${path}${issue.message}`;
+}
+
+/**
+ * The folder-target validation the rule routes run before writing anything
+ * (the route-local `unknownRuleFolder` in workers/index.ts): an action whose
+ * move target names no folder answers `Unknown folder: <target>` here
+ * instead of a rejected RPC surfacing as a 500. Returns the error message,
+ * or null when the target is fine or absent.
+ */
+async function unknownRuleFolder(
+	env: Env,
+	mailboxId: string,
+	actions: { move_to_folder?: string | undefined } | undefined,
+): Promise<string | null> {
+	const folder = actions?.move_to_folder;
+	if (!folder) return null;
+	const folders = await mailboxFoldersStub(env, mailboxId).getFolders();
+	if (resolveRuleFolderId(folder, folders)) return null;
+	return `Unknown folder: ${folder}`;
+}
+
+/**
+ * Delete one deterministic rule by id. An unknown id answers the route's
+ * `Rule not found`. Nothing is sent and no mail is changed; the rule's
+ * firing statistics go with it.
+ */
+export async function toolDeleteRule(
+	env: Env,
+	mailboxId: string,
+	params: { ruleId: string },
+) {
+	const deleted = await mailboxRuleAdminStub(env, mailboxId).deleteRule(
+		params.ruleId,
+	);
+	if (!deleted) return { error: "Rule not found" };
+	return { status: "deleted", ruleId: params.ruleId };
+}
+
+/**
+ * Dry-run a rule draft: the same matcher the live engine uses runs over the
+ * mailbox's stored mail and nothing is written, sent or fired. The draft is
+ * the create_rule shape (name, match, actions) with actions optional, the
+ * same body the POST /rules/preview route accepts.
+ *
+ * Validation mirrors the route: the draft must parse against
+ * PreviewRuleSchema and a move target must name a real folder, with the
+ * route's exact error strings. Outbound actions (forward_to and
+ * auto_reply_text) are operator-only — the same strip toolCreateRule
+ * applies keeps them out of everything this tool passes on, so a preview
+ * can never validate sending automation for the agent.
+ */
+export async function toolPreviewRule(
+	env: Env,
+	mailboxId: string,
+	draft: {
+		name?: string | undefined;
+		match: RuleMatchSpec;
+		actions?: RuleActions | undefined;
+	},
+): Promise<RulePreviewResult | { error: string }> {
+	// Route parity first: the same body schema the route parses, so an
+	// unusable draft answers the route's 400 message.
+	const parsed = PreviewRuleSchema.safeParse({
+		name: draft.name,
+		match: draft.match,
+		actions: draft.actions,
+	});
+	if (!parsed.success) return { error: ruleToolErrorMessage(parsed.error) };
+
+	// Then the create_rule action restriction and the route's folder check.
+	const { actions } = stripAgentRuleActions(parsed.data.actions);
+	const folderError = await unknownRuleFolder(env, mailboxId, actions);
+	if (folderError) return { error: folderError };
+
+	try {
+		return await mailboxRuleAdminStub(env, mailboxId).previewRule({
+			name: parsed.data.name,
+			match: parsed.data.match,
+		});
+	} catch (e) {
+		if (isRuleValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+/**
+ * Rewrite rule priorities so they follow the given id order (index 0
+ * evaluates first), mirroring POST /rules/reorder. Unknown or duplicate ids
+ * are ignored by the Durable Object, and rules missing from the list keep
+ * their relative order after the listed ones. Returns the route's 400
+ * message for an unusable id list, or the reordered list as stored.
+ */
+export async function toolReorderRules(
+	env: Env,
+	mailboxId: string,
+	params: { ruleIds: string[] },
+): Promise<{ mailboxId: string; rules: MailRule[] } | { error: string }> {
+	const parsed = ReorderRulesSchema.safeParse({ ids: params.ruleIds });
+	if (!parsed.success) return { error: ruleToolErrorMessage(parsed.error) };
+	const rules = await mailboxRuleAdminStub(env, mailboxId).reorderRules(
+		parsed.data.ids,
+	);
+	return { mailboxId, rules };
 }

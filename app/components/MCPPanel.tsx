@@ -53,6 +53,16 @@ const TOOLS = [
 	{ name: "mark_email_read", desc: "Toggle read state" },
 	{ name: "move_email", desc: "Move to a folder" },
 	{ name: "delete_email", desc: "Delete an email" },
+	{ name: "list_rules", desc: "List automation rules" },
+	{ name: "create_rule", desc: "Create an automation rule" },
+	{ name: "update_rule", desc: "Update a rule" },
+	{ name: "delete_rule", desc: "Delete a rule" },
+	{ name: "preview_rule", desc: "Preview a rule against stored mail" },
+	{ name: "reorder_rules", desc: "Reorder rule priority" },
+	{ name: "list_folders", desc: "List folders" },
+	{ name: "create_folder", desc: "Create a folder" },
+	{ name: "update_folder", desc: "Rename a folder" },
+	{ name: "delete_folder", desc: "Delete a folder" },
 ];
 
 const BRIDGE_PATH = "/path/to/agentic-inbox-codebam/scripts/mcp-bridge.mjs";

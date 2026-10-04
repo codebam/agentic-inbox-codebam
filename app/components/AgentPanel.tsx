@@ -17,6 +17,12 @@ import {
 	CheckCircleIcon,
 	StopIcon,
 	PencilSimpleIcon,
+	ArrowsDownUpIcon,
+	FolderIcon,
+	FolderPlusIcon,
+	FunnelIcon,
+	NotePencilIcon,
+	PlusCircleIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
@@ -73,6 +79,46 @@ const TOOL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
 	},
 	delete_spam_emails: {
 		label: "Deleting spam",
+		icon: <TrashIcon size={14} weight="bold" />,
+	},
+	list_rules: {
+		label: "Listing rules",
+		icon: <FunnelIcon size={14} weight="bold" />,
+	},
+	create_rule: {
+		label: "Creating rule",
+		icon: <PlusCircleIcon size={14} weight="bold" />,
+	},
+	update_rule: {
+		label: "Updating rule",
+		icon: <PencilSimpleIcon size={14} weight="bold" />,
+	},
+	delete_rule: {
+		label: "Deleting rule",
+		icon: <TrashIcon size={14} weight="bold" />,
+	},
+	preview_rule: {
+		label: "Previewing rule",
+		icon: <EyeIcon size={14} weight="bold" />,
+	},
+	reorder_rules: {
+		label: "Reordering rules",
+		icon: <ArrowsDownUpIcon size={14} weight="bold" />,
+	},
+	list_folders: {
+		label: "Listing folders",
+		icon: <FolderIcon size={14} weight="bold" />,
+	},
+	create_folder: {
+		label: "Creating folder",
+		icon: <FolderPlusIcon size={14} weight="bold" />,
+	},
+	update_folder: {
+		label: "Renaming folder",
+		icon: <NotePencilIcon size={14} weight="bold" />,
+	},
+	delete_folder: {
+		label: "Deleting folder",
 		icon: <TrashIcon size={14} weight="bold" />,
 	},
 };
