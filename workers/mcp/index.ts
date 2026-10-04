@@ -48,6 +48,10 @@ import {
 	toolClearReminder,
 	toolListSnoozed,
 	toolListScheduledSends,
+	toolListSavedSearches,
+	toolCreateSavedSearch,
+	toolUpdateSavedSearch,
+	toolDeleteSavedSearch,
 	toolCancelScheduledSend,
 	toolListAgentActions,
 	toolListRules,
@@ -1184,6 +1188,78 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 						limit ?? DEFAULT_CONTACT_SEARCH_LIMIT,
 					),
 				);
+			},
+		);
+
+
+		// ── list_saved_searches ────────────────────────────────────
+		registerTool(
+			"list_saved_searches",
+			"List the mailbox's saved searches — named queries the operator re-runs from the sidebar — newest first, each with its id, name, query and created_at. Read-only: it changes nothing and sends no mail.",
+			{ mailboxId: z.string().describe("The mailbox email address") },
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListSavedSearches(env, mailboxId));
+			},
+		);
+
+
+		// ── create_saved_search ────────────────────────────────────
+		registerTool(
+			"create_saved_search",
+			"Save a named search for a mailbox: a name (up to 120 characters) and a query (up to 1000 characters) the operator can re-run from the sidebar. A mailbox holds at most 50 saved searches; names need not be unique. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z.string().describe("The search name (up to 120 characters)"),
+				query: z.string().describe("The search query (up to 1000 characters)"),
+			},
+			async ({ mailboxId, name, query }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolCreateSavedSearch(env, mailboxId, { name, query }));
+			},
+		);
+
+
+		// ── update_saved_search ────────────────────────────────────
+		registerTool(
+			"update_saved_search",
+			"Update one saved search by id: rename it and/or change its query. Omitted fields keep their stored value. Answers the updated entry; an unknown id answers an error. Nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				searchId: z.string().describe("The saved search id to update"),
+				name: z
+					.string()
+					.optional()
+					.describe("The new search name (up to 120 characters)"),
+				query: z
+					.string()
+					.optional()
+					.describe("The new search query (up to 1000 characters)"),
+			},
+			async ({ mailboxId, searchId, name, query }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolUpdateSavedSearch(env, mailboxId, { searchId, name, query }),
+				);
+			},
+		);
+
+
+		// ── delete_saved_search ────────────────────────────────────
+		registerTool(
+			"delete_saved_search",
+			"Delete one saved search by id. Answers { ok: true } when the entry was removed; an unknown id answers an error. Nothing else is touched and nothing is sent.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				searchId: z.string().describe("The saved search id to delete"),
+			},
+			async ({ mailboxId, searchId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolDeleteSavedSearch(env, mailboxId, { searchId }));
 			},
 		);
 

@@ -1421,6 +1421,173 @@ export async function toolSearchContacts(
 	return { mailboxId, query, contacts, totalCount };
 }
 
+// ── saved searches (list/create/update/delete_saved_search) ────────
+
+/** One stored saved search row, as MailboxDO.listSavedSearches answers it. */
+type MailboxSavedSearchRow = {
+	id: string;
+	name: string;
+	query: string;
+	created_at: string;
+};
+
+/**
+ * The saved-search RPCs these tools call. Declared structurally for the
+ * same reason as the audit, snooze and contact tools: the stub's own RPC
+ * result types carry `& Disposable`, which the MCP result wrapper cannot
+ * accept.
+ */
+type MailboxSavedSearchesStub = {
+	listSavedSearches: () => Promise<MailboxSavedSearchRow[]>;
+	createSavedSearch: (
+		input: { name?: unknown; query?: unknown } | null,
+	) => Promise<MailboxSavedSearchRow | null>;
+	updateSavedSearch: (
+		id: string,
+		patch: { name?: unknown; query?: unknown } | null,
+	) => Promise<MailboxSavedSearchRow | null>;
+	deleteSavedSearch: (id: string) => Promise<boolean>;
+};
+
+function mailboxSavedSearchesStub(
+	env: Env,
+	mailboxId: string,
+): MailboxSavedSearchesStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/** Longest saved-search name accepted, after trimming (mirrors the DO). */
+const MAX_SAVED_SEARCH_NAME_LENGTH = 120;
+
+/** Longest saved-search query accepted, after trimming (mirrors the DO). */
+const MAX_SAVED_SEARCH_QUERY_LENGTH = 1000;
+
+/** Most saved searches one mailbox can hold (mirrors the DO). */
+const MAX_SAVED_SEARCHES = 50;
+
+/**
+ * The reason one saved-search field is unusable, or null when it is fine.
+ * The bounds mirror the Durable Object's own validators, exactly like the
+ * web route's pre-check, which is what lets these tools name the field.
+ */
+function savedSearchFieldError(
+	field: "name" | "query",
+	value: unknown,
+	max: number,
+): string | null {
+	if (typeof value !== "string" || !value.trim()) {
+		return `A saved search ${field} is required`;
+	}
+	if (value.trim().length > max) {
+		return `A saved search ${field} can be at most ${max} characters`;
+	}
+	return null;
+}
+
+/** The reason a create input is unusable, the name checked before the query. */
+function savedSearchCreateError(input: unknown): string | null {
+	if (input === null || typeof input !== "object") return "Invalid saved search";
+	const body = input as { name?: unknown; query?: unknown };
+	return (
+		savedSearchFieldError("name", body.name, MAX_SAVED_SEARCH_NAME_LENGTH) ??
+		savedSearchFieldError("query", body.query, MAX_SAVED_SEARCH_QUERY_LENGTH)
+	);
+}
+
+/** The reason a patch input is unusable; omitted fields are never checked. */
+function savedSearchPatchError(input: unknown): string | null {
+	if (input === null || typeof input !== "object") return "Invalid saved search";
+	const patch = input as { name?: unknown; query?: unknown };
+	if (patch.name !== undefined) {
+		const error = savedSearchFieldError(
+			"name",
+			patch.name,
+			MAX_SAVED_SEARCH_NAME_LENGTH,
+		);
+		if (error) return error;
+	}
+	if (patch.query !== undefined) {
+		const error = savedSearchFieldError(
+			"query",
+			patch.query,
+			MAX_SAVED_SEARCH_QUERY_LENGTH,
+		);
+		if (error) return error;
+	}
+	return null;
+}
+
+/**
+ * The mailbox's saved searches — named queries the operator re-runs from
+ * the sidebar or saves from the search page — newest first. Read-only, and
+ * answers the same `{ searches }` shape as the web GET route; every entry
+ * carries its id, name, query and created_at.
+ */
+export async function toolListSavedSearches(env: Env, mailboxId: string) {
+	const searches = await mailboxSavedSearchesStub(env, mailboxId).listSavedSearches();
+	return { searches };
+}
+
+/**
+ * Store one saved search for the mailbox. The name (1..120 characters,
+ * trimmed) and the query (1..1000 characters, trimmed) are validated here
+ * with the same bounds and messages as the web route, and the
+ * 50-per-mailbox cap is enforced by the Durable Object. Returns the stored
+ * row, or `{ error }` — an unusable field or the cap — never a silently
+ * clipped row. Names need not be unique, exactly like the route.
+ */
+export async function toolCreateSavedSearch(
+	env: Env,
+	mailboxId: string,
+	input: { name?: unknown; query?: unknown } | null,
+) {
+	const error = savedSearchCreateError(input);
+	if (error) return { error };
+	const search = await mailboxSavedSearchesStub(env, mailboxId).createSavedSearch(input);
+	if (!search) {
+		return { error: `A mailbox can hold at most ${MAX_SAVED_SEARCHES} saved searches` };
+	}
+	return search;
+}
+
+/**
+ * Apply a partial change to one saved search (name and/or query). Omitted
+ * fields keep their stored value, and a provided value is validated with
+ * the same bounds and messages as the web route. Returns the updated row;
+ * `{ error }` when the id is unknown ("Saved search not found") or a
+ * provided value is unusable.
+ */
+export async function toolUpdateSavedSearch(
+	env: Env,
+	mailboxId: string,
+	input: { searchId: string; name?: unknown; query?: unknown },
+) {
+	const error = savedSearchPatchError(input);
+	if (error) return { error };
+	const search = await mailboxSavedSearchesStub(env, mailboxId).updateSavedSearch(
+		input.searchId,
+		{ name: input.name, query: input.query },
+	);
+	if (!search) return { error: "Saved search not found" };
+	return search;
+}
+
+/**
+ * Remove one saved search. Returns `{ ok: true }` — the same shape as the
+ * web DELETE route — or `{ error: "Saved search not found" }` when the id
+ * is unknown. Nothing else is touched.
+ */
+export async function toolDeleteSavedSearch(
+	env: Env,
+	mailboxId: string,
+	input: { searchId: string },
+) {
+	const deleted = await mailboxSavedSearchesStub(env, mailboxId).deleteSavedSearch(
+		input.searchId,
+	);
+	return deleted ? { ok: true } : { error: "Saved search not found" };
+}
+
 // ── templates (list_templates) ─────────────────────────────────────
 
 /** One stored template row, as MailboxDO.listTemplates returns it. */
