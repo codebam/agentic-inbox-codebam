@@ -46,10 +46,10 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Per-domain catch-all** — Every configured domain gets a `catch-all@<domain>` mailbox so aliases and unknown recipients are captured instead of silently dropped. Dedicated mailboxes always take precedence, and the original envelope recipient is preserved separately from the visible To header
 - **All Accounts view** — Browse a combined, folder-filterable list of emails across every mailbox, with each row labelled by account
 - **Multi-select bulk actions** — Select multiple conversations in a mailbox folder or the All Accounts view (checkboxes, select-all, Shift-click ranges, Escape to clear) and mark them read/unread, star, archive, move to a folder, mark as spam, or delete in one batch
-- **All-mailbox AI agent** — The All Accounts page has its own chat that can list every mailbox and then read, search, organise, and delete spam across all of them. Per-mailbox chats stay scoped to their mailbox. Tools cover reading, searching, folder moves, drafts, and spam cleanup; sending always requires the operator.
+- **All-mailbox AI agent** — The All Accounts page has its own chat that can list every mailbox and then read, search, organise, and delete spam across all of them. Per-mailbox chats stay scoped to their mailbox. Tools cover reading, searching, labels, rules, folders, templates, saved searches, threads, drafts, trash maintenance and spam cleanup; sending always requires the operator.
 - **Spam-safe drafting** — No draft reply is created for an email marked as spam (Spam folder, `spam` category, or a stored spam classification), whether it comes from auto-draft, the built-in chat, MCP, or the composer
 - **Agent-first MCP server** — External agents authenticate with the local Wrangler login key (`wrangler auth token`) to read, search, draft, and send email
-- **Scoped access tokens** — Mint a bearer token per mailbox in Settings → Access tokens with `read`, `draft`, `send` and/or `manage` scopes; automation outside the Access boundary calls `POST /api/v1/scoped/<tool>`, each token reaches one mailbox only, and every mutating call lands in the mailbox's activity log. `manage` covers move, delete, star, read state, snooze and sender policy; `send` also covers the one-click unsubscribe request
+- **Scoped access tokens** — Mint a bearer token per mailbox in Settings → Access tokens with `read`, `draft`, `send` and/or `manage` scopes; automation outside the Access boundary calls `POST /api/v1/scoped/<tool>`, each token reaches one mailbox only, and every mutating call lands in the mailbox's activity log. `manage` covers move, delete, star, read state, snooze, sender policy, labels, templates, saved searches, threads and trash; `send` covers sending, scheduling and the one-click unsubscribe request
 - **App access tokens** — One bearer credential for every mailbox, minted in Global Settings → App access tokens with the same `read`, `draft`, `send` and/or `manage` scopes; use it on `/mcp` or `POST /api/v1/scoped/<tool>` (naming `mailboxId` per call) when an automation must span mailboxes, and revoke it from the same page
 - **Optional AI surfaces** — Deployment-wide `ENABLE_AI_AGENT` and `ENABLE_MCP` switches (both default on): a disabled agent answers 404 on `/agents/*` and skips auto-draft, a disabled MCP server answers 404 on `/mcp`, and the UI hides the panels it can no longer use
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending. Auto-draft is skipped for spam and for mail Clef-flash reads as not expecting a reply (confirmations, receipts, alerts, newsletters and other one-way notifications), and refused even if the trigger is invoked directly
@@ -77,7 +77,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 ### What's different in this fork
 
-This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with Cloudflare Clef-flash (including a reply-expectation gate for auto-draft), the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, per-mailbox saved searches, thread muting with notification suppression, scoped access tokens for automation clients, per mailbox or app-wide, opt-out switches for the AI agent and MCP server, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
+This fork keeps the upstream architecture while adding per-domain catch-all routing, global and per-mailbox AI categorization with Cloudflare Clef-flash (including a reply-expectation gate for auto-draft), the combined All Accounts view, multi-select bulk email actions, agent-first MCP auth with Wrangler credentials, a Markdown composer, lazy-loaded composer chunks, system-preference dark mode, FTS5 full-text search, deterministic rules with retroactive apply, per-mailbox templates, scheduled sends with undo, one-click unsubscribe, contacts autocomplete, configurable Trash retention with a mailbox purge, a same-origin remote-image proxy, a morning digest, task/deadline extraction, bounce and delivery-status tracking, a per-mailbox storage card, a priority/other conversation split, large attachments as expiring download links, calendar invite handling with iMIP replies, a read-only attachment-content tool for agents, per-mailbox saved searches, thread muting with notification suppression, a full agent/MCP tool surface covering labels, templates, rules, folders, trash and scheduled sends, scoped access tokens for automation clients, per mailbox or app-wide, opt-out switches for the AI agent and MCP server, and dependency security updates. See [NOTICE](NOTICE) for the summary and the git history for the full list.
 
 ## Stack
 
@@ -181,7 +181,7 @@ An operator-minted **access token** (the same credential the [Scoped automation 
 }
 ```
 
-Inside that session, `read` reaches `list_emails`, `get_email`, `get_thread`, `search_emails` and `get_attachment`; `draft` the draft tools; `send` the two send tools; `manage` the housekeeping tools (`mark_email_read`, `star_email`, `move_email`, `delete_email`, `snooze_email`, `unsnooze_email`, `set_sender_policy`); `list_mailboxes` answers the token's mailbox alone; and every other tool, and any call naming another `mailboxId`, comes back as an error. `unsubscribe_email` is reachable only on the scoped endpoint, never in an MCP session. Revoking the token ends the session's access immediately, and the same Access **Bypass** policy for `/mcp` applies.
+Inside that session, `read` reaches the reading tools (`list_emails`, `get_email`, `get_thread`, `search_emails`, `get_attachment`, `list_labels`, `list_templates`, `list_saved_searches`, `summarize_thread`, `list_scheduled_sends`, `get_sender_policy`); `draft` the draft tools; `send` the sending tools (`send_email`, `send_reply`, `schedule_send`, `cancel_scheduled_send`, `retry_scheduled_send`); `manage` the housekeeping tools (`mark_email_read`, `star_email`, `move_email`, `delete_email`, `snooze_email`, `unsnooze_email`, `set_sender_policy`, `add_label`, `remove_label`, `create_label`, `update_label`, `delete_label`, `create_template`, `update_template`, `delete_template`, `create_saved_search`, `update_saved_search`, `delete_saved_search`, `mute_thread`, `unmute_thread`, `mark_thread_read`, `empty_trash`, `restore_email`, `remove_sender_policy`); `list_mailboxes` answers the token's mailbox alone; and every other tool, and any call naming another `mailboxId`, comes back as an error. `unsubscribe_email` is reachable only on the scoped endpoint, never in an MCP session. Revoking the token ends the session's access immediately, and the same Access **Bypass** policy for `/mcp` applies.
 
 ### Option D — App access token, every mailbox
 
@@ -204,14 +204,22 @@ A **Settings access token** (Option C) takes a different path: it is verified ag
 
 ### Available MCP tools
 
-`cancel_scheduled_send`, `clear_reminder`, `create_draft`, `create_rule`, `delete_email`,
-`delete_spam_emails`, `discard_draft`, `draft_reply`, `get_attachment`, `get_email`,
-`get_thread`, `list_agent_actions`, `list_emails`, `list_items`, `list_mailboxes`, `list_rules`,
-`list_scheduled_sends`, `list_snoozed`, `list_templates`, `mark_email_read`, `move_email`,
-`search_all_mailboxes`, `search_contacts`, `search_emails`, `send_email`, `send_reply`,
-`set_reminder`, `set_sender_policy`, `snooze_email`, `star_email`, `undo_action`,
-`unsnooze_email`, `update_draft`, and `update_rule`. `get_attachment` is read-only: it returns
-attachment metadata always and text content only, capped and never above 1 MiB.
+`add_label`, `cancel_scheduled_send`, `clear_reminder`, `create_draft`, `create_folder`,
+`create_label`, `create_rule`, `create_saved_search`, `create_template`, `delete_email`,
+`delete_folder`, `delete_label`, `delete_rule`, `delete_saved_search`, `delete_spam_emails`,
+`delete_template`, `discard_draft`, `draft_reply`, `empty_trash`, `export_email`,
+`get_attachment`, `get_digest`, `get_email`, `get_sender_policy`, `get_storage`, `get_thread`,
+`list_agent_actions`, `list_emails`, `list_folders`, `list_items`, `list_labels`,
+`list_mailboxes`, `list_rules`, `list_saved_searches`, `list_scheduled_sends`, `list_snoozed`,
+`list_templates`, `mark_email_read`, `mark_thread_read`, `move_email`, `mute_thread`,
+`preview_rule`, `remove_label`, `remove_sender_policy`, `reorder_rules`, `restore_email`,
+`retry_scheduled_send`, `schedule_send`, `search_all_mailboxes`, `search_contacts`,
+`search_emails`, `semantic_search`, `send_email`, `send_reply`, `set_reminder`,
+`set_sender_policy`, `snooze_email`, `star_email`, `summarize_thread`, `undo_action`,
+`unmute_thread`, `unsnooze_email`, `update_draft`, `update_folder`, `update_item`,
+`update_label`, `update_rule`, `update_saved_search`, and `update_template`. `get_attachment`
+is read-only: it returns attachment metadata always and text content only, capped and never
+above 1 MiB.
 
 ## Scoped automation API
 
@@ -231,13 +239,20 @@ available. Their calls are recorded in the activity log of the mailbox they
 act on, with the same source `scoped`.
 
 Each tool maps to one scope — `read`: `list_emails`, `get_email`, `get_thread`,
-`search_emails`, `get_attachment`; `draft`: `draft_reply`, `create_draft`,
-`update_draft`, `discard_draft`; `send`: `send_email`, `send_reply`,
-`unsubscribe_email`; `manage`: `mark_email_read`, `star_email`, `move_email`,
-`delete_email`, `snooze_email`, `unsnooze_email`, `set_sender_policy` — and
-the token's mailbox id is part of the token, so a request body can never
+`search_emails`, `get_attachment`, `list_labels`, `list_templates`,
+`list_saved_searches`, `summarize_thread`, `list_scheduled_sends`,
+`get_sender_policy`; `draft`: `draft_reply`, `create_draft`, `update_draft`,
+`discard_draft`; `send`: `send_email`, `send_reply`, `unsubscribe_email`,
+`cancel_scheduled_send`, `schedule_send`, `retry_scheduled_send`; `manage`:
+`mark_email_read`, `star_email`, `move_email`, `delete_email`, `snooze_email`,
+`unsnooze_email`, `set_sender_policy`, `add_label`, `remove_label`,
+`create_label`, `update_label`, `delete_label`, `create_template`,
+`update_template`, `delete_template`, `create_saved_search`,
+`update_saved_search`, `delete_saved_search`, `mute_thread`, `unmute_thread`,
+`mark_thread_read`, `empty_trash`, `restore_email`, `remove_sender_policy` —
+and the token's mailbox id is part of the token, so a request body can never
 reach another mailbox. Mutating calls are recorded in the mailbox's activity
-log with source `scoped`, and the two send tools keep every guard the other
+log with source `scoped`, and every send path keeps the guards the other
 surfaces carry: drafts are verified first and a refusal comes back as an
 error, never as a send. `unsubscribe_email` posts the RFC 8058 one-click
 request to the sender's own endpoint through the SSRF guard; it is the one

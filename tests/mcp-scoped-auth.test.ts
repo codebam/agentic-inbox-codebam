@@ -756,7 +756,7 @@ describe("an app session's MCP surface", () => {
 		});
 		expect(refused.isError).toBe(true);
 		expect(errorOf(refused)).toBe(
-			'App access tokens cannot use the "list_rules" tool. An app token reaches every mailbox and may only call: create_draft, delete_email, discard_draft, draft_reply, get_attachment, get_email, get_thread, list_emails, list_mailboxes, mark_email_read, move_email, search_all_mailboxes, search_emails, send_email, send_reply, set_sender_policy, snooze_email, star_email, unsnooze_email, update_draft.',
+			'App access tokens cannot use the "list_rules" tool. An app token reaches every mailbox and may only call: add_label, cancel_scheduled_send, create_draft, create_label, create_saved_search, create_template, delete_email, delete_label, delete_saved_search, delete_template, discard_draft, draft_reply, empty_trash, get_attachment, get_email, get_sender_policy, get_thread, list_emails, list_labels, list_mailboxes, list_saved_searches, list_scheduled_sends, list_templates, mark_email_read, mark_thread_read, move_email, mute_thread, remove_label, remove_sender_policy, restore_email, retry_scheduled_send, schedule_send, search_all_mailboxes, search_emails, send_email, send_reply, set_sender_policy, snooze_email, star_email, summarize_thread, unmute_thread, unsnooze_email, update_draft, update_label, update_saved_search, update_template.',
 		);
 
 		// Every other operator-only tool reads the same way. All three

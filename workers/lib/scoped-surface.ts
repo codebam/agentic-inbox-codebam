@@ -18,11 +18,19 @@
  * makes must carry `mailboxId` in the body and runs against exactly the
  * mailbox named. Each exposed tool maps to one of the token's scopes:
  *
- *     read   list_emails, get_email, get_thread, search_emails, get_attachment
+ *     read   list_emails, get_email, get_thread, search_emails, get_attachment,
+ *            list_labels, list_templates, list_saved_searches,
+ *            summarize_thread, list_scheduled_sends, get_sender_policy
  *     draft  draft_reply, create_draft, update_draft, discard_draft
- *     send   send_email, send_reply, unsubscribe_email
+ *     send   send_email, send_reply, unsubscribe_email,
+ *            cancel_scheduled_send, schedule_send, retry_scheduled_send
  *     manage mark_email_read, star_email, move_email, delete_email,
- *            snooze_email, unsnooze_email, set_sender_policy
+ *            snooze_email, unsnooze_email, set_sender_policy, add_label,
+ *            remove_label, create_label, update_label, delete_label,
+ *            create_template, update_template, delete_template,
+ *            create_saved_search, update_saved_search, delete_saved_search,
+ *            mute_thread, unmute_thread, mark_thread_read, empty_trash,
+ *            restore_email, remove_sender_policy
  *
  * An app token may additionally call the two all-mailbox read tools —
  * list_mailboxes and search_all_mailboxes, each requiring the read scope.
@@ -31,11 +39,12 @@
  * name in it describes a tool a one-mailbox token may call. A mailbox token
  * naming either all-mailbox name is refused like any other unknown tool.
  *
- * A scoped call only ever runs the tool the token-holding client asked for:
- * nothing on this surface schedules, drafts or sends mail on its own, and the
- * two send tools keep every guard the agent and MCP surfaces carry — the
- * draft verifier runs first, and a refusal comes back as an error answer, not
- * as a send.
+ * A scoped call only ever runs the tool the token-holding client asked for,
+ * and mail leaves the mailbox only through a call that asked for it:
+ * send_email and send_reply send immediately, schedule_send queues one
+ * message for its sendAt, and every send path keeps the guards the agent and
+ * MCP surfaces carry — the draft verifier runs first, and a refusal comes
+ * back as an error answer, not as a send.
  *
  * Two tools never join SCOPED_TOOL_SCOPES: unsubscribe_email fires the
  * RFC 8058 one-click POST to a URL taken from message content, and
@@ -61,18 +70,39 @@ import { runAudited } from "./agent-actions";
 import { verifyAppAccessToken } from "./app-tokens";
 import { getMailboxStub } from "./email-helpers";
 import {
+	toolAddLabel,
+	toolCancelScheduledSend,
+	toolCreateLabel,
+	toolCreateSavedSearch,
+	toolCreateTemplate,
 	toolDeleteEmail,
+	toolDeleteLabel,
+	toolDeleteSavedSearch,
+	toolDeleteTemplate,
 	toolDiscardDraft,
 	toolDraftEmail,
 	toolDraftReply,
+	toolEmptyTrash,
 	toolGetAttachment,
 	toolGetEmail,
 	toolGetImage,
+	toolGetSenderPolicy,
 	toolGetThread,
 	toolListEmails,
+	toolListLabels,
 	toolListMailboxes,
+	toolListSavedSearches,
+	toolListScheduledSends,
+	toolListTemplates,
 	toolMarkEmailRead,
+	toolMarkThreadRead,
 	toolMoveEmail,
+	toolMuteThread,
+	toolRemoveLabel,
+	toolRemoveSenderPolicy,
+	toolRestoreEmail,
+	toolRetryScheduledSend,
+	toolScheduleSend,
 	toolSearchAllMailboxes,
 	toolSearchEmails,
 	toolSendEmail,
@@ -80,9 +110,14 @@ import {
 	toolSetSenderPolicy,
 	toolSnoozeEmail,
 	toolStarEmail,
+	toolSummarizeThread,
+	toolUnmuteThread,
 	toolUnsnoozeEmail,
 	toolUnsubscribeEmail,
 	toolUpdateDraft,
+	toolUpdateLabel,
+	toolUpdateSavedSearch,
+	toolUpdateTemplate,
 	type SearchEmailParams,
 	type ToolSendEmailAttachment,
 } from "./tools";
@@ -100,6 +135,12 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	get_thread: "read",
 	search_emails: "read",
 	get_attachment: "read",
+	list_labels: "read",
+	list_templates: "read",
+	list_saved_searches: "read",
+	summarize_thread: "read",
+	list_scheduled_sends: "read",
+	get_sender_policy: "read",
 	draft_reply: "draft",
 	create_draft: "draft",
 	update_draft: "draft",
@@ -111,8 +152,28 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	snooze_email: "manage",
 	unsnooze_email: "manage",
 	set_sender_policy: "manage",
+	add_label: "manage",
+	remove_label: "manage",
+	create_label: "manage",
+	update_label: "manage",
+	delete_label: "manage",
+	create_template: "manage",
+	update_template: "manage",
+	delete_template: "manage",
+	create_saved_search: "manage",
+	update_saved_search: "manage",
+	delete_saved_search: "manage",
+	mute_thread: "manage",
+	unmute_thread: "manage",
+	mark_thread_read: "manage",
+	empty_trash: "manage",
+	restore_email: "manage",
+	remove_sender_policy: "manage",
 	send_email: "send",
 	send_reply: "send",
+	cancel_scheduled_send: "send",
+	schedule_send: "send",
+	retry_scheduled_send: "send",
 };
 
 /**
@@ -309,6 +370,18 @@ function optionalNumberArgument(
 }
 
 /**
+ * The stream filter of one list call: only the two names the threaded list
+ * understands pass, anything else reads as no stream at all.
+ */
+function streamArgument(
+	args: Record<string, unknown>,
+	key: string,
+): "priority" | "other" | undefined {
+	const value = args[key];
+	return value === "priority" || value === "other" ? value : undefined;
+}
+
+/**
  * The filters of one search_emails call: the same fields the MCP tool schema
  * declares, each read only when it carries the expected JSON type.
  */
@@ -317,6 +390,7 @@ function searchArguments(args: Record<string, unknown>): SearchEmailParams {
 		query: optionalStringArgument(args, "query"),
 		folder: optionalStringArgument(args, "folder"),
 		category: optionalStringArgument(args, "category"),
+		label: optionalStringArgument(args, "label"),
 		from: optionalStringArgument(args, "from"),
 		to: optionalStringArgument(args, "to"),
 		subject: optionalStringArgument(args, "subject"),
@@ -378,6 +452,7 @@ async function invokeScopedTool(
 				limit: optionalNumberArgument(params, "limit") ?? 20,
 				page: optionalNumberArgument(params, "page") ?? 1,
 				category: optionalStringArgument(params, "category"),
+				stream: streamArgument(params, "stream"),
 			});
 		case "get_email":
 			return toolGetEmail(env, mailboxId, stringArgument(params, "emailId"));
@@ -659,6 +734,184 @@ async function invokeScopedTool(
 					),
 			);
 		}
+		case "list_labels":
+			return toolListLabels(env, mailboxId);
+		case "add_label":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "add_label",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						label: stringArgument(params, "label"),
+					},
+				},
+				() =>
+					toolAddLabel(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						stringArgument(params, "label"),
+					),
+			);
+		case "remove_label":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "remove_label",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: {
+						emailId: stringArgument(params, "emailId"),
+						label: stringArgument(params, "label"),
+					},
+				},
+				() =>
+					toolRemoveLabel(
+						env,
+						mailboxId,
+						stringArgument(params, "emailId"),
+						stringArgument(params, "label"),
+					),
+			);
+		case "create_label":
+			return toolCreateLabel(env, mailboxId, {
+				name: params["name"],
+				color: params["color"],
+			});
+		case "update_label":
+			return toolUpdateLabel(env, mailboxId, {
+				label: stringArgument(params, "label"),
+				name: params["name"],
+				color: params["color"],
+			});
+		case "delete_label":
+			return toolDeleteLabel(env, mailboxId, {
+				label: stringArgument(params, "label"),
+			});
+		case "list_templates":
+			return toolListTemplates(env, mailboxId);
+		case "create_template":
+			return toolCreateTemplate(env, mailboxId, {
+				name: params["name"],
+				subject: params["subject"],
+				body: params["body"],
+			});
+		case "update_template":
+			return toolUpdateTemplate(env, mailboxId, {
+				templateId: stringArgument(params, "templateId"),
+				name: params["name"],
+				subject: params["subject"],
+				body: params["body"],
+			});
+		case "delete_template":
+			return toolDeleteTemplate(env, mailboxId, {
+				templateId: stringArgument(params, "templateId"),
+			});
+		case "list_saved_searches":
+			return toolListSavedSearches(env, mailboxId);
+		case "create_saved_search":
+			return toolCreateSavedSearch(env, mailboxId, {
+				name: params["name"],
+				query: params["query"],
+			});
+		case "update_saved_search":
+			return toolUpdateSavedSearch(env, mailboxId, {
+				searchId: stringArgument(params, "searchId"),
+				name: params["name"],
+				query: params["query"],
+			});
+		case "delete_saved_search":
+			return toolDeleteSavedSearch(env, mailboxId, {
+				searchId: stringArgument(params, "searchId"),
+			});
+		case "mute_thread":
+			return toolMuteThread(env, mailboxId, {
+				threadId: stringArgument(params, "threadId"),
+			});
+		case "unmute_thread":
+			return toolUnmuteThread(env, mailboxId, {
+				threadId: stringArgument(params, "threadId"),
+			});
+		case "mark_thread_read":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "mark_thread_read",
+					mailboxId,
+					emailId: null,
+					args: { threadId: stringArgument(params, "threadId") },
+				},
+				() =>
+					toolMarkThreadRead(env, mailboxId, {
+						threadId: stringArgument(params, "threadId"),
+					}),
+			);
+		case "summarize_thread":
+			return toolSummarizeThread(env, mailboxId, {
+				threadId: stringArgument(params, "threadId"),
+			});
+		case "list_scheduled_sends":
+			return toolListScheduledSends(env, mailboxId);
+		case "cancel_scheduled_send":
+			return toolCancelScheduledSend(
+				env,
+				mailboxId,
+				stringArgument(params, "scheduledSendId"),
+			);
+		case "schedule_send":
+			return toolScheduleSend(env, mailboxId, {
+				to: stringArgument(params, "to"),
+				cc: stringOrStringList(params, "cc"),
+				bcc: stringOrStringList(params, "bcc"),
+				subject: stringArgument(params, "subject"),
+				bodyHtml: stringArgument(params, "bodyHtml"),
+				sendAt: stringArgument(params, "sendAt"),
+			});
+		case "retry_scheduled_send":
+			return toolRetryScheduledSend(
+				env,
+				mailboxId,
+				stringArgument(params, "scheduledSendId"),
+			);
+		case "empty_trash":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "empty_trash",
+					mailboxId,
+					emailId: null,
+					args: {},
+				},
+				() => toolEmptyTrash(env, mailboxId),
+			);
+		case "restore_email":
+			return runAudited(
+				env,
+				{
+					source: "scoped",
+					tool: "restore_email",
+					mailboxId,
+					emailId: stringArgument(params, "emailId"),
+					args: { emailId: stringArgument(params, "emailId") },
+				},
+				() =>
+					toolRestoreEmail(env, mailboxId, {
+						emailId: stringArgument(params, "emailId"),
+					}),
+			);
+		case "get_sender_policy":
+			return toolGetSenderPolicy(env, mailboxId);
+		case "remove_sender_policy":
+			return toolRemoveSenderPolicy(env, mailboxId, {
+				address: stringArgument(params, "address"),
+			});
 		case "unsubscribe_email":
 			return runAudited(
 				env,
