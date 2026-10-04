@@ -1495,15 +1495,15 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite", async (c: AppCont
  * Answer one invitation: ACCEPTED, DECLINED or TENTATIVE as an iMIP REPLY
  * (RFC 6047) to the organizer, from the mailbox address.
  *
- * Operator-initiated only: this route is the one path that sends such a
- * reply, and the agent/MCP surfaces deliberately expose no tool for it. The
- * message must exist (404 otherwise) and carry a REQUEST invite (400
- * otherwise); the reply carries the ICS as a text/calendar attachment plus a
- * short plain-text body, with the answer as the subject prefix. The Sent
- * copy is stored best-effort — a storage failure must not fail the answer —
- * and delivery is deferred exactly like every other send path, so a failed
- * send only logs. The recorded response is written after the copy, so the
- * panel's state matches what went out.
+ * This route and the matching respond_to_invite agent/MCP tool are the only
+ * paths that send such a reply — always an explicit answer, never anything
+ * automatic. The message must exist (404 otherwise) and carry a REQUEST
+ * invite (400 otherwise); the reply carries the ICS as a text/calendar
+ * attachment plus a short plain-text body, with the answer as the subject
+ * prefix. The Sent copy is stored best-effort — a storage failure must not
+ * fail the answer — and delivery is deferred exactly like every other send
+ * path, so a failed send only logs. The recorded response is written after
+ * the copy, so the panel's state matches what went out.
  */
 app.post("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite-response", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId") ?? "";
@@ -2938,9 +2938,10 @@ app.post("/api/v1/mailboxes/:mailboxId/rules/preview", async (c: AppContext) => 
 
 /**
  * Retroactive apply: run a stored rule against mail that is already in the
- * mailbox, one bounded batch per call. Operator-only — there is deliberately
- * no agent/MCP tool for it — and strictly local: it never sends, never
- * deletes, never records a rule firing (see `applyRuleToExisting`).
+ * mailbox, one bounded batch per call — the route and the matching
+ * apply_rule agent/MCP tool run the same strictly local work: it never
+ * sends, never deletes, never records a rule firing (see
+ * `applyRuleToExisting`).
  *
  * The rule and its folder target are checked here first so an unknown rule
  * answers 404 and a folder deleted after the rule was saved answers 400,

@@ -17,6 +17,7 @@
 import { z } from "zod";
 import type { EmailFull } from "./schemas";
 import {
+	ApplyRuleSchema,
 	PreviewRuleSchema,
 	ReorderRulesSchema,
 	ScheduleSendRequestSchema,
@@ -24,6 +25,7 @@ import {
 import type { MailboxDO } from "../durableObject";
 import {
 	hasActiveActions,
+	hasLocalRuleActions,
 	hasOutboundActions,
 	isRuleValidationError,
 	normalizeRuleActions,
@@ -31,6 +33,7 @@ import {
 	stripOutboundActions,
 	type MailRule,
 	type RuleActions,
+	type RuleApplyResult,
 	type RuleDraft,
 	type RuleMatchSpec,
 	type RulePatch,
@@ -44,6 +47,14 @@ import {
 import { isLabelValidationError } from "./labels";
 import { isTemplateValidationError } from "./templates";
 import { performOneClickUnsubscribe } from "./unsubscribe";
+import {
+	buildImipReply,
+	calendarAddress,
+	isCalendarResponse,
+	responseSubject,
+	type CalendarInviteRow,
+	type CalendarResponse,
+} from "./calendar";
 import {
 	getMailboxStub,
 	getFullEmail,
@@ -67,6 +78,7 @@ import { decodeBase64Bytes, storeAttachments } from "./attachments";
 import { proxyImage } from "./image-proxy";
 import { formatFileSize } from "../../app/lib/attachments";
 import { Folders, slugify } from "../../shared/folders";
+import { emailDomain } from "../../shared/mailboxes";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
@@ -3140,4 +3152,252 @@ export async function toolReorderRules(
 		parsed.data.ids,
 	);
 	return { mailboxId, rules };
+}
+
+// ── apply_rule ─────────────────────────────────────────────────────
+
+/** DO methods apply_rule uses on top of the shared rule CRUD. */
+type MailboxRuleApplyStub = MailboxRuleStub & {
+	applyRuleToExisting: (
+		ruleId: string,
+		limit?: number,
+	) => Promise<RuleApplyResult | null>;
+};
+
+function mailboxRuleApplyStub(env: Env, mailboxId: string): MailboxRuleApplyStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * Retroactively apply one stored rule's local actions (folder, category,
+ * read, star) to mail already in the mailbox — the exact work of the POST
+ * /rules/:ruleId/apply route, one bounded batch per call. Strictly local:
+ * it never sends, never deletes and never records a rule firing (see
+ * `applyRuleToExisting`).
+ *
+ * Route parity: the same body schema the route parses (so a bad `limit`
+ * answers the route's 400 message), the rule lookup answers the route's
+ * `Rule not found`, and the folder-target and local-action checks run here
+ * too so their refusals stay free of a rejected RPC call. `limit` is
+ * optional; the schema defaults it to the bulk-action cap.
+ */
+export async function toolApplyRule(
+	env: Env,
+	mailboxId: string,
+	params: { ruleId: string; limit?: number | undefined },
+): Promise<RuleApplyResult | { error: string }> {
+	// An absent or empty body means "run one default-sized batch", exactly
+	// like the route.
+	const parsed = ApplyRuleSchema.safeParse({ limit: params.limit });
+	if (!parsed.success) return { error: ruleToolErrorMessage(parsed.error) };
+
+	const stub = mailboxRuleApplyStub(env, mailboxId);
+	const rule = (await stub.listRules()).find((item) => item.id === params.ruleId);
+	if (!rule) return { error: "Rule not found" };
+
+	const folderError = await unknownRuleFolder(env, mailboxId, rule.actions);
+	if (folderError) return { error: folderError };
+
+	// The Durable Object rejects a rule with no stored-mail actions too;
+	// checking here as well keeps that 400 free of a rejected RPC call, the
+	// same reason the folder target is checked above. Message kept in sync
+	// with applyRuleToExisting.
+	if (!hasLocalRuleActions(rule.actions ?? {})) {
+		return {
+			error:
+				"This rule has no folder, category, read or star action to apply to existing mail",
+		};
+	}
+
+	try {
+		const result = await stub.applyRuleToExisting(
+			params.ruleId,
+			parsed.data.limit,
+		);
+		return result ?? { error: "Rule not found" };
+	} catch (e) {
+		if (isRuleValidationError(e)) return { error: (e as Error).message };
+		throw e;
+	}
+}
+
+// ── calendar invites (get_calendar_invite / respond_to_invite) ─────
+
+/**
+ * The calendar-invite RPCs these tools call. Declared structurally like the
+ * snooze and scheduled-send tools: the stub's own RPC result types carry
+ * `& Disposable`, which the MCP result wrapper cannot accept.
+ */
+type MailboxCalendarInviteStub = {
+	getCalendarInvite: (emailId: string) => Promise<CalendarInviteRow | null>;
+	setCalendarInviteResponse: (
+		emailId: string,
+		response: CalendarResponse,
+	) => Promise<CalendarInviteRow | null>;
+};
+
+function mailboxCalendarInviteStub(
+	env: Env,
+	mailboxId: string,
+): MailboxCalendarInviteStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * Base64 for a small UTF-8 body — the iMIP reply part. btoa takes a binary
+ * string, so the bytes are mapped one at a time (an ICS is a few kilobytes).
+ * Kept here because the route-local helper in workers/index.ts is not
+ * exported; the two encode the same bytes.
+ */
+function base64Utf8(text: string): string {
+	let binary = "";
+	for (const byte of new TextEncoder().encode(text)) {
+		binary += String.fromCharCode(byte);
+	}
+	return btoa(binary);
+}
+
+/**
+ * The invite one stored message carried, or null when it carried none —
+ * the exact answer of the GET /emails/:emailId/invite route, which is
+ * deliberately not a 404 for a message without one. Read-only.
+ */
+export async function toolGetCalendarInvite(
+	env: Env,
+	mailboxId: string,
+	params: { emailId: string },
+): Promise<{ invite: CalendarInviteRow | null }> {
+	const invite = await mailboxCalendarInviteStub(
+		env,
+		mailboxId,
+	).getCalendarInvite(params.emailId);
+	return { invite };
+}
+
+/**
+ * Answer one invitation: accepted, declined or tentative as an iMIP REPLY
+ * (RFC 6047) to the organizer, from the mailbox address — the exact flow of
+ * the POST /emails/:emailId/invite-response route, error strings included.
+ *
+ * The message must exist and carry a REQUEST invite that names an
+ * organizer; the reply carries the ICS as a text/calendar attachment plus a
+ * short plain-text body, with the answer as the subject prefix. The Sent
+ * copy is stored best-effort — a storage failure must not fail the answer.
+ * The tools layer has no execution context to defer the delivery on, so the
+ * send is awaited like every other tool-layer send path and a failure only
+ * logs, exactly like the route's deferred send. The recorded response is
+ * written after the copy, so the panel's state matches what went out.
+ */
+export async function toolRespondToInvite(
+	env: Env,
+	mailboxId: string,
+	params: { emailId: string; response: string },
+): Promise<
+	| { id: string; status: "sent"; invite: CalendarInviteRow | null }
+	| { error: string }
+> {
+	if (!isCalendarResponse(params.response)) {
+		return { error: "response must be one of accepted, declined, tentative" };
+	}
+
+	const stub = getMailboxStub(env, mailboxId);
+	const email = (await stub.getEmail(params.emailId)) as EmailFull | null;
+	if (!email) return { error: "Email not found" };
+
+	const calendar = mailboxCalendarInviteStub(env, mailboxId);
+	const invite = await calendar.getCalendarInvite(params.emailId);
+	if (!invite) return { error: "This message carries no calendar invite" };
+	if (invite.method !== "REQUEST") {
+		return {
+			error: `This invite is a ${invite.method ?? "unknown method"} and cannot be answered`,
+		};
+	}
+	const organizer = calendarAddress(invite.organizer);
+	if (!organizer) {
+		return { error: "This invite names no organizer to answer" };
+	}
+
+	const response = params.response;
+	const from = mailboxId.trim().toLowerCase();
+	const now = new Date().toISOString();
+	const subject = responseSubject(response, invite.summary);
+	const ics = buildImipReply({
+		uid: invite.uid ?? crypto.randomUUID(),
+		summary: invite.summary,
+		organizer,
+		attendee: from,
+		response,
+		dtstamp: now,
+	});
+	const text =
+		`${subject}\n\n` +
+		`This is a calendar response from ${from}` +
+		`${invite.start_at ? ` for ${invite.start_at}` : ""}.`;
+	const { messageId, outgoingMessageId } = generateMessageId(
+		emailDomain(from) ?? "",
+	);
+
+	// The Sent copy goes in first, exactly like the reply/forward paths, so
+	// the mailbox shows what went out even when the send fails.
+	try {
+		await stub.createEmail(
+			Folders.SENT,
+			{
+				id: messageId,
+				subject,
+				sender: from,
+				recipient: organizer,
+				date: now,
+				body: text,
+				in_reply_to: email.message_id ?? null,
+				email_references: null,
+				thread_id: email.thread_id ?? messageId,
+				message_id: outgoingMessageId,
+				raw_headers: JSON.stringify([
+					{ key: "from", value: from },
+					{ key: "to", value: organizer },
+					{ key: "subject", value: subject },
+					{ key: "date", value: now },
+					{ key: "message-id", value: `<${outgoingMessageId}>` },
+				]),
+			},
+			[],
+		);
+	} catch (e) {
+		console.error(
+			"Storing the invite reply's Sent copy failed:",
+			(e as Error).message,
+		);
+	}
+
+	// The tools layer has no execution context to defer the delivery on, so
+	// the send is awaited; a failure only logs, exactly like the route's
+	// deferred send, and the answer is still recorded below.
+	try {
+		const sendResult = await sendEmail(env.EMAIL, {
+			to: organizer,
+			from,
+			subject,
+			text,
+			attachments: [
+				{
+					content: base64Utf8(ics),
+					filename: "invite.ics",
+					type: "text/calendar",
+					disposition: "attachment",
+				},
+			],
+		});
+		// Best-effort: the id the binding returned, on the Sent copy, so a
+		// bounce can be matched to it (workers/lib/delivery-match.ts).
+		await captureSendMessageId(stub, messageId, sendResult);
+	} catch (e) {
+		console.error("Invite reply delivery failed:", (e as Error).message);
+	}
+
+	const updated = await calendar.setCalendarInviteResponse(
+		params.emailId,
+		response,
+	);
+	return { id: messageId, status: "sent", invite: updated };
 }

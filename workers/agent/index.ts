@@ -43,6 +43,7 @@ import {
 	toolDeleteRule,
 	toolPreviewRule,
 	toolReorderRules,
+	toolApplyRule,
 	toolListFolders,
 	toolCreateFolder,
 	toolUpdateFolder,
@@ -84,6 +85,8 @@ import {
 	toolGetDigest,
 	toolGetStorage,
 	toolExportEmail,
+	toolGetCalendarInvite,
+	toolRespondToInvite,
 	toolListTemplates,
 	toolListLabels,
 	toolAddLabel,
@@ -99,6 +102,10 @@ import {
 	MAX_CONTACT_SEARCH_LIMIT,
 } from "../lib/contacts";
 import type { RulePatch } from "../lib/rules";
+import {
+	RULE_APPLY_LIMIT_DEFAULT,
+	RULE_APPLY_LIMIT_MAX,
+} from "../lib/rules";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { isAllMailboxesAgentId } from "../../shared/mailboxes";
 import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
@@ -1361,6 +1368,45 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 		}),
 
 
+		apply_rule: defineTool({
+			description:
+				"Retroactively apply a stored rule's folder, category, read and star actions to existing mail, one bounded batch per call, and answer the applied/skipped/matched/remaining counts (loop while remaining > 0). Strictly local: it never sends, never deletes and never records a rule firing. An unknown rule, a dead folder target, a rule with no stored-mail actions and a bad limit answer the same errors as the web route.",
+			parameters: z.object({
+				...mailboxIdField,
+				ruleId: z.string().describe("The rule id to apply"),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(RULE_APPLY_LIMIT_MAX)
+					.optional()
+					.describe("Batch size (default 90, max 90)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "apply_rule",
+						mailboxId,
+						emailId: null,
+						args: {
+							ruleId: args.ruleId,
+							limit: args.limit ?? RULE_APPLY_LIMIT_DEFAULT,
+						},
+					},
+					() =>
+						toolApplyRule(env, mailboxId, {
+							ruleId: args.ruleId,
+							limit: args.limit,
+						}),
+				);
+			},
+		}),
+
+
 		list_agent_actions: defineTool({
 			description:
 				"List the most recent mutating tool calls made through the agent or the MCP server for this mailbox, newest first, with the total number recorded. Read-only: it changes nothing. The log holds metadata only (tool, message id, subject, thread id, folder/read/star state) — never message bodies.",
@@ -1792,6 +1838,42 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolExportEmail(env, mailboxId, { emailId: args.emailId });
+			},
+		}),
+
+		get_calendar_invite: defineTool({
+			description:
+				"The calendar invite (iMIP) one stored message carries — uid, method (REQUEST/REPLY/CANCEL), summary, organizer, location, start/end, attendee and the recorded answer — or invite: null when the message carried none, which is deliberately not an error. Read-only.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID to read the invite from"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolGetCalendarInvite(env, mailboxId, {
+					emailId: args.emailId,
+				});
+			},
+		}),
+
+		respond_to_invite: defineTool({
+			description:
+				"Answer one calendar invitation as an iMIP REPLY (RFC 6047) to the organizer: accepted, declined or tentative. The message must carry a REQUEST invite that names an organizer. Stores the Sent copy and records the answer; only call this when the operator asks to answer the invitation — it sends mail to the organizer.",
+			parameters: z.object({
+				...mailboxIdField,
+				emailId: z.string().describe("The email ID carrying the invite"),
+				response: z
+					.enum(["accepted", "declined", "tentative"])
+					.describe("The answer to send to the organizer"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolRespondToInvite(env, mailboxId, {
+					emailId: args.emailId,
+					response: args.response,
+				});
 			},
 		}),
 	};

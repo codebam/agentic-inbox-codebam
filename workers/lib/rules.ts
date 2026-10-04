@@ -239,7 +239,7 @@ export interface RulePreviewDraft {
 
 
 /**
- * Retroactive apply — operator-only, stored mail only.
+ * Retroactive apply — stored mail only.
  *
  * The preview above answers "what would this rule match"; this section
  * answers "change what it matched". It is deliberately narrow:

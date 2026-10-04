@@ -36,6 +36,7 @@ import {
 	toolDeleteRule,
 	toolPreviewRule,
 	toolReorderRules,
+	toolApplyRule,
 	toolListFolders,
 	toolCreateFolder,
 	toolUpdateFolder,
@@ -79,6 +80,8 @@ import {
 	toolGetDigest,
 	toolGetStorage,
 	toolExportEmail,
+	toolGetCalendarInvite,
+	toolRespondToInvite,
 	toolSearchContacts,
 	toolListTemplates,
 	toolListLabels,
@@ -91,6 +94,10 @@ import {
 	ruleToolMatchSchema,
 } from "../lib/tools";
 import { runAudited } from "../lib/agent-actions";
+import {
+	RULE_APPLY_LIMIT_DEFAULT,
+	RULE_APPLY_LIMIT_MAX,
+} from "../lib/rules";
 import {
 	DEFAULT_CONTACT_SEARCH_LIMIT,
 	MAX_CONTACT_SEARCH_LIMIT,
@@ -1502,6 +1509,40 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		);
 
 
+		// ── apply_rule ─────────────────────────────────────────────
+		registerTool(
+			"apply_rule",
+			"Retroactively apply a stored rule's folder, category, read and star actions to existing mail, one bounded batch per call, and answer the applied/skipped/matched/remaining counts (loop while remaining > 0). Strictly local: it never sends, never deletes and never records a rule firing. An unknown rule, a dead folder target, a rule with no stored-mail actions and a bad limit answer the same errors as the web route.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				ruleId: z.string().describe("The rule id to apply"),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(RULE_APPLY_LIMIT_MAX)
+					.optional()
+					.describe("Batch size (default 90, max 90)"),
+			},
+			async ({ mailboxId, ruleId, limit }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "apply_rule",
+						mailboxId,
+						emailId: null,
+						args: { ruleId, limit: limit ?? RULE_APPLY_LIMIT_DEFAULT },
+					},
+					() => toolApplyRule(env, mailboxId, { ruleId, limit }),
+				);
+				return "error" in result ? mcpResult(result) : mcpText(result);
+			},
+		);
+
+
 		// ── list_agent_actions ─────────────────────────────────────
 		registerTool(
 			"list_agent_actions",
@@ -1946,6 +1987,43 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				return mcpResult(await toolExportEmail(env, mailboxId, { emailId }));
+			},
+		);
+
+		// ── get_calendar_invite ────────────────────────────────────
+		registerTool(
+			"get_calendar_invite",
+			"The calendar invite (iMIP) one stored message carries — uid, method (REQUEST/REPLY/CANCEL), summary, organizer, location, start/end, attendee and the recorded answer — or invite: null when the message carried none, which is deliberately not an error. Read-only.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID to read the invite from"),
+			},
+			async ({ mailboxId, emailId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolGetCalendarInvite(env, mailboxId, { emailId }),
+				);
+			},
+		);
+
+		// ── respond_to_invite ──────────────────────────────────────
+		registerTool(
+			"respond_to_invite",
+			"Answer one calendar invitation as an iMIP REPLY (RFC 6047) to the organizer: accepted, declined or tentative. The message must carry a REQUEST invite that names an organizer. Stores the Sent copy and records the answer; only call this when the operator asks to answer the invitation — it sends mail to the organizer.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID carrying the invite"),
+				response: z
+					.enum(["accepted", "declined", "tentative"])
+					.describe("The answer to send to the organizer"),
+			},
+			async ({ mailboxId, emailId, response }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(
+					await toolRespondToInvite(env, mailboxId, { emailId, response }),
+				);
 			},
 		);
 	}
