@@ -59,10 +59,13 @@ import { searchAllMailboxes } from "./search-all";
 import { semanticSearch } from "./semantic";
 import { DEFAULT_CONTACT_SEARCH_LIMIT } from "./contacts";
 import {
+	isItemStatus,
 	type ItemDueFilter,
 	type ItemListFilters,
 	type ItemStatus,
 } from "./items";
+import { digestWindow } from "./digest";
+import { reconstructedMessage } from "./eml-export";
 import {
 	DEFAULT_SCHEDULED_SEND_LIMIT,
 	type ScheduledSendActionResult,
@@ -1619,6 +1622,140 @@ export async function toolListItems(
 		},
 	);
 	return { items, totalCount };
+}
+
+// ── update_item ────────────────────────────────────────────────────
+
+/**
+ * The items RPC update_item calls. Declared structurally like the
+ * list_items stub for the same reason: the stub's own RPC result types
+ * carry `& Disposable`, which the MCP result wrapper cannot accept.
+ */
+type MailboxItemStatusStub = {
+	updateItemStatus: (
+		id: string,
+		status: ItemStatus,
+	) => Promise<MailboxExtractedItem | null>;
+};
+
+function mailboxItemStatusStub(
+	env: Env,
+	mailboxId: string,
+): MailboxItemStatusStub {
+	return getMailboxStub(env, mailboxId);
+}
+
+/**
+ * Move one extracted item to a new lifecycle state (open | done |
+ * dismissed) and answer the stored row. Mirrors the PUT
+ * /api/v1/mailboxes/:mailboxId/items/:itemId route: an unknown id is an
+ * error, and a status outside the stored vocabulary is rejected with the
+ * route's 400 message rather than silently written. Nothing is sent.
+ */
+export async function toolUpdateItem(
+	env: Env,
+	mailboxId: string,
+	params: { itemId: string; status: string },
+) {
+	if (!isItemStatus(params.status)) {
+		return { error: "Invalid item status" };
+	}
+	const item = await mailboxItemStatusStub(env, mailboxId).updateItemStatus(
+		params.itemId,
+		params.status,
+	);
+	return item ? { item } : { error: "Item not found" };
+}
+
+// ── empty_trash ────────────────────────────────────────────────────
+
+/**
+ * Permanently delete every message in the Trash folder, including its R2
+ * attachment blobs — the exact work of the POST /trash/empty route, so an
+ * explicit "empty the trash" request goes through the same path. Answers
+ * the number of purged messages. Irreversible. Nothing is sent.
+ */
+export async function toolEmptyTrash(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	const { purged, attachments } = await stub.emptyTrash();
+	if (attachments.length > 0) {
+		await env.BUCKET.delete(
+			attachments.map(
+				(att) => `attachments/${att.email_id}/${att.id}/${att.filename}`,
+			),
+		);
+	}
+	return { purged };
+}
+
+// ── restore_email ──────────────────────────────────────────────────
+
+/**
+ * Move a trashed message back to the Inbox, mirroring the web restore
+ * route: only rows still in Trash move, and an id that is missing or not
+ * trashed answers an error rather than a silent no-op. Answers the
+ * restored count. Nothing is sent.
+ */
+export async function toolRestoreEmail(
+	env: Env,
+	mailboxId: string,
+	params: { emailId: string },
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const restored = (await stub.restoreEmails([params.emailId])) as string[];
+	if (restored.length === 0) {
+		return { error: "Email is not in Trash" };
+	}
+	return { restored: restored.length };
+}
+
+// ── get_digest ─────────────────────────────────────────────────────
+
+/**
+ * The mailbox's morning brief for the trailing 24 hours: arrivals, what
+ * still needs a reply, the category breakdown, fired reminders and the
+ * due items — the same digest the GET /digest route serves, built on
+ * demand by the Durable Object. Read-only: nothing is stored, cached or
+ * sent.
+ */
+export async function toolGetDigest(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	return stub.buildDigest(digestWindow(new Date()));
+}
+
+// ── get_storage ────────────────────────────────────────────────────
+
+/**
+ * The mailbox's storage footprint: SQLite database bytes, attachment
+ * bytes/count, stored message count and the size of the mailbox's
+ * settings JSON in R2 — the same storage object the GET /storage route
+ * returns. Read-only: nothing is cached and no limit is enforced.
+ */
+export async function toolGetStorage(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	const usage = await stub.getStorageUsage();
+	const settingsObject = await env.BUCKET.head(`mailboxes/${mailboxId}.json`);
+	return { ...usage, mailbox_json_bytes: settingsObject?.size ?? 0 };
+}
+
+// ── export_email ───────────────────────────────────────────────────
+
+/**
+ * One stored message as a reconstructed RFC 5322 (EML) block, under the
+ * `eml` key — the same text the GET /emails/:emailId/eml download
+ * carries. The mailbox never stores the wire source, so the block is
+ * rebuilt from the stored fields (workers/lib/eml-export.ts); an unknown
+ * id is an error. Read-only. Nothing is sent or deleted.
+ */
+export async function toolExportEmail(
+	env: Env,
+	mailboxId: string,
+	params: { emailId: string },
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const email = await stub.getEmail(params.emailId);
+	if (!email) return { error: "Email not found" };
+	return { eml: reconstructedMessage(email) };
 }
 
 // ── send_reply ─────────────────────────────────────────────────────

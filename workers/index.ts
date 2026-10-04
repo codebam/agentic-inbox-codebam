@@ -60,6 +60,7 @@ import { isAiAgentEnabled, isMcpEnabled } from "../shared/agent-flags";
 import { normalizeAutoDraft } from "../shared/auto-draft";
 import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
+import { reconstructedMessage } from "./lib/eml-export";
 import {
 	buildThreadSummaryPrompt,
 	normalizeThreadSummary,
@@ -2228,31 +2229,6 @@ function mboxSeparatorDate(date: string | null): string {
 	if (Number.isNaN(parsed.getTime())) return date;
 	const pad = (value: number) => String(value).padStart(2, "0");
 	return `${MBOX_WEEKDAYS[parsed.getUTCDay()] ?? ""} ${MBOX_MONTHS[parsed.getUTCMonth()] ?? ""} ${String(parsed.getUTCDate()).padStart(2, " ")} ${pad(parsed.getUTCHours())}:${pad(parsed.getUTCMinutes())}:${pad(parsed.getUTCSeconds())} ${parsed.getUTCFullYear()}`;
-}
-
-/**
- * One stored message as an RFC 5322 block: the headers the mailbox kept
- * (From, To, Cc when present, Date, Subject and Message-ID when the row has
- * one), a blank line, then the stored body. The mailbox never stores the
- * wire source, so this is a reconstruction from those fields — not a
- * byte-exact copy of what was sent or received. A body line that begins
- * with "From " is quoted with a leading ">" (RFC 4155) so it cannot be
- * mistaken for the next message's separator line.
- */
-function reconstructedMessage(row: StoredMessageFields): string {
-	const lines: string[] = [
-		`From: ${row.sender ?? ""}`,
-		`To: ${row.recipient ?? ""}`,
-	];
-	if (row.cc) lines.push(`Cc: ${row.cc}`);
-	lines.push(`Date: ${row.date ?? ""}`);
-	lines.push(`Subject: ${row.subject ?? ""}`);
-	if (row.message_id) lines.push(`Message-ID: ${row.message_id}`);
-	lines.push("");
-	for (const line of (row.body ?? "").split("\n")) {
-		lines.push(line.startsWith("From ") ? `>${line}` : line);
-	}
-	return `${lines.join("\n")}\n`;
 }
 
 /**
