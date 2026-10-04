@@ -49,6 +49,10 @@ import {
 	toolListSnoozed,
 	toolListScheduledSends,
 	toolCancelScheduledSend,
+	toolListSavedSearches,
+	toolCreateSavedSearch,
+	toolUpdateSavedSearch,
+	toolDeleteSavedSearch,
 	toolListAgentActions,
 	toolListRules,
 	toolCreateRule,
@@ -1106,6 +1110,79 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					args.query ?? "",
 					args.limit ?? DEFAULT_CONTACT_SEARCH_LIMIT,
 				);
+			},
+		}),
+
+
+		list_saved_searches: defineTool({
+			description:
+				"The mailbox's saved searches — named queries the operator re-runs from the sidebar — newest first, each with its id, name, query and created_at. Read-only: it changes nothing and sends no mail.",
+			parameters: z.object({ ...mailboxIdField }),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolListSavedSearches(env, mailboxId);
+			},
+		}),
+
+
+		create_saved_search: defineTool({
+			description:
+				"Save a named search for a mailbox: a name (up to 120 characters) and a query (up to 1000 characters) the operator can re-run from the sidebar. A mailbox holds at most 50 saved searches; names need not be unique. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				name: z.string().describe("The search name (up to 120 characters)"),
+				query: z.string().describe("The search query (up to 1000 characters)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolCreateSavedSearch(env, mailboxId, {
+					name: args.name,
+					query: args.query,
+				});
+			},
+		}),
+
+
+		update_saved_search: defineTool({
+			description:
+				"Update one saved search by id: rename it and/or change its query. Omitted fields keep their stored value. Answers the updated entry; an unknown id answers an error. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				searchId: z.string().describe("The saved search id to update"),
+				name: z
+					.string()
+					.optional()
+					.describe("The new search name (up to 120 characters)"),
+				query: z
+					.string()
+					.optional()
+					.describe("The new search query (up to 1000 characters)"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUpdateSavedSearch(env, mailboxId, {
+					searchId: args.searchId,
+					name: args.name,
+					query: args.query,
+				});
+			},
+		}),
+
+
+		delete_saved_search: defineTool({
+			description:
+				"Delete one saved search by id. Answers { ok: true } when the entry was removed; an unknown id answers an error. Nothing else is touched and nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				searchId: z.string().describe("The saved search id to delete"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolDeleteSavedSearch(env, mailboxId, { searchId: args.searchId });
 			},
 		}),
 
