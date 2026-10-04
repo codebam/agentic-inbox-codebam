@@ -60,11 +60,7 @@ import { isAiAgentEnabled, isMcpEnabled } from "../shared/agent-flags";
 import { normalizeAutoDraft } from "../shared/auto-draft";
 import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
-import {
-	buildThreadSummaryPrompt,
-	normalizeThreadSummary,
-	resolveThreadSummaryAiRunner,
-} from "./lib/thread-summary";
+import { runThreadSummary } from "./lib/thread-summary";
 import { normalizeItemsSettings } from "../shared/items";
 import { normalizeSemanticSearchSettings, SEMANTIC_SEARCH_LIMIT_MAX } from "../shared/semantic";
 import { DEFAULT_ATTACHMENT_TYPE } from "../app/lib/attachments";
@@ -2770,28 +2766,17 @@ app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId", async (c: AppContext) 
  * that is unavailable or answers nothing usable is a 502.
  */
 app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId/summary", async (c: AppContext) => {
-	const stub = c.var.mailboxStub as unknown as MailboxThreadStub;
-	const emails = await stub.getThreadEmails(c.req.param("threadId")!);
-	if (emails.length === 0) return c.json({ error: "Thread not found" }, 404);
-
 	const mailboxId = decodeURIComponent(c.req.param("mailboxId")!);
-	const models = await resolveMailboxModels(c.env, mailboxId);
-	const { prompt, messageCount, truncated } = buildThreadSummaryPrompt(emails);
-
-	try {
-		const runner = resolveThreadSummaryAiRunner(c.env);
-		const text = normalizeThreadSummary(await runner.run(prompt, models.summarizer));
-		if (!text) {
-			console.error("Thread summarization returned no usable text");
-			return c.json({ error: "Thread summarization is unavailable right now." }, 502);
-		}
-		return c.json({
-			summary: { text, message_count: messageCount, truncated, model: models.summarizer },
-		});
-	} catch (e) {
-		console.error("Thread summarization failed:", (e as Error).message);
+	const result = await runThreadSummary(
+		c.env,
+		mailboxId,
+		c.req.param("threadId")!,
+	);
+	if (result.status === "not_found") return c.json({ error: "Thread not found" }, 404);
+	if (result.status === "unavailable") {
 		return c.json({ error: "Thread summarization is unavailable right now." }, 502);
 	}
+	return c.json({ summary: result.summary });
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppContext) => {

@@ -20,6 +20,8 @@
 
 
 import { htmlToPlainText } from "../../shared/email-view";
+import { getMailboxStub } from "./email-helpers";
+import { resolveMailboxModels } from "./mailbox-settings";
 import type { Env } from "../types";
 
 
@@ -246,4 +248,67 @@ export interface ThreadSummary {
 	message_count: number;
 	truncated: boolean;
 	model: string;
+}
+
+
+// ── Orchestration (route + summarize_thread tool) ──────────────────
+
+/** The thread RPC this module reads; structural, like its callers' own. */
+type ThreadSummaryStub = {
+	getThreadEmails: (threadId: string) => Promise<ThreadSummaryMessage[]>;
+};
+
+
+/**
+ * One summary attempt, discriminated: a ready response body, a thread with
+ * no stored messages, or a model that could not answer.
+ */
+export type ThreadSummaryResult =
+	| { status: "ok"; summary: ThreadSummary }
+	| { status: "not_found" }
+	| { status: "unavailable" };
+
+
+/**
+ * Build one thread summary end to end: read the thread's stored messages,
+ * resolve the mailbox's summarizer model, prompt it and normalize the
+ * answer.
+ *
+ * The web route (workers/index.ts) and the summarize_thread tool both call
+ * this, so their behavior cannot drift: a thread with no messages is
+ * `not_found`, and a model that throws or answers nothing usable is
+ * `unavailable`.
+ */
+export async function runThreadSummary(
+	env: Env,
+	mailboxId: string,
+	threadId: string,
+): Promise<ThreadSummaryResult> {
+	const stub = getMailboxStub(env, mailboxId) as unknown as ThreadSummaryStub;
+	const emails = await stub.getThreadEmails(threadId);
+	if (emails.length === 0) return { status: "not_found" };
+
+	const models = await resolveMailboxModels(env, mailboxId);
+	const { prompt, messageCount, truncated } = buildThreadSummaryPrompt(emails);
+
+	try {
+		const runner = resolveThreadSummaryAiRunner(env);
+		const text = normalizeThreadSummary(await runner.run(prompt, models.summarizer));
+		if (!text) {
+			console.error("Thread summarization returned no usable text");
+			return { status: "unavailable" };
+		}
+		return {
+			status: "ok",
+			summary: {
+				text,
+				message_count: messageCount,
+				truncated,
+				model: models.summarizer,
+			},
+		};
+	} catch (e) {
+		console.error("Thread summarization failed:", (e as Error).message);
+		return { status: "unavailable" };
+	}
 }

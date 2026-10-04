@@ -22,6 +22,10 @@ import {
 	toolGetAttachment,
 	toolGetThread,
 	toolSearchEmails,
+	toolMuteThread,
+	toolUnmuteThread,
+	toolMarkThreadRead,
+	toolSummarizeThread,
 	toolSearchAllMailboxes,
 	toolSemanticSearch,
 	toolDraftReply,
@@ -1014,6 +1018,81 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				return mcpText(await toolListSnoozed(env, mailboxId));
+			},
+		);
+
+		// ── mute_thread ────────────────────────────────────────────
+		registerTool(
+			"mute_thread",
+			"Mute a thread: new mail in it is skipped by push and webhook notifications. Muting an unknown thread id is allowed and muting twice is idempotent; nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				threadId: z.string().describe("The thread_id to mute"),
+			},
+			async ({ mailboxId, threadId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolMuteThread(env, mailboxId, { threadId });
+				return mcpResult(result);
+			},
+		);
+
+		// ── unmute_thread ──────────────────────────────────────────
+		registerTool(
+			"unmute_thread",
+			"Unmute a thread so its new mail notifies again. Unmuting is idempotent; nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				threadId: z.string().describe("The thread_id to unmute"),
+			},
+			async ({ mailboxId, threadId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolUnmuteThread(env, mailboxId, { threadId });
+				return mcpResult(result);
+			},
+		);
+
+		// ── mark_thread_read ───────────────────────────────────────
+		registerTool(
+			"mark_thread_read",
+			"Mark every message in a thread as read. Nothing is deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				threadId: z.string().describe("The thread_id to mark read"),
+			},
+			async ({ mailboxId, threadId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await runAudited(
+					env,
+					{
+						source: "mcp",
+						tool: "mark_thread_read",
+						mailboxId,
+						emailId: null,
+						args: { threadId },
+					},
+					() => toolMarkThreadRead(env, mailboxId, { threadId }),
+				);
+				return mcpText(result);
+			},
+		);
+
+		// ── summarize_thread ───────────────────────────────────────
+		registerTool(
+			"summarize_thread",
+			"Summarize a conversation thread in plain text with an AI model: participants, decisions, open questions, action items and the thread's current state. Built per request — nothing is stored, cached or sent. An unknown or empty thread answers 'Thread not found'.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				threadId: z.string().describe("The thread_id to summarize"),
+			},
+			async ({ mailboxId, threadId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolSummarizeThread(env, mailboxId, { threadId });
+				if ("error" in result) return mcpResult(result);
+				return mcpText(result);
 			},
 		);
 

@@ -32,6 +32,10 @@ import {
 	toolSearchEmails,
 	toolSearchAllMailboxes,
 	toolSemanticSearch,
+	toolMuteThread,
+	toolUnmuteThread,
+	toolMarkThreadRead,
+	toolSummarizeThread,
 	toolDraftReply,
 	toolDraftEmail,
 	toolMarkEmailRead,
@@ -927,6 +931,72 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
 				return toolListSnoozed(env, mailboxId);
+			},
+		}),
+
+		mute_thread: defineTool({
+			description:
+				"Mute a thread: new mail in it is skipped by push and webhook notifications. Muting an unknown thread id is allowed and muting twice is idempotent. Nothing is deleted.",
+			parameters: z.object({
+				...mailboxIdField,
+				threadId: z.string().describe("The thread_id to mute"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolMuteThread(env, mailboxId, { threadId: args.threadId });
+			},
+		}),
+
+		unmute_thread: defineTool({
+			description:
+				"Unmute a thread so its new mail notifies again. Unmuting is idempotent. Nothing is deleted.",
+			parameters: z.object({
+				...mailboxIdField,
+				threadId: z.string().describe("The thread_id to unmute"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolUnmuteThread(env, mailboxId, { threadId: args.threadId });
+			},
+		}),
+
+		mark_thread_read: defineTool({
+			description:
+				"Mark every message in a thread as read. Nothing is deleted.",
+			parameters: z.object({
+				...mailboxIdField,
+				threadId: z.string().describe("The thread_id to mark read"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return runAudited(
+					env,
+					{
+						source: "agent",
+						tool: "mark_thread_read",
+						mailboxId,
+						emailId: null,
+						args: { threadId: args.threadId },
+					},
+					() => toolMarkThreadRead(env, mailboxId, { threadId: args.threadId }),
+				);
+			},
+		}),
+
+		summarize_thread: defineTool({
+			description:
+				"Summarize a conversation thread in plain text with an AI model: participants, decisions, open questions, action items and the thread's current state. Built per request — nothing is stored, cached or sent. An unknown or empty thread answers 'Thread not found'.",
+			parameters: z.object({
+				...mailboxIdField,
+				threadId: z.string().describe("The thread_id to summarize"),
+			}),
+			execute: async (args) => {
+				const mailboxId = await resolveMailboxId(args.mailboxId);
+				if (typeof mailboxId !== "string") return mailboxId;
+				return toolSummarizeThread(env, mailboxId, { threadId: args.threadId });
 			},
 		}),
 

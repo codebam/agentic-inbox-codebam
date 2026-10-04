@@ -68,6 +68,7 @@ import {
 	type ScheduledSendActionResult,
 	type ScheduledSendRow,
 } from "./scheduled-sends";
+import { runThreadSummary } from "./thread-summary";
 import type { Env } from "../types";
 
 // ── Type casts for DO methods not on the base stub type ────────────
@@ -208,13 +209,21 @@ export async function toolGetEmail(
 
 // ── get_thread ─────────────────────────────────────────────────────
 
+/**
+ * Get every message in a conversation thread, plus whether the thread is
+ * muted (notification bookkeeping). Read-only.
+ */
 export async function toolGetThread(
 	env: Env,
 	mailboxId: string,
 	threadId: string,
 ) {
 	const stub = getMailboxStub(env, mailboxId);
-	return getFullThread(stub, threadId);
+	const [thread, muted] = await Promise.all([
+		getFullThread(stub, threadId),
+		stub.isThreadMuted(threadId),
+	]);
+	return { ...thread, muted };
 }
 
 // ── get_attachment ─────────────────────────────────────────────────
@@ -1250,6 +1259,82 @@ export async function toolClearReminder(
 export async function toolListSnoozed(env: Env, mailboxId: string) {
 	const emails = await mailboxSnoozeStub(env, mailboxId).getSnoozed();
 	return { mailboxId, emails, totalCount: emails.length };
+}
+
+// ── thread tools (mute / unmute / mark read / summarize) ────────────
+
+/**
+ * Mute a thread: new mail in it is skipped by the push and webhook
+ * notification fan-outs (workers/lib/webpush.ts, workers/lib/webhook.ts).
+ * The mute is a row keyed by the thread id alone, so muting an id that has
+ * no messages is allowed and muting twice is idempotent. Notification
+ * bookkeeping only: nothing is deleted.
+ *
+ * Mirrors the web route (POST .../threads/:threadId/mute): the trimmed id
+ * must be 1 to 320 characters, and a bad one answers the same error the
+ * route answers.
+ */
+export async function toolMuteThread(
+	env: Env,
+	mailboxId: string,
+	params: { threadId: string },
+) {
+	const threadId = params.threadId.trim();
+	// Mirrors MailboxDO.muteThread's bound, so an id it would reject answers
+	// an error object here instead of a rebuilt RPC failure.
+	if (threadId.length < 1 || threadId.length > 320) {
+		return { error: "threadId must be 1 to 320 characters" };
+	}
+	await getMailboxStub(env, mailboxId).muteThread(threadId);
+	return { muted: true };
+}
+
+/**
+ * Unmute a thread so its new mail notifies again. Idempotent: an already
+ * unmuted thread answers the same `{ muted: false }`. Nothing is deleted.
+ */
+export async function toolUnmuteThread(
+	env: Env,
+	mailboxId: string,
+	params: { threadId: string },
+) {
+	await getMailboxStub(env, mailboxId).unmuteThread(params.threadId);
+	return { muted: false };
+}
+
+/**
+ * Mark every message in a thread as read, in one Durable Object call — the
+ * same write the web route's "mark thread read" action makes. Read state
+ * only: nothing is deleted and nothing is sent.
+ */
+export async function toolMarkThreadRead(
+	env: Env,
+	mailboxId: string,
+	params: { threadId: string },
+) {
+	await getMailboxStub(env, mailboxId).markThreadRead(params.threadId);
+	return { status: "marked_read" };
+}
+
+/**
+ * Summarize one conversation thread with the mailbox's summarizer model,
+ * built per request and never stored (workers/lib/thread-summary.ts).
+ *
+ * Returns the summary object (`text`, `message_count`, `truncated`,
+ * `model`), or `{ error }` for an unknown/empty thread or a model that
+ * cannot answer right now.
+ */
+export async function toolSummarizeThread(
+	env: Env,
+	mailboxId: string,
+	params: { threadId: string },
+) {
+	const result = await runThreadSummary(env, mailboxId, params.threadId);
+	if (result.status === "not_found") return { error: "Thread not found" };
+	if (result.status === "unavailable") {
+		return { error: "Thread summarization is unavailable right now." };
+	}
+	return result.summary;
 }
 
 // ── scheduled sends (list_scheduled_sends / cancel_scheduled_send) ──
