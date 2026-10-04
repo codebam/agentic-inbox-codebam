@@ -82,6 +82,7 @@ import { emailDomain } from "../../shared/mailboxes";
 import { isSpamMarkedEmail } from "../../shared/spam";
 import { parseSearchQuery } from "../../shared/search-query";
 import { searchAllMailboxes } from "./search-all";
+import { listAllEmails } from "./all-emails";
 import { semanticSearch } from "./semantic";
 import { DEFAULT_CONTACT_SEARCH_LIMIT } from "./contacts";
 import {
@@ -549,6 +550,25 @@ export async function toolSearchAllMailboxes(
 		page: params.page,
 		limit: params.limit,
 	});
+}
+
+// ── list_all_emails ────────────────────────────────────────────────
+
+/**
+ * List every mailbox's mail at once, merged by date (newest first) —
+ * the All Accounts view. A `folder` applies that folder to every
+ * mailbox; without one the whole of every mailbox is merged, and each
+ * row carries the mailboxId it came from. Read-only.
+ */
+export async function toolListAllEmails(
+	env: Env,
+	params: {
+		folder?: string | undefined;
+		page?: number | undefined;
+		limit?: number | undefined;
+	},
+) {
+	return listAllEmails(env, params);
 }
 
 // ── semantic_search ────────────────────────────────────────────────

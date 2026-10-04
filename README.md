@@ -185,7 +185,7 @@ Inside that session, `read` reaches the reading tools (`list_emails`, `get_email
 
 ### Option D — App access token, every mailbox
 
-An **app access token** (minted in **Global Settings** → **App access tokens**) authenticates `/mcp` the same way, but the session it opens reaches EVERY mailbox: the scoped tools run wherever their `mailboxId` argument points, `list_mailboxes` answers all of them, `search_all_mailboxes` searches across them, and every other tool is refused. It carries the same `read`, `draft`, `send` and/or `manage` scopes, is shown once at mint, stored only as a SHA-256 hash, and revoking it takes effect immediately.
+An **app access token** (minted in **Global Settings** → **App access tokens**) authenticates `/mcp` the same way, but the session it opens reaches EVERY mailbox: the scoped tools run wherever their `mailboxId` argument points, `list_mailboxes` answers all of them, `search_all_mailboxes` searches across them, `list_all_emails` lists them merged by date, and every other tool is refused. It carries the same `read`, `draft`, `send` and/or `manage` scopes, is shown once at mint, stored only as a SHA-256 hash, and revoking it takes effect immediately.
 
 ### How the Worker authorizes the key
 
@@ -209,7 +209,7 @@ A **Settings access token** (Option C) takes a different path: it is verified ag
 `delete_folder`, `delete_label`, `delete_rule`, `delete_saved_search`, `delete_spam_emails`,
 `delete_template`, `discard_draft`, `draft_reply`, `empty_trash`, `export_email`,
 `get_attachment`, `get_calendar_invite`, `get_digest`, `get_email`, `get_sender_policy`, `get_storage`, `get_thread`,
-`list_agent_actions`, `list_emails`, `list_folders`, `list_items`, `list_labels`,
+`list_agent_actions`, `list_all_emails`, `list_emails`, `list_folders`, `list_items`, `list_labels`,
 `list_mailboxes`, `list_rules`, `list_saved_searches`, `list_scheduled_sends`, `list_snoozed`,
 `list_templates`, `mark_email_read`, `mark_thread_read`, `move_email`, `mute_thread`,
 `preview_rule`, `remove_label`, `remove_sender_policy`, `reorder_rules`, `respond_to_invite`, `restore_email`,
@@ -233,10 +233,10 @@ revoking a token takes effect immediately). The same tokens also authenticate
 
 App-level tokens (minted in **Global Settings** → **App access tokens**, up to
 20 per deployment) work on the same endpoint but reach every mailbox: each
-mailbox-scoped call carries `mailboxId` in its body, and the two all-mailbox
-reads `list_mailboxes` and `search_all_mailboxes` (read scope) become
-available. Their calls are recorded in the activity log of the mailbox they
-act on, with the same source `scoped`.
+mailbox-scoped call carries `mailboxId` in its body, and the all-mailbox
+reads `list_mailboxes`, `search_all_mailboxes` and `list_all_emails` (read
+scope) become available. Their calls are recorded in the activity log of the
+mailbox they act on, with the same source `scoped`.
 
 Each tool maps to one scope — `read`: `list_emails`, `get_email`, `get_thread`,
 `search_emails`, `get_attachment`, `list_labels`, `list_templates`,

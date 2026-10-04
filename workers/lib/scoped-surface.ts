@@ -32,8 +32,9 @@
  *            mute_thread, unmute_thread, mark_thread_read, empty_trash,
  *            restore_email, remove_sender_policy
  *
- * An app token may additionally call the two all-mailbox read tools —
- * list_mailboxes and search_all_mailboxes, each requiring the read scope.
+ * An app token may additionally call the all-mailbox read tools —
+ * list_mailboxes, search_all_mailboxes and list_all_emails, each requiring
+ * the read scope.
  * They are deliberately absent from SCOPED_TOOL_SCOPES: that map is the /mcp
  * gate's authority for a mailbox-bound session (workers/mcp/index.ts), so a
  * name in it describes a tool a one-mailbox token may call. A mailbox token
@@ -88,6 +89,7 @@ import {
 	toolGetImage,
 	toolGetSenderPolicy,
 	toolGetThread,
+	toolListAllEmails,
 	toolListEmails,
 	toolListLabels,
 	toolListMailboxes,
@@ -177,7 +179,7 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 };
 
 /**
- * The two all-mailbox read tools an app-level token may additionally call,
+ * The all-mailbox read tools an app-level token may additionally call,
  * and the scope each requires. Deliberately separate from SCOPED_TOOL_SCOPES:
  * that map is shared with the /mcp gate, where it describes what a
  * mailbox-bound session may invoke, so an all-mailbox name must never join
@@ -186,6 +188,7 @@ export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	list_mailboxes: "read",
 	search_all_mailboxes: "read",
+	list_all_emails: "read",
 };
 
 /**
@@ -231,7 +234,7 @@ export interface ScopedMailboxAuthSuccess {
 /**
  * A verified app-level caller: one credential for every mailbox. It carries
  * no mailbox of its own — each mailbox-scoped call names its target, and the
- * two all-mailbox read tools need none.
+ * all-mailbox read tools need none.
  */
 export interface ScopedAppAuthSuccess {
 	ok: true;
@@ -934,11 +937,13 @@ async function invokeScopedTool(
 }
 
 /**
- * Run one app-only tool: the two all-mailbox reads an app token may call,
- * which no mailbox token and no mailbox-bound call can reach. list_mailboxes
+ * Run one app-only tool: the all-mailbox reads an app token may call, which
+ * no mailbox token and no mailbox-bound call can reach. list_mailboxes
  * answers every mailbox in the deployment verbatim; search_all_mailboxes is
  * the very function the MCP registration calls, with the request's search
- * filters (searchArguments, whose mailboxId field is not a filter).
+ * filters (searchArguments, whose mailboxId field is not a filter); and
+ * list_all_emails is the All Accounts listing — the same function the route
+ * and the MCP registration call.
  */
 function invokeAppOnlyScopedTool(
 	env: Env,
@@ -950,6 +955,12 @@ function invokeAppOnlyScopedTool(
 			return toolListMailboxes(env);
 		case "search_all_mailboxes":
 			return toolSearchAllMailboxes(env, searchArguments(params));
+		case "list_all_emails":
+			return toolListAllEmails(env, {
+				folder: optionalStringArgument(params, "folder"),
+				page: optionalNumberArgument(params, "page"),
+				limit: optionalNumberArgument(params, "limit"),
+			});
 		default:
 			// Unreachable through runScopedTool, which only dispatches names
 			// the two scope maps carry.
@@ -992,7 +1003,7 @@ function errorMessage(value: unknown): string | null {
  * `mailboxId` (its token fixes the mailbox), or an app token not naming one
  * with a string (the token reaches every mailbox, so the call must say
  * which). A mailbox token runs every call in its own mailbox; an app token's
- * mailbox-scoped calls run against the mailbox the body names, and its two
+ * mailbox-scoped calls run against the mailbox the body names, and its
  * all-mailbox tools run against all of them. A tool answer that carries an
  * `error` field — the refusal shape every tool in workers/lib/tools.ts uses —
  * is a 400, a tool answer without one is a 200 carrying the tool's own

@@ -26,6 +26,7 @@ import {
 import {
 	toolListMailboxes,
 	toolListEmails,
+	toolListAllEmails,
 	toolGetEmail,
 	toolGetAttachment,
 	toolGetThread,
@@ -667,6 +668,22 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 								hasAttachment: args.hasAttachment,
 								before: args.before,
 								after: args.after,
+								page: args.page,
+								limit: args.limit,
+							});
+						},
+					}),
+					list_all_emails: defineTool({
+						description:
+							"List every mailbox's mail at once, merged by date (newest first) — the All Accounts view. `folder` applies the same folder to every mailbox (an id or name: inbox, sent, draft, archive, snoozed, spam, trash); omit it for all mail. Each result row carries the mailboxId it came from.",
+						parameters: z.object({
+							folder: z.string().optional().describe("Optional folder to apply to every mailbox; omit to merge every folder (All Mail)"),
+							page: z.number().int().min(1).optional().describe("Page number (default 1)"),
+							limit: z.number().int().min(1).max(100).optional().describe("Results per page (default 25, max 100)"),
+						}),
+						execute: async (args) => {
+							return toolListAllEmails(env, {
+								folder: args.folder,
 								page: args.page,
 								limit: args.limit,
 							});

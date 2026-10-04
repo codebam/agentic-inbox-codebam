@@ -18,6 +18,7 @@ import { z } from "zod";
 import {
 	toolListMailboxes,
 	toolListEmails,
+	toolListAllEmails,
 	toolScheduleSend,
 	toolRetryScheduledSend,
 	toolGetEmail,
@@ -169,13 +170,14 @@ type ToolRegistrar = <Shape extends ZodRawShapeCompat>(
 
 /**
  * The extra tools an app-token session may call beyond SCOPED_TOOL_SCOPES,
- * each gated by the scope it requires. Both are read-only answers over every
- * mailbox — exactly the reach an app token exists for — so both count as
+ * each gated by the scope it requires. They are read-only answers over every
+ * mailbox — exactly the reach an app token exists for — so each counts as
  * `read`.
  */
 const APP_SESSION_EXTRA_TOOL_SCOPES: Record<string, AccessTokenScope> = {
 	list_mailboxes: "read",
 	search_all_mailboxes: "read",
+	list_all_emails: "read",
 };
 
 /**
@@ -203,12 +205,13 @@ const APP_SESSION_ALLOWED_TOOLS: string[] = [
  *
  * An `app` binding (an `ain2` app-level token) carries scopes but no
  * mailbox: the session reaches EVERY mailbox. Inside such a session:
- *   - the SCOPED_TOOL_SCOPES tools plus `list_mailboxes` and
- *     `search_all_mailboxes` may be invoked, each gated by the scope the
- *     maps assign (the two extras are reads);
+ *   - the SCOPED_TOOL_SCOPES tools plus `list_mailboxes`,
+ *     `search_all_mailboxes` and `list_all_emails` may be invoked, each
+ *     gated by the scope the maps assign (the extras are reads);
  *   - `mailboxId` arguments are NOT equality-checked — any mailbox is the
- *     point — so a scoped tool runs wherever it points, and `list_mailboxes`
- *     and `search_all_mailboxes` fall through to their real, deployment-wide
+ *     point — so a scoped tool runs wherever it points, and the three
+ *     all-mailbox reads (`list_mailboxes`, `search_all_mailboxes`,
+ *     `list_all_emails`) fall through to their real, deployment-wide
  *     handlers;
  *   - every other tool is refused, naming the allowed set.
  *
@@ -549,6 +552,29 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 			{ ...searchFilterShape },
 			async (filters) => {
 				const result = await toolSearchAllMailboxes(env, filters);
+				return mcpText(result);
+			},
+		);
+
+		// ── list_all_emails ────────────────────────────────────────
+		registerTool(
+			"list_all_emails",
+			"List every mailbox's mail at once, merged by date (newest first) — the All Accounts view. `folder` applies the same folder to every mailbox (an id or name: inbox, sent, draft, archive, snoozed, spam, trash); omit it for all mail. Each result row includes the mailboxId it came from.",
+			{
+				folder: z
+					.string()
+					.optional()
+					.describe(
+						"Optional folder to apply to every mailbox; omit to merge every folder (All Mail)",
+					),
+				page: z.number().default(1).describe("Page number for pagination"),
+				limit: z
+					.number()
+					.default(25)
+					.describe("Results per page (default 25, max 100)"),
+			},
+			async ({ folder, page, limit }) => {
+				const result = await toolListAllEmails(env, { folder, page, limit });
 				return mcpText(result);
 			},
 		);
