@@ -20,6 +20,7 @@ import {
 	type ScheduledSendPayloadInput,
 	type ScheduledSendRow,
 } from "../workers/lib/scheduled-sends";
+import { pendingUploadR2Key } from "../workers/lib/pending-uploads";
 import { toolCancelScheduledSend, toolListScheduledSends } from "../workers/lib/tools";
 import type { SendEmailParams } from "../workers/email-sender";
 
@@ -373,6 +374,131 @@ describe("cancelScheduledSend / retryScheduledSend", () => {
 			ok: false,
 			error: SCHEDULED_SEND_NOT_FOUND,
 		});
+	});
+
+
+	it("saves a cancelled send as a draft so the message survives", async () => {
+		const mailbox = "schedule-cancel-draft@example.com";
+		const stub = stubFor(mailbox);
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(60 * 60 * 1000),
+			payload: sendPayloadJson({
+				from: mailbox,
+				subject: "Keep me",
+				html: "<p>Body worth keeping</p>",
+			}),
+		})) as ScheduledSendRow;
+		// A message queued from a new compose has no draft yet.
+		expect(send.draft_id).toBeNull();
+
+		const cancelled = await stub.cancelScheduledSend(send.id);
+		expect(cancelled.ok).toBe(true);
+		if (!cancelled.ok) throw new Error(cancelled.error);
+		const draftId = cancelled.send.draft_id;
+		expect(draftId).toEqual(expect.any(String));
+
+		// The message is in Drafts, addressed and worded exactly as queued.
+		const draft = await stub.getEmail(draftId!);
+		expect(draft).toMatchObject({
+			folder_id: Folders.DRAFT,
+			subject: "Keep me",
+			recipient: "recipient@example.org",
+			body: "<p>Body worth keeping</p>",
+		});
+		expect(await stub.getEmails({ folder: Folders.DRAFT })).toHaveLength(1);
+
+		// The row records the recovered draft, so the API can point at it.
+		expect((await readSendRow(stub, send.id))?.draft_id).toBe(draftId);
+	});
+
+
+	it("keeps the draft a queued send was already backed by", async () => {
+		const mailbox = "schedule-cancel-reuse@example.com";
+		const stub = stubFor(mailbox);
+		await stub.createEmail(
+			Folders.DRAFT,
+			{
+				id: "existing-draft",
+				subject: "Existing draft",
+				sender: mailbox,
+				recipient: "recipient@example.org",
+				date: new Date().toISOString(),
+				body: "<p>already saved</p>",
+			},
+			[],
+		);
+
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(60 * 60 * 1000),
+			payload: sendPayloadJson({ from: mailbox }),
+			draft_id: "existing-draft",
+		})) as ScheduledSendRow;
+
+		const cancelled = await stub.cancelScheduledSend(send.id);
+		expect(cancelled.ok).toBe(true);
+		if (!cancelled.ok) throw new Error(cancelled.error);
+		expect(cancelled.send.draft_id).toBe("existing-draft");
+
+		// The existing draft is reused, never duplicated.
+		expect(await stub.getEmails({ folder: Folders.DRAFT })).toHaveLength(1);
+		expect((await stub.getEmail("existing-draft"))?.subject).toBe("Existing draft");
+	});
+
+
+	it("moves a cancelled send's queued files onto the recovered draft", async () => {
+		const mailbox = "schedule-cancel-files@example.com";
+		const stub = stubFor(mailbox);
+		const bytes = new TextEncoder().encode("hello attachment");
+		const uploadId = "cancel-upload-1";
+		const queuedKey = pendingUploadR2Key({
+			mailboxId: mailbox,
+			id: uploadId,
+			filename: "notes.txt",
+		});
+		await env.BUCKET.put(queuedKey, bytes);
+		await stub.createPendingUpload({
+			id: uploadId,
+			filename: "notes.txt",
+			mimetype: "text/plain",
+			size: bytes.byteLength,
+			r2Key: queuedKey,
+		});
+
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(60 * 60 * 1000),
+			payload: sendPayloadJson({ from: mailbox, upload_ids: [uploadId] }),
+		})) as ScheduledSendRow;
+
+		const cancelled = await stub.cancelScheduledSend(send.id);
+		expect(cancelled.ok).toBe(true);
+		if (!cancelled.ok) throw new Error(cancelled.error);
+		const draftId = cancelled.send.draft_id!;
+
+		const draft = await stub.getEmail(draftId);
+		expect(draft?.attachments).toHaveLength(1);
+		const attachment = draft!.attachments[0]!;
+		expect(attachment.filename).toBe("notes.txt");
+
+		// The bytes now live under the draft's own attachment key...
+		const draftObject = await env.BUCKET.get(
+			`attachments/${draftId}/${attachment.id}/notes.txt`,
+		);
+		expect(draftObject).not.toBeNull();
+		expect(new Uint8Array(await draftObject!.arrayBuffer())).toEqual(bytes);
+
+		// ...and the queue's copy is gone: neither the R2 object nor the row
+		// is left behind for the sweep to find.
+		expect(await env.BUCKET.get(queuedKey)).toBeNull();
+		const uploadRow = await runInDurableObject(stub, async (_instance, state) => {
+			const rows = [
+				...state.storage.sql.exec(
+					"SELECT id FROM pending_uploads WHERE id = ?1",
+					uploadId,
+				),
+			];
+			return rows[0] ?? null;
+		});
+		expect(uploadRow).toBeNull();
 	});
 
 

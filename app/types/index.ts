@@ -217,12 +217,14 @@ export interface AgentAction {
  *
  * The composer's Send and Send later actions queue a message here instead
  * of sending it immediately; the queue fires it at `send_at`. `draft_id`
- * names the stored draft that holds the message — the queue owns that
- * draft's lifecycle, the composer only creates it.
+ * names the draft that holds the message: the draft a send was queued from,
+ * or the one written when a send with no draft is cancelled, so cancelling
+ * never loses the message. It is null only while a send queued from a new
+ * message is still pending, or when its stored payload could not be read.
  */
 export interface ScheduledSend {
 	id: string;
-	draft_id: string;
+	draft_id: string | null;
 	/** ISO 8601 instant the queue will send the message. */
 	send_at: string;
 	status: "pending" | "sent" | "failed" | "cancelled";

@@ -273,12 +273,37 @@ export function scheduledUploadSentAttachments(
 }
 
 /**
- * The R2 objects the Sent copy needs: each upload's bytes copied to the
- * attachment key the download routes read. Only possible once the message id
- * exists, so the fire path runs this after the send, best-effort like the
- * Sent copy itself.
+ * The attachment rows a recovered draft needs for its queued files: one
+ * ordinary attachment per upload and no link token, because a draft is an
+ * editable message and drafts never carry link rows. The bytes are written
+ * by `scheduledUploadAttachmentCopies` under the draft's own keys.
+ *
+ * Used when a cancelled send is saved back as a draft
+ * (MailboxDO.cancelScheduledSend), so a queued message's files survive the
+ * cancellation exactly like its text does.
  */
-export function scheduledUploadSentCopies(
+export function scheduledUploadDraftAttachments(
+	uploads: readonly ResolvedScheduledUpload[],
+	emailId: string,
+): StoredAttachment[] {
+	return uploads.map((upload) => ({
+		id: upload.attachmentId,
+		email_id: emailId,
+		filename: upload.row.filename,
+		mimetype: upload.row.mimetype,
+		size: upload.bytes.byteLength,
+		content_id: null,
+		disposition: "attachment",
+	}));
+}
+
+/**
+ * The R2 objects an email's attachment rows read: each upload's bytes copied
+ * to the attachment key the download routes serve. Only possible once the
+ * message id exists, so the fire path runs this after the send (for the Sent
+ * copy) and the cancel path runs it before the recovered draft is stored.
+ */
+export function scheduledUploadAttachmentCopies(
 	uploads: readonly ResolvedScheduledUpload[],
 	emailId: string,
 ): { key: string; bytes: Uint8Array }[] {

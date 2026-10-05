@@ -45,12 +45,11 @@ export function useScheduledSends(mailboxId: string | undefined, limit: number) 
 
 /**
  * Queue a message for `sendAt`. Deliberately not optimistic: only the server
- * can create the queue row and the draft that backs it, so the composer
- * shows its "scheduled" toast once the POST confirms it.
+ * can create the queue row, so the composer shows its "scheduled" toast once
+ * the POST confirms it.
  */
 export function useScheduleSend() {
 	const qc = useQueryClient();
-	const invalidateEmails = useInvalidateEmailData();
 	return useMutation({
 		mutationFn: ({
 			mailboxId,
@@ -63,9 +62,6 @@ export function useScheduleSend() {
 		}) => api.scheduleSend(mailboxId, payload, sendAt),
 		onSettled: (_data, _err, { mailboxId }) => {
 			invalidateScheduledSends(qc, mailboxId);
-			// The queue stores the message as a draft, so the Drafts folder
-			// may have gained a row.
-			invalidateEmails(mailboxId);
 		},
 	});
 }
@@ -73,8 +69,8 @@ export function useScheduleSend() {
 /**
  * Cancel a queued send. Deliberately not optimistic: the server decides
  * whether the queue already fired it, so the row only changes once the
- * DELETE confirms it. The queue — and the draft it owned — are refetched
- * either way.
+ * DELETE confirms it. The queue is refetched either way, and the Drafts
+ * folder gains the cancelled message, so the email lists are refreshed too.
  */
 export function useCancelScheduledSend() {
 	const qc = useQueryClient();

@@ -1235,7 +1235,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		cancel_scheduled_send: defineTool({
 			description:
-				"Cancel a pending scheduled send so it never fires. Only a pending send can be cancelled; nothing is sent and nothing is deleted.",
+				"Cancel a pending scheduled send so it never fires. Only a pending send can be cancelled; nothing is sent, and the message is saved as a draft (reusing the draft it was queued from when one still exists) so it can be edited and sent later.",
 			parameters: z.object({
 				...mailboxIdField,
 				scheduledSendId: z.string().describe("The scheduled send ID to cancel"),

@@ -1340,7 +1340,11 @@ app.get("/api/v1/mailboxes/:mailboxId/scheduled-sends", async (c: AppContext) =>
 	return c.json({ sends, totalCount });
 });
 
-/** Cancel a pending scheduled send so it never fires. Nothing is deleted. */
+/**
+ * Cancel a pending scheduled send so it never fires. The message is not lost:
+ * the mailbox saves it as a draft (reusing the draft it was queued from when
+ * one still exists) and answers the cancelled row with that `draft_id`.
+ */
 app.delete(
 	"/api/v1/mailboxes/:mailboxId/scheduled-sends/:id",
 	async (c: AppContext) => {

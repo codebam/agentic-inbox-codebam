@@ -158,10 +158,11 @@ import {
 import {
 	PENDING_UPLOAD_SWEEP_BATCH,
 	resolveScheduledSendUploads,
+	scheduledUploadAttachmentCopies,
+	scheduledUploadDraftAttachments,
 	scheduledUploadInlineAttachments,
 	scheduledUploadLinkedSection,
 	scheduledUploadSentAttachments,
-	scheduledUploadSentCopies,
 	type CreatePendingUploadInput,
 	type PendingUploadRow,
 	type ResolvedScheduledUpload,
@@ -2162,12 +2163,20 @@ export class MailboxDO extends DurableObject<Env> {
 
 	/**
 	 * Cancel a pending scheduled send: the row becomes `cancelled` and will
-	 * never fire. Nothing is sent and nothing is deleted — the row stays for
-	 * the operator to see. Returns `{ ok: true, send }` with the updated row,
-	 * or `{ ok: false, error }` when the id is unknown or the row is no
-	 * longer pending.
+	 * never fire. Nothing is sent, and the message is not lost — cancelling
+	 * saves it as a draft. A send queued from an existing draft keeps that
+	 * draft; one queued from a new message gets a draft written from the
+	 * stored payload (files included), and the row's `draft_id` is stamped
+	 * with it so the caller can open it. Only the status, the recovered
+	 * draft id and the pending uploads the draft now owns change; the row
+	 * itself stays for the operator to see.
+	 *
+	 * Returns `{ ok: true, send }` with the updated row — its `draft_id` set
+	 * to the recovered draft when one was (or already is) available — or
+	 * `{ ok: false, error }` when the id is unknown or the row is no longer
+	 * pending.
 	 */
-	cancelScheduledSend(id: string): ScheduledSendActionResult {
+	async cancelScheduledSend(id: string): Promise<ScheduledSendActionResult> {
 		const row = this.#scheduledSendDbRow(id);
 		if (!row) return { ok: false as const, error: SCHEDULED_SEND_NOT_FOUND };
 		if (row.status !== "pending") {
@@ -2184,7 +2193,138 @@ export class MailboxDO extends DurableObject<Env> {
 
 		const cancelled = this.#scheduledSendById(id);
 		if (!cancelled) return { ok: false as const, error: SCHEDULED_SEND_NOT_FOUND };
+
+		const draftId = await this.#saveCancelledSendAsDraft(cancelled);
+		if (draftId && draftId !== cancelled.draft_id) {
+			this.ctx.storage.sql.exec(
+				`UPDATE scheduled_sends SET draft_id = ?1 WHERE id = ?2`,
+				draftId,
+				id,
+			);
+			cancelled.draft_id = draftId;
+		}
 		return { ok: true as const, send: cancelled };
+	}
+
+	/**
+	 * Save a just-cancelled send back as a draft, so cancelling never costs
+	 * the operator the message. The draft the send was queued from is reused
+	 * when it still exists in Drafts; otherwise one is written from the
+	 * stored payload. Returns the draft id, or null when the row's payload
+	 * cannot be read and there is no surviving draft to fall back on.
+	 */
+	async #saveCancelledSendAsDraft(
+		send: ScheduledSendRow,
+	): Promise<string | null> {
+		if (send.draft_id) {
+			const existing = this.getEmail(send.draft_id);
+			if (existing && existing.folder_id === Folders.DRAFT) return send.draft_id;
+		}
+
+		const payload = send.payload;
+		if (!payload) {
+			console.error(
+				`Cancelled send ${send.id} has no readable payload; no draft was saved.`,
+			);
+			return null;
+		}
+
+		const draftId = crypto.randomUUID();
+		const recipient = (
+			Array.isArray(payload.to) ? payload.to.join(", ") : payload.to
+		).toLowerCase();
+		const attachments = await this.#restoreQueuedUploadsAsDraft(
+			draftId,
+			payload.upload_ids ?? [],
+		);
+		this.createEmail(
+			Folders.DRAFT,
+			{
+				id: draftId,
+				subject: payload.subject,
+				// A draft's sender is the mailbox itself, exactly like the
+				// draft route's own save.
+				sender: (this.ctx.id.name ?? "").toLowerCase(),
+				recipient,
+				cc: payload.cc
+					? (Array.isArray(payload.cc) ? payload.cc.join(", ") : payload.cc).toLowerCase()
+					: null,
+				bcc: payload.bcc
+					? (Array.isArray(payload.bcc) ? payload.bcc.join(", ") : payload.bcc).toLowerCase()
+					: null,
+				date: new Date().toISOString(),
+				body: payload.html ?? payload.text ?? "",
+				in_reply_to: payload.in_reply_to ?? null,
+				email_references: payload.references
+					? JSON.stringify(payload.references)
+					: null,
+				thread_id: payload.thread_id || payload.in_reply_to || draftId,
+			},
+			attachments,
+		);
+		return draftId;
+	}
+
+	/**
+	 * Move a cancelled send's queued files onto the draft that replaces it:
+	 * each upload's bytes are copied to the draft's own attachment key and an
+	 * ordinary attachment row is returned, then the queue's copy is dropped.
+	 *
+	 * Best-effort by design: a set that cannot be resolved as a whole (an
+	 * upload expired, was consumed, or its bytes are gone) leaves the draft
+	 * without files rather than without its text; a single copy that fails
+	 * drops only that file. Anything left behind is swept once stale.
+	 */
+	async #restoreQueuedUploadsAsDraft(
+		draftId: string,
+		uploadIds: readonly string[],
+	): Promise<AttachmentData[]> {
+		if (uploadIds.length === 0) return [];
+
+		const resolved = await resolveScheduledSendUploads(
+			this.env.BUCKET,
+			(id) => this.#pendingUploadById(id),
+			uploadIds,
+		);
+		if (!resolved.ok) {
+			console.error(
+				`Cancelled send saved as draft ${draftId} without its files: ${resolved.error}`,
+			);
+			return [];
+		}
+
+		const copies = scheduledUploadAttachmentCopies(resolved.uploads, draftId);
+		const stored: ResolvedScheduledUpload[] = [];
+		for (let i = 0; i < resolved.uploads.length; i += 1) {
+			const upload = resolved.uploads[i];
+			const copy = copies[i];
+			if (!upload || !copy) continue;
+			try {
+				await this.env.BUCKET.put(copy.key, copy.bytes);
+				stored.push(upload);
+			} catch (e) {
+				console.error(
+					`Storing attachment "${upload.row.filename}" for draft ${draftId} failed:`,
+					(e as Error).message,
+				);
+			}
+		}
+
+		// The files the draft now owns are consumed: drop the queue's copies
+		// (row and object). Files that failed to copy stay queued and are
+		// swept normally.
+		for (const upload of stored) {
+			try {
+				await this.env.BUCKET.delete(upload.row.r2_key);
+			} catch (e) {
+				console.error(
+					`Deleting queued upload ${upload.row.id} after cancelling failed:`,
+					(e as Error).message,
+				);
+			}
+			this.deletePendingUpload(upload.row.id);
+		}
+		return scheduledUploadDraftAttachments(stored, draftId);
 	}
 
 	/**
@@ -2447,7 +2587,7 @@ export class MailboxDO extends DurableObject<Env> {
 			// The queued files land in the Sent copy exactly like an
 			// immediate send's: each one's bytes are copied to the attachment
 			// key the download routes read, before the row that names them.
-			for (const copy of scheduledUploadSentCopies(uploads, messageId)) {
+			for (const copy of scheduledUploadAttachmentCopies(uploads, messageId)) {
 				await this.env.BUCKET.put(copy.key, copy.bytes);
 			}
 			this.createEmail(

@@ -88,8 +88,15 @@ function SendRow({ send, mailboxId }: SendRowProps) {
 		cancel.mutate(
 			{ mailboxId, id: send.id },
 			{
-				onSuccess: () => {
-					toastManager.add({ title: "Scheduled send cancelled" });
+				onSuccess: (data) => {
+					// The cancelled message is saved back as a draft, so say
+					// where it went instead of implying it is gone.
+					toastManager.add({
+						title: "Scheduled send cancelled",
+						description: data.send.draft_id
+							? "Saved to Drafts."
+							: "The message could not be saved as a draft.",
+					});
 				},
 				onError: (error) => {
 					toastManager.add({
@@ -146,6 +153,11 @@ function SendRow({ send, mailboxId }: SendRowProps) {
 					{failed && send.attempts > 1 && (
 						<div className="mt-0.5 text-xs text-kumo-subtle">
 							{send.attempts} attempts made.
+						</div>
+					)}
+					{cancelled && send.draft_id && (
+						<div className="mt-0.5 text-xs text-kumo-subtle">
+							Saved to Drafts.
 						</div>
 					)}
 				</div>

@@ -31,7 +31,7 @@ import {
 	validateLinkedAttachmentSelection,
 	type PendingAttachment,
 } from "~/lib/attachments";
-import { useDeleteEmail, useSaveDraft, useSendEmail } from "~/queries/emails";
+import { useDeleteEmail, useInvalidateEmailData, useSaveDraft, useSendEmail } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
 import { invalidateScheduledSends, useScheduleSend } from "~/queries/scheduled-sends";
 import { useCreateTemplate } from "~/queries/templates";
@@ -226,6 +226,7 @@ export function useComposeForm(mailboxId?: string) {
 	const deleteEmailMutation = useDeleteEmail();
 	const createTemplateMutation = useCreateTemplate();
 	const queryClient = useQueryClient();
+	const invalidateEmails = useInvalidateEmailData();
 
 	const [to, setTo] = useState("");
 	const [cc, setCc] = useState("");
@@ -694,12 +695,22 @@ export function useComposeForm(mailboxId?: string) {
 						variant: "secondary",
 						size: "sm",
 						// Cancels the queued send — from this explicit click only.
+						// The server saves the message back as a draft, so Undo
+						// returns the message to Drafts instead of losing it.
 						onClick: () => {
 							void api.cancelScheduledSend(mailboxId, scheduled.id)
-								.then(() => {
+								.then(({ send }) => {
 									invalidateScheduledSends(queryClient, mailboxId);
+									// The Drafts folder just gained the cancelled
+									// message, so refresh the email lists too.
+									invalidateEmails(mailboxId);
 									toastManager.close(toastId);
-									toastManager.add({ title: "Scheduled send cancelled" });
+									toastManager.add({
+										title: "Scheduled send cancelled",
+										description: send.draft_id
+											? "Saved to Drafts."
+											: "The message could not be saved as a draft.",
+									});
 								})
 								.catch((err: unknown) => {
 									toastManager.add({

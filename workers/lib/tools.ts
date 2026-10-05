@@ -1586,8 +1586,9 @@ export async function toolListScheduledSends(
 /**
  * Cancel one pending scheduled send so it never fires. Only a pending send
  * can be cancelled; an unknown id or an already-terminal row answers
- * `{ error }`. Nothing is sent and nothing is deleted — the cancelled row
- * stays for the operator to see.
+ * `{ error }`. Nothing is sent and the cancelled row stays for the operator
+ * to see; the message itself is saved as a draft, whose id comes back on the
+ * row as `draft_id`.
  */
 export async function toolCancelScheduledSend(
 	env: Env,
