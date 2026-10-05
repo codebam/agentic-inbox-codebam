@@ -168,7 +168,10 @@ export default function ComposeBodyEditor({
 					}
 					spellCheck
 					aria-label="Email body in Markdown"
-					className="w-full min-h-[180px] flex-1 resize-y bg-kumo-base p-3 text-sm font-mono leading-relaxed focus:outline-none"
+					// No flex-1 here: `flex: 1 1 0%` makes flexbox ignore the inline
+					// height the native resize-y grip writes, so the handle would
+					// drag without resizing. An explicit height keeps it resizable.
+					className="w-full h-[180px] min-h-[180px] resize-y bg-kumo-base p-3 text-sm font-mono leading-relaxed focus:outline-none"
 				/>
 			)}
 		</div>
