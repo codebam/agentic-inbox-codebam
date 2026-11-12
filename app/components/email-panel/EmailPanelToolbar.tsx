@@ -7,6 +7,7 @@ import { Badge, Button, Tooltip } from "@cloudflare/kumo";
 import { useEffect, useRef, useState } from "react";
 import {
 	AlarmIcon,
+	ArchiveIcon,
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
 	ArrowLeftIcon,
@@ -25,6 +26,7 @@ import {
 	TrashIcon,
 	XIcon,
 } from "@phosphor-icons/react";
+import { Folders } from "shared/folders";
 import EmailPanelOverflowMenu from "~/components/email-panel/EmailPanelOverflowMenu";
 import SnoozeMenu from "~/components/email-panel/SnoozeMenu";
 import { formatSnoozeTime } from "~/lib/snooze";
@@ -88,17 +90,24 @@ export default function EmailPanelToolbar({
 	onRemind,
 	onDismissReminder,
 }: EmailPanelToolbarProps) {
+	const canArchive =
+		!isDraftFolder &&
+		!isTrash &&
+		moveToFolders.some((f) => f.id === Folders.ARCHIVE);
+
 	return (
-		<div className="flex items-center gap-1 px-3 py-2 border-b border-kumo-line shrink-0 md:px-4">
-			<Button
-				variant="ghost"
-				shape="square"
-				size="sm"
-				icon={<ArrowLeftIcon size={18} />}
-				onClick={onBack}
-				aria-label="Back to list"
-				className="md:hidden shrink-0"
-			/>
+		<div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-kumo-line px-2 py-1.5 md:px-3">
+			<Tooltip content="Back to list" side="bottom" asChild>
+				<Button
+					variant="ghost"
+					shape="square"
+					size="sm"
+					icon={<ArrowLeftIcon size={18} />}
+					onClick={onBack}
+					aria-label="Back to list"
+					className="md:hidden shrink-0"
+				/>
+			</Tooltip>
 
 
 			{isDraftFolder ? (
@@ -157,8 +166,20 @@ export default function EmailPanelToolbar({
 			)}
 
 
-			<div className="h-5 w-px bg-kumo-fill mx-0.5" />
+			<div className="mx-1 h-5 w-px shrink-0 bg-kumo-line" aria-hidden="true" />
 
+			{canArchive && (
+				<Tooltip content="Archive" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<ArchiveIcon size={18} />}
+						onClick={() => onMove(Folders.ARCHIVE)}
+						aria-label="Archive"
+					/>
+				</Tooltip>
+			)}
 
 			<Tooltip content={email.starred ? "Unstar" : "Star"} side="bottom" asChild>
 				<Button
@@ -258,7 +279,7 @@ export default function EmailPanelToolbar({
 			)}
 
 
-			<div className="ml-auto flex items-center gap-0.5">
+			<div className="ml-auto flex shrink-0 items-center gap-0.5">
 				<Tooltip content="View source" side="bottom" asChild>
 					<Button
 						variant="ghost"

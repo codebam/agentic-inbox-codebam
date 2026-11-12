@@ -13,6 +13,7 @@ import {
 	EnvelopeSimpleIcon,
 	FileIcon,
 	PaperPlaneTiltIcon,
+	PaperclipIcon,
 	PencilSimpleIcon,
 	ProhibitIcon,
 	StarIcon,
@@ -60,6 +61,47 @@ import type { BulkEmailAction, Email } from "~/types";
 
 const PAGE_SIZE = 25;
 const CATEGORY_FILTER_ALL = "__all__";
+
+/**
+ * Muted deterministic avatar colours (Tailwind classes only — no index.css).
+ * The hash of the sender address picks one entry, so the same sender always
+ * renders the same muted circle in every row.
+ */
+const AVATAR_COLOR_CLASSES = [
+	"bg-slate-200 text-slate-700",
+	"bg-red-100 text-red-800",
+	"bg-amber-100 text-amber-800",
+	"bg-emerald-100 text-emerald-800",
+	"bg-sky-100 text-sky-800",
+	"bg-violet-100 text-violet-800",
+	"bg-stone-200 text-stone-700",
+	"bg-teal-100 text-teal-800",
+] as const;
+
+function avatarColorClass(seed: string): string {
+	let hash = 0;
+	for (let i = 0; i < seed.length; i += 1) {
+		hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+	}
+	return AVATAR_COLOR_CLASSES[hash % AVATAR_COLOR_CLASSES.length] ?? AVATAR_COLOR_CLASSES[0];
+}
+
+/** First letter of the display name, used as the avatar initial. */
+function senderInitial(displayName: string): string {
+	const trimmed = displayName.trim();
+	return trimmed ? trimmed.charAt(0).toUpperCase() : "?";
+}
+
+/**
+ * List rows carry no attachment payload — the threaded query only selects
+ * metadata. The full message query does include `attachments`, and the rule
+ * engine uses a `has_attachment` flag, so accept either shape defensively.
+ */
+function hasAttachment(email: Email): boolean {
+	if ((email.attachments?.length ?? 0) > 0) return true;
+	const maybeFlag = (email as Email & { has_attachment?: boolean | number | null }).has_attachment;
+	return maybeFlag === true || maybeFlag === 1;
+}
 
 const FOLDER_EMPTY_STATES: Record<
 	string,
@@ -123,13 +165,14 @@ function EmailListSkeleton() {
 	return (
 		<div className="animate-pulse space-y-1 p-2">
 			{Array.from({ length: 8 }).map((_, i) => (
-				<div key={i} className="flex items-center gap-3 px-3 py-3">
-					<div className="w-4 h-4 rounded bg-kumo-fill" />
-					<div className="w-5 h-5 rounded bg-kumo-fill" />
-					<div className="flex-1 space-y-2">
+				<div key={i} className="flex items-center gap-2.5 px-3 py-1.5">
+					<div className="w-4 h-4 shrink-0 rounded bg-kumo-fill" />
+					<div className="w-2.5 shrink-0" />
+					<div className="w-4 h-4 shrink-0 rounded-full bg-kumo-fill" />
+					<div className="h-7 w-7 shrink-0 rounded-full bg-kumo-fill" />
+					<div className="flex-1 space-y-1.5">
 						<div className="flex items-center gap-2">
 							<div className="h-3 w-24 rounded bg-kumo-fill" />
-							<div className="h-3 w-4 rounded bg-kumo-fill" />
 							<div className="h-3 flex-1 rounded bg-kumo-fill" />
 							<div className="h-3 w-12 rounded bg-kumo-fill" />
 						</div>
@@ -765,8 +808,9 @@ export default function EmailListRoute() {
 			selectedEmailId={selectedEmailId}
 			isComposing={isComposing}
 		>
-				{/* Folder header */}
-				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
+				{/* Folder header — sticky white toolbar (select-all, refresh,
+				    archive/trash/snooze/spam via BulkActionBar, count) */}
+				<div className="sticky top-0 z-10 flex items-center gap-2 border-b border-kumo-line bg-kumo-base px-3 py-2 shrink-0">
 					<Checkbox
 						checked={allSelected}
 						indeterminate={selectedCount > 0 && !allSelected}
@@ -911,7 +955,9 @@ export default function EmailListRoute() {
 							{emails.map((email) => {
 								const isSelected = selectedEmailId === email.id;
 								const isRowChecked = isRowSelected(email.id);
+								const unread = hasUnread(email);
 								const snippet = getSnippetText(email.snippet);
+								const displayName = formatParticipants(email);
 								const rowLabels =
 									(email as Email & { labels?: Array<{ name: string; color?: string | null }> })
 										.labels ?? [];
@@ -930,8 +976,8 @@ export default function EmailListRoute() {
 												handleRowClick(email);
 											}
 										}}
-										className={`group flex items-center gap-3 w-full text-left cursor-pointer transition-colors border-b border-kumo-line px-4 py-2.5 md:px-6 md:py-3 ${
-											isPanelOpen ? "md:px-4 md:py-2.5" : ""
+										className={`group flex min-h-[48px] items-center gap-2 w-full cursor-pointer border-b border-kumo-line px-3 py-1.5 text-left transition-colors ${
+											isPanelOpen ? "md:px-3" : ""
 										} ${isSelected || isRowChecked ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
 									>
 										{/* Selection checkbox (always visible in selection mode) */}
@@ -949,17 +995,19 @@ export default function EmailListRoute() {
 											/>
 										</div>
 
-										{/* Unread dot */}
-										<div className="w-2.5 shrink-0 flex justify-center">
-											{hasUnread(email) && (
-												<div className="h-2 w-2 rounded-full bg-kumo-brand" />
+										{/* Unread dot — small blue, left of the sender, decorative */}
+										<div aria-hidden="true" className="w-2.5 shrink-0 flex justify-center">
+											{unread && (
+												<div className="h-2 w-2 rounded-full bg-blue-500" />
 											)}
 										</div>
 
-										{/* Star */}
+										{/* Star — filled amber when starred */}
 										<button
 											type="button"
-											className="row-star shrink-0 p-0.5 bg-transparent border-0 cursor-pointer"
+											aria-label={email.starred ? "Unstar email" : "Star email"}
+											aria-pressed={email.starred}
+											className="row-star shrink-0 cursor-pointer rounded border-0 bg-transparent p-0.5 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-500"
 											onClick={(e) => {
 												e.stopPropagation();
 												toggleStar(e, email);
@@ -970,27 +1018,35 @@ export default function EmailListRoute() {
 												weight={email.starred ? "fill" : "regular"}
 												className={
 													email.starred
-														? "text-kumo-warning"
-														: "text-kumo-subtle hover:text-kumo-warning"
+														? "text-amber-500"
+														: "text-kumo-subtle hover:text-amber-500"
 												}
 											/>
 										</button>
 
+										{/* Sender avatar — initial circle, muted deterministic colour */}
+										<span
+											aria-hidden="true"
+											className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${avatarColorClass(email.sender)}`}
+										>
+											{senderInitial(displayName)}
+										</span>
+
 										{/* Content */}
 										<div className="min-w-0 flex-1">
-											<div className="flex items-center gap-2">
+											<div className="flex items-center gap-1.5">
 												<span
-													className={`truncate text-sm ${hasUnread(email) ? "font-semibold text-kumo-default" : "text-kumo-strong"}`}
+													className={`truncate text-[13px] leading-tight ${unread ? "font-semibold text-kumo-default" : "text-kumo-strong"}`}
 												>
-													{formatParticipants(email)}
+													{displayName}
 												</span>
 												{(email.thread_count ?? 1) > 1 && (
-													<span className="shrink-0 text-xs text-kumo-subtle bg-kumo-fill rounded-full px-1.5 py-0.5 font-medium">
+													<span className="shrink-0 rounded-full bg-kumo-fill px-1 py-px text-[10px] font-medium text-kumo-subtle">
 														{email.thread_count}
 													</span>
 												)}
 												{email.has_draft && (
-													<span className="shrink-0 text-xs text-kumo-destructive font-medium">
+													<span className="shrink-0 text-[10px] font-medium text-kumo-destructive">
 														Draft
 													</span>
 												)}
@@ -1001,7 +1057,7 @@ export default function EmailListRoute() {
 												{rowLabels.map((label) => (
 													<span
 														key={label.name}
-														className="shrink-0 inline-flex max-w-32 items-center gap-1 truncate rounded-full bg-kumo-fill px-1.5 py-0.5 text-xs font-medium text-kumo-strong"
+														className="shrink-0 inline-flex max-w-24 items-center gap-1 truncate rounded-full bg-kumo-fill px-1 py-px text-[10px] font-medium leading-tight text-kumo-strong"
 													>
 														{label.color && (
 															<span
@@ -1014,38 +1070,47 @@ export default function EmailListRoute() {
 													</span>
 												))}
 												{email.snooze_until && (
-													<span className="shrink-0 inline-flex items-center gap-1 text-xs text-kumo-subtle">
-														<ClockCounterClockwiseIcon size={14} />
-														Snoozed until {formatSnoozeTime(email.snooze_until)}
+													<span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-kumo-subtle">
+														<ClockCounterClockwiseIcon size={12} />
+														<span className="hidden xl:inline">Snoozed until</span> {formatSnoozeTime(email.snooze_until)}
 													</span>
 												)}
 												{email.reminded_at && (
 													<Tooltip content="Reminder fired" asChild>
-														<span className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-kumo-warning">
-															<BellRingingIcon size={14} weight="bold" />
-															Reminder
+														<span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium text-kumo-warning">
+															<BellRingingIcon size={12} weight="bold" />
+															<span className="hidden xl:inline">Reminder</span>
 														</span>
 													</Tooltip>
 												)}
 												{email.needs_reply && !email.has_draft && (
 													<Tooltip content="Needs reply" asChild>
 														<span className="shrink-0 text-kumo-warning">
-															<ArrowBendUpLeftIcon size={14} weight="bold" />
+															<ArrowBendUpLeftIcon size={12} weight="bold" />
 														</span>
 													</Tooltip>
 												)}
-												<span className="text-sm text-kumo-subtle shrink-0 ml-auto">
-													{formatListDate(email.date)}
+												<span className="ml-auto flex shrink-0 items-center gap-1.5">
+													{hasAttachment(email) && (
+														<PaperclipIcon
+															size={13}
+															aria-hidden="true"
+															className="shrink-0 text-kumo-subtle"
+															/>
+													)}
+													<span className="whitespace-nowrap text-xs tabular-nums text-kumo-subtle">
+														{formatListDate(email.date)}
+													</span>
 												</span>
 											</div>
-											<div className="truncate text-sm mt-0.5">
+											<div className="mt-px truncate text-[13px] leading-tight">
 												<span
-													className={hasUnread(email) ? "font-medium text-kumo-default" : "text-kumo-subtle"}
+													className={unread ? "font-medium text-kumo-default" : "text-kumo-subtle"}
 												>
 													{email.subject}
 												</span>
 											{snippet && (
-												<span className="text-kumo-subtle font-normal">
+												<span className="font-normal text-kumo-subtle">
 													{" "}&mdash; {snippet}
 												</span>
 											)}

@@ -45,10 +45,22 @@ import type { Email, Folder, Mailbox } from "~/types";
 
 function EmailPanelSkeleton() {
 	return (
-		<div className="animate-pulse p-5 space-y-4">
-			<div className="h-5 w-2/3 rounded bg-kumo-fill" />
-			<div className="flex items-center gap-3"><div className="w-10 h-10 rounded-full bg-kumo-fill" /><div className="space-y-2 flex-1"><div className="h-3 w-40 rounded bg-kumo-fill" /><div className="h-2.5 w-24 rounded bg-kumo-fill" /></div></div>
-			<div className="space-y-2 pt-4"><div className="h-2.5 w-full rounded bg-kumo-fill" /><div className="h-2.5 w-5/6 rounded bg-kumo-fill" /><div className="h-2.5 w-4/6 rounded bg-kumo-fill" /><div className="h-2.5 w-3/4 rounded bg-kumo-fill" /></div>
+		<div className="animate-pulse px-4 py-4 md:px-6" aria-hidden="true">
+			<div className="flex items-start gap-3">
+				<div className="h-10 w-10 shrink-0 rounded-full bg-kumo-fill" />
+				<div className="flex-1 space-y-2 pt-1">
+					<div className="h-3.5 w-40 rounded bg-kumo-fill" />
+					<div className="h-2.5 w-24 rounded bg-kumo-fill" />
+				</div>
+				<div className="h-2.5 w-16 rounded bg-kumo-fill" />
+			</div>
+			<div className="mt-4 h-5 w-2/3 rounded bg-kumo-fill" />
+			<div className="max-w-prose space-y-2 pt-6">
+				<div className="h-2.5 w-full rounded bg-kumo-fill" />
+				<div className="h-2.5 w-5/6 rounded bg-kumo-fill" />
+				<div className="h-2.5 w-4/6 rounded bg-kumo-fill" />
+				<div className="h-2.5 w-3/4 rounded bg-kumo-fill" />
+			</div>
 		</div>
 	);
 }
@@ -428,6 +440,15 @@ export default function EmailPanel({
 				categoryLabel={category}
 				categoryConfidence={email.category_confidence}
 				isSpam={email.category === SPAM_CATEGORY_ID}
+				sender={!hasThread ? email.sender : undefined}
+				date={!hasThread ? email.date : undefined}
+				recipient={!hasThread ? email.recipient : undefined}
+				cc={!hasThread ? email.cc : undefined}
+				envelopeRecipient={!hasThread ? email.envelope_recipient : undefined}
+				deliveryStatus={!hasThread ? email.delivery_status : undefined}
+				deliveryDetail={!hasThread ? email.delivery_detail : undefined}
+				isDraft={isDraftFolder}
+				isSelf={email.sender === currentMailbox?.email}
 			>
 				{/* The message's labels now sit inside the header block, under the
 				    category badge and beside the picker that adds and removes them.
@@ -450,7 +471,7 @@ export default function EmailPanel({
 				</div>
 			</EmailPanelHeader>
 
-			<div className="flex justify-end px-4 pt-3 md:px-6"><EmailViewToggle value={viewMode} onChange={setSessionEmailViewMode} /></div>
+			<div className="flex justify-end px-4 py-2 md:px-6"><EmailViewToggle value={viewMode} onChange={setSessionEmailViewMode} /></div>
 
 
 			<ExplainPanel email={email} categories={categoryNames} />

@@ -12,6 +12,7 @@ import {
 	FileIcon,
 	MagnifyingGlassIcon,
 	PaperPlaneTiltIcon,
+	PaperclipIcon,
 	ProhibitIcon,
 	RobotIcon,
 	StackIcon,
@@ -78,13 +79,55 @@ function hasUnread(email: Email): boolean {
 	return !email.read;
 }
 
+/**
+ * Muted deterministic avatar colours (Tailwind classes only — no index.css).
+ * The hash of the sender address picks one entry, so the same sender always
+ * renders the same muted circle in every row.
+ */
+const AVATAR_COLOR_CLASSES = [
+	"bg-slate-200 text-slate-700",
+	"bg-red-100 text-red-800",
+	"bg-amber-100 text-amber-800",
+	"bg-emerald-100 text-emerald-800",
+	"bg-sky-100 text-sky-800",
+	"bg-violet-100 text-violet-800",
+	"bg-stone-200 text-stone-700",
+	"bg-teal-100 text-teal-800",
+] as const;
+
+function avatarColorClass(seed: string): string {
+	let hash = 0;
+	for (let i = 0; i < seed.length; i += 1) {
+		hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+	}
+	return AVATAR_COLOR_CLASSES[hash % AVATAR_COLOR_CLASSES.length] ?? AVATAR_COLOR_CLASSES[0];
+}
+
+/** First letter of the display name, used as the avatar initial. */
+function senderInitial(displayName: string): string {
+	const trimmed = displayName.trim();
+	return trimmed ? trimmed.charAt(0).toUpperCase() : "?";
+}
+
+/**
+ * List rows carry no attachment payload — accept either the full-message
+ * `attachments` array or a `has_attachment` flag defensively.
+ */
+function hasAttachment(email: Email): boolean {
+	if ((email.attachments?.length ?? 0) > 0) return true;
+	const maybeFlag = (email as Email & { has_attachment?: boolean | number | null }).has_attachment;
+	return maybeFlag === true || maybeFlag === 1;
+}
+
 function AllAccountsSkeleton() {
 	return (
 		<div className="animate-pulse space-y-1 p-2">
 			{Array.from({ length: 8 }).map((_, i) => (
-				<div key={i} className="flex items-center gap-3 px-3 py-3">
-					<div className="w-2.5" />
-					<div className="flex-1 space-y-2">
+				<div key={i} className="flex items-center gap-2.5 px-3 py-1.5">
+					<div className="w-2.5 shrink-0" />
+					<div className="w-4 shrink-0 rounded-full bg-kumo-fill h-4" />
+					<div className="h-7 w-7 shrink-0 rounded-full bg-kumo-fill" />
+					<div className="flex-1 space-y-1.5">
 						<div className="flex items-center gap-2">
 							<div className="h-3 w-20 rounded bg-kumo-fill" />
 							<div className="h-3 w-24 rounded bg-kumo-fill" />
@@ -389,8 +432,9 @@ export default function AllAccountsRoute() {
 	return (
 		<div className="flex h-screen overflow-hidden">
 			<div id="main" tabIndex={-1} className="flex-1 flex flex-col min-w-0 bg-kumo-base">
-				{/* Header */}
-				<div className="flex items-center gap-3 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
+				{/* Header — sticky white toolbar (select-all, refresh,
+				    archive/trash/spam via BulkActionBar, count) */}
+				<div className="sticky top-0 z-10 flex items-center gap-3 border-b border-kumo-line bg-kumo-base px-3 py-2 shrink-0">
 					<Tooltip content="Back to mailboxes" side="bottom" asChild>
 						<Button
 							variant="ghost"
@@ -521,8 +565,10 @@ export default function AllAccountsRoute() {
 									{emails.map((email) => {
 										const isSelected = selectedEmailId === email.id && selectedMailboxId === email.mailboxId;
 										const isRowChecked = isRowSelected(selectionKey(email));
+										const unread = hasUnread(email);
 										const snippet = getSnippetText(email.snippet);
 										const accountLabel = email.mailboxId?.split("@")[0] || "unknown";
+										const displayName = email.sender.split("@")[0] ?? email.sender;
 										return (
 											<div
 												key={`${email.mailboxId ?? "mailbox"}-${email.id}`}
@@ -538,8 +584,8 @@ export default function AllAccountsRoute() {
 														handleRowClick(email);
 													}
 												}}
-												className={`group flex items-center gap-3 w-full text-left cursor-pointer transition-colors border-b border-kumo-line px-4 py-2.5 md:px-6 md:py-3 ${
-													isPanelOpen ? "md:px-4 md:py-2.5" : ""
+												className={`group flex min-h-[48px] items-center gap-2 w-full cursor-pointer border-b border-kumo-line px-3 py-1.5 text-left transition-colors ${
+													isPanelOpen ? "md:px-3" : ""
 												} ${isSelected || isRowChecked ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
 											>
 												{/* Selection checkbox (always visible in selection mode) */}
@@ -559,33 +605,42 @@ export default function AllAccountsRoute() {
 													/>
 												</div>
 
-												{/* Unread dot */}
-												<div className="w-2.5 shrink-0 flex justify-center">
-													{hasUnread(email) && <div className="h-2 w-2 rounded-full bg-kumo-brand" />}
+												{/* Unread dot — small blue, left of the sender, decorative */}
+												<div aria-hidden="true" className="w-2.5 shrink-0 flex justify-center">
+													{unread && <div className="h-2 w-2 rounded-full bg-blue-500" />}
 												</div>
 
-												{/* Star */}
+												{/* Star — filled amber when starred */}
 												<button
 													type="button"
-													className="row-star shrink-0 p-0.5 bg-transparent border-0 cursor-pointer"
+													className="row-star shrink-0 cursor-pointer rounded border-0 bg-transparent p-0.5 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-500"
 													onClick={(e) => toggleStar(e, email)}
 													aria-label={email.starred ? "Unstar email" : "Star email"}
+													aria-pressed={email.starred}
 												>
 													<StarIcon
 														size={16}
 														weight={email.starred ? "fill" : "regular"}
-														className={email.starred ? "text-kumo-warning" : "text-kumo-subtle hover:text-kumo-warning"}
+														className={email.starred ? "text-amber-500" : "text-kumo-subtle hover:text-amber-500"}
 													/>
 												</button>
 
+												{/* Sender avatar — initial circle, muted deterministic colour */}
+												<span
+													aria-hidden="true"
+													className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${avatarColorClass(email.sender)}`}
+												>
+													{senderInitial(displayName)}
+												</span>
+
 												{/* Content */}
 												<div className="min-w-0 flex-1">
-													<div className="flex items-center gap-2">
-														<Badge variant="secondary" className="shrink-0">
+													<div className="flex items-center gap-1.5">
+														<Badge variant="secondary" className="shrink-0 !px-1 !py-px !text-[10px] !leading-tight">
 															{accountLabel}
 														</Badge>
 														{folder === "all" && email.folder_id && (
-															<Badge variant="outline" className="shrink-0">
+															<Badge variant="outline" className="shrink-0 !px-1 !py-px !text-[10px] !leading-tight">
 																{getFolderDisplayName(email.folder_id)}
 															</Badge>
 														)}
@@ -594,26 +649,35 @@ export default function AllAccountsRoute() {
 															categories={globalCategorization?.categories}
 														/>
 														<span
-															className={`truncate text-sm ${
-																hasUnread(email) ? "font-semibold text-kumo-default" : "text-kumo-strong"
+															className={`truncate text-[13px] leading-tight ${
+																unread ? "font-semibold text-kumo-default" : "text-kumo-strong"
 															}`}
 														>
-															{email.sender.split("@")[0]}
+															{displayName}
 														</span>
 														{(email.thread_count ?? 1) > 1 && (
-															<span className="shrink-0 text-xs text-kumo-subtle bg-kumo-fill rounded-full px-1.5 py-0.5 font-medium">
+															<span className="shrink-0 rounded-full bg-kumo-fill px-1 py-px text-[10px] font-medium text-kumo-subtle">
 																{email.thread_count}
 															</span>
 														)}
-														<span className="text-sm text-kumo-subtle shrink-0 ml-auto">
-															{formatListDate(email.date)}
+														<span className="ml-auto flex shrink-0 items-center gap-1.5">
+															{hasAttachment(email) && (
+																<PaperclipIcon
+																	size={13}
+																	aria-hidden="true"
+																	className="shrink-0 text-kumo-subtle"
+																/>
+															)}
+															<span className="whitespace-nowrap text-xs tabular-nums text-kumo-subtle">
+																{formatListDate(email.date)}
+															</span>
 														</span>
 													</div>
-													<div className="truncate text-sm mt-0.5">
-														<span className={hasUnread(email) ? "font-medium text-kumo-default" : "text-kumo-subtle"}>
+													<div className="mt-px truncate text-[13px] leading-tight">
+														<span className={unread ? "font-medium text-kumo-default" : "text-kumo-subtle"}>
 															{email.subject}
 														</span>
-														{snippet && <span className="text-kumo-subtle font-normal"> &mdash; {snippet}</span>}
+														{snippet && <span className="font-normal text-kumo-subtle"> &mdash; {snippet}</span>}
 													</div>
 												</div>
 

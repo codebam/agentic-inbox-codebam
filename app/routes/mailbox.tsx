@@ -54,7 +54,7 @@ export default function MailboxRoute() {
 
 			{/* Sidebar: hidden on mobile by default, shown as overlay when open */}
 			<div
-				className={`fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 md:z-0 ${
+				className={`fixed inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 md:z-0 ${
 					isSidebarOpen ? "translate-x-0" : "-translate-x-full"
 				}`}
 			>

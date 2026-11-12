@@ -92,11 +92,11 @@ export default function BulkActionBar({
 		<div
 			role="toolbar"
 			aria-label="Actions for selected emails"
-			className="flex min-w-0 flex-1 items-center gap-2"
+			className="flex min-w-0 flex-1 items-center gap-2 bg-kumo-base"
 		>
 			<span
 				aria-live="polite"
-				className="shrink-0 text-sm font-medium text-kumo-default whitespace-nowrap"
+				className="shrink-0 text-sm font-medium tabular-nums text-kumo-default whitespace-nowrap"
 			>
 				{count} selected
 			</span>

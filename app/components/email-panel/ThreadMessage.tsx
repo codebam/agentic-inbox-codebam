@@ -41,15 +41,23 @@ interface ThreadMessageProps {
 	onPreviewImage?: (url: string, filename: string) => void;
 }
 
-function Avatar({ isDraft, isSelf, sender }: { isDraft?: boolean | undefined; isSelf: boolean; sender: string }) {
+/** Split a `Name <addr>` sender into display name and address. */
+function parseSender(sender: string): { name: string; address: string | null } {
+	const match = sender.match(/^(.*?)\s*<([^>]+)>\s*$/);
+	if (match?.[1]?.trim() && match[2]) {
+		return { name: match[1].trim(), address: match[2].trim() };
+	}
+	return { name: sender.trim(), address: null };
+}
+
+function Avatar({ isDraft, sender }: { isDraft?: boolean | undefined; isSelf: boolean; sender: string }) {
 	return (
 		<div
-			className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+			aria-hidden="true"
+			className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
 				isDraft
 					? "bg-kumo-fill text-kumo-subtle"
-					: isSelf
-						? "bg-kumo-brand text-kumo-inverse"
-						: "bg-kumo-fill text-kumo-default"
+					: "bg-kumo-fill text-kumo-default"
 			}`}
 		>
 			{isDraft ? "D" : sender.charAt(0).toUpperCase()}
@@ -76,7 +84,9 @@ export default function ThreadMessage({
 	const isSelf = email.sender === mailboxEmail;
 	const allowRemoteImages = useRemoteImagesAllowed(email, mailboxId);
 	const containerClassName = `${!isLast ? "border-b border-kumo-line" : ""} ${isDraft ? "border-l-2 border-l-kumo-warning bg-kumo-warning/[0.02]" : ""}`;
-	const senderLabel = isDraft ? "Draft reply" : isSelf ? "You" : email.sender;
+	const parsedSender = parseSender(email.sender);
+	const senderLabel = isDraft ? "Draft reply" : isSelf ? "You" : parsedSender.name;
+	const senderAddress = parsedSender.address ?? (parsedSender.name.includes("@") ? parsedSender.name : null);
 
 	if (!isExpanded) {
 		return (
@@ -88,13 +98,13 @@ export default function ThreadMessage({
 				>
 					<Avatar isDraft={isDraft} isSelf={isSelf} sender={email.sender} />
 					<div className="flex-1 min-w-0">
-						<div className="flex items-center justify-between">
-							<span className="text-sm font-medium text-kumo-default truncate">
+						<div className="flex items-center justify-between gap-3">
+							<span className="truncate text-[15px] font-medium text-kumo-default">
 								{senderLabel}
 							</span>
-							<span className="text-xs text-kumo-subtle shrink-0">
+							<time dateTime={email.date} className="text-xs text-kumo-subtle shrink-0">
 								{formatDetailDate(email.date)}
-							</span>
+							</time>
 						</div>
 						<p className="text-xs text-kumo-subtle truncate">
 							{stripHtml(email.body || "").slice(0, 80)}
@@ -122,22 +132,28 @@ export default function ThreadMessage({
 							</div>
 						</button>
 						<div className="min-w-0">
-							<div className="flex items-center gap-2">
-								<span className="text-sm font-medium text-kumo-default truncate">
+							<div className="flex flex-wrap items-baseline gap-x-2">
+								<span className="truncate text-[15px] font-medium leading-tight text-kumo-default">
 									{senderLabel}
 								</span>
+								{!isDraft && senderAddress && senderAddress !== senderLabel && (
+									<span className="truncate text-xs text-kumo-subtle">{senderAddress}</span>
+								)}
 								{isDraft && <Badge variant="outline">Draft</Badge>}
 							</div>
-							<div className="text-xs text-kumo-subtle">To: {email.recipient}</div>
+							<div className="mt-0.5 truncate text-xs text-kumo-subtle">
+								To: {email.recipient}
+								{email.cc ? ` · Cc: ${email.cc}` : ""}
+							</div>
 							{email.envelope_recipient && email.envelope_recipient !== email.recipient && (
-								<div className="text-xs text-kumo-subtle">Delivered to: {email.envelope_recipient}</div>
+								<div className="truncate text-xs text-kumo-subtle">Delivered to: {email.envelope_recipient}</div>
 							)}
 						</div>
 					</div>
 					<div className="flex items-center gap-1 shrink-0">
-						<span className="text-xs text-kumo-subtle">
+						<time dateTime={email.date} className="text-xs text-kumo-subtle">
 							{formatShortDate(email.date)}
-						</span>
+						</time>
 						{onViewSource && (
 							<Tooltip content="View source" side="bottom" asChild>
 								<Button
@@ -168,12 +184,12 @@ export default function ThreadMessage({
 				<RemoteImagesNotice email={email} mailboxId={mailboxId} />
 
 
-				<div className="md:ml-[42px]">
+				<div className="max-w-prose md:ml-[44px]">
 					<MessageBody email={email} mailboxId={mailboxId} viewMode={viewMode} autoSize allowRemoteImages={allowRemoteImages} />
 				</div>
 
 				{isDraft && (onSendDraft || onEditDraft || onDeleteDraft) && (
-					<div className="flex gap-2 mt-3 md:ml-[42px]">
+					<div className="flex gap-2 mt-3 md:ml-[44px]">
 						{onSendDraft && (
 							<Button
 								variant="primary"
@@ -216,7 +232,7 @@ export default function ThreadMessage({
 					emailId={email.id}
 					attachments={email.attachments}
 					onPreviewImage={onPreviewImage}
-					className="mt-3 md:ml-[42px]"
+					className="mt-3 max-w-prose md:ml-[44px]"
 				/>
 			</div>
 		</div>

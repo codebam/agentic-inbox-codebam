@@ -77,7 +77,7 @@ export default function Header() {
 	const isSettingsActive = location.pathname.includes("/settings");
 
 	return (
-		<header className="flex items-center gap-2 px-3 py-2.5 bg-kumo-base border-b border-kumo-line sticky top-0 z-10 md:px-5 md:gap-4">
+		<header className="flex items-center gap-2 px-3 py-2 bg-kumo-base border-b border-kumo-line sticky top-0 z-10 md:px-4">
 			{/* Hamburger menu - mobile only */}
 			<Button
 				variant="ghost"
@@ -89,15 +89,25 @@ export default function Header() {
 				className="md:hidden shrink-0"
 			/>
 
-			{/* Search - full on desktop, collapsible on mobile */}
+			{/* Search pill - full on desktop, collapsible on mobile. The
+			    rounded-full tinted container is the pill; the Kumo Input
+			    inside is made borderless/transparent so the tint shows. */}
 			<div
-				className={`flex-1 max-w-lg transition-all flex items-center gap-1 ${
+				className={`flex-1 max-w-lg mx-auto transition-all flex items-center ${
 					isSearchExpanded ? "flex" : "hidden md:flex"
 				}`}
 			>
-				<div className="flex-1 relative flex items-center">
+				<div className="flex-1 flex items-center gap-2 rounded-full bg-kumo-tint pl-3 pr-1 py-1 transition-shadow focus-within:ring-1 focus-within:ring-kumo-ring">
+					<button
+						type="button"
+						onClick={performSearch}
+						aria-label="Search"
+						className="shrink-0 rounded-full p-1 text-kumo-subtle hover:text-kumo-default transition-colors"
+					>
+						<MagnifyingGlassIcon size={18} />
+					</button>
 					<Input
-						className="w-full"
+						className="w-full rounded-full bg-transparent border-0 ring-0 shadow-none"
 						aria-label="Search emails"
 						placeholder="Search emails... (try from:name, is:unread, has:attachment)"
 						value={searchQuery}
@@ -108,23 +118,18 @@ export default function Header() {
 						<button
 							type="button"
 							onClick={clearSearch}
-							className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-kumo-subtle hover:text-kumo-default hover:bg-kumo-tint transition-colors"
+							className="shrink-0 p-1 rounded-full text-kumo-subtle hover:text-kumo-default transition-colors"
 							aria-label="Clear search"
 						>
 							<XIcon size={14} />
 						</button>
 					)}
 				</div>
-				<Tooltip content="Search" side="bottom" asChild>
-					<Button
-						variant="ghost"
-						shape="square"
-						icon={<MagnifyingGlassIcon size={20} />}
-						onClick={performSearch}
-						aria-label="Search"
-					/>
-				</Tooltip>
-				{mailboxId && <SemanticSearchToggle />}
+				{mailboxId && (
+					<span className="ml-2 shrink-0">
+						<SemanticSearchToggle />
+					</span>
+				)}
 			</div>
 
 			{/* Search toggle button - mobile only, hidden when search is expanded */}
@@ -140,7 +145,8 @@ export default function Header() {
 				/>
 			)}
 
-			<div className="flex items-center gap-1 ml-auto shrink-0">
+			<div className="flex items-center gap-0.5 ml-auto shrink-0">
+				<span aria-hidden="true" className="mx-1.5 h-5 w-px bg-kumo-line hidden md:block" />
 				{showAgentPanel && (
 					<Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
 						<Button

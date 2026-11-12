@@ -13,6 +13,7 @@ import {
 	FileIcon,
 	FolderIcon,
 	FunnelIcon,
+	GearSixIcon,
 	MagnifyingGlassIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
@@ -30,6 +31,7 @@ import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import { useCreateFolder, useDeleteFolder, useFolders, useUpdateFolder } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
+import { useStorageUsage } from "~/queries/storage";
 import { useLabels } from "~/queries/labels";
 import {
 	useDeleteSavedSearch,
@@ -47,6 +49,30 @@ const FOLDER_ICONS: Record<string, React.ReactNode> = {
 	[Folders.SPAM]: <ProhibitIcon size={18} weight="regular" />,
 	[Folders.TRASH]: <TrashIcon size={18} weight="regular" />,
 };
+
+/**
+ * Soft-quota ceiling for one mailbox's message database, in bytes. Mirrors
+ * app/components/StorageCard.tsx and workers/lib/quota.ts (kept in sync by
+ * convention: 800 MiB = 80% of the 1 GB Free-plan DO ceiling). The footer
+ * note uses it only to scale its database bar.
+ */
+const MAX_DATABASE_BYTES = 800 * 1024 * 1024;
+
+/**
+ * Byte formatting matching StorageCard's convention: binary units (1 KB =
+ * 1024 B), one decimal place from KB up, whole bytes below 1 KB.
+ */
+function formatBytes(bytes: number): string {
+	const units = ["B", "KB", "MB", "GB"] as const;
+	let value = Math.max(0, bytes);
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit += 1;
+	}
+	const suffix = units[unit]!;
+	return unit === 0 ? `${Math.round(value)} ${suffix}` : `${value.toFixed(1)} ${suffix}`;
+}
 
 const SYSTEM_FOLDER_LINKS = [
 	{ id: Folders.INBOX, label: "Inbox" },
@@ -80,7 +106,7 @@ function FolderLink({
 			to={to}
 			onClick={onClick}
 			className={({ isActive }) =>
-				`flex items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${className ?? ""} ${
+				`flex items-center gap-2.5 py-1.5 px-3 rounded-md text-sm transition-colors ${className ?? ""} ${
 					isActive
 						? "bg-kumo-fill font-semibold text-kumo-default"
 						: "text-kumo-strong hover:bg-kumo-tint"
@@ -90,7 +116,12 @@ function FolderLink({
 			<span className="shrink-0">{icon}</span>
 			<span className="truncate flex-1">{label}</span>
 			{unreadCount != null && unreadCount > 0 && (
-				<Badge variant="secondary">{unreadCount}</Badge>
+				<Badge
+					variant="secondary"
+					className="rounded-full px-1.5 min-w-5 justify-center text-[11px] leading-none"
+				>
+					{unreadCount}
+				</Badge>
 			)}
 		</NavLink>
 	);
@@ -105,6 +136,7 @@ export default function Sidebar() {
 	const deleteFolderMutation = useDeleteFolder();
 	const { startCompose, closeSidebar } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
+	const { data: storage } = useStorageUsage(mailboxId);
 	const { data: savedSearchesData } = useSavedSearches(mailboxId);
 	const savedSearches = savedSearchesData?.searches ?? [];
 	const { data: labelsData } = useLabels(mailboxId);
@@ -210,52 +242,70 @@ export default function Sidebar() {
 		closeSidebar();
 	};
 
+	// Roundcube-Elastic-style avatar: a plain circle with the display name's
+	// initial. Display-only; no identity logic changes.
+	const identityInitial =
+		displayName.trim().charAt(0).toUpperCase() || "?";
+
+	// Footer storage note inputs. The text shows the mailbox's total
+	// footprint; the bar shows the message database against the soft quota
+	// (same mirror as StorageCard / workers/lib/quota.ts).
+	const storageTotalBytes = storage
+		? storage.database_bytes + storage.attachment_bytes + storage.mailbox_json_bytes
+		: 0;
+	const databasePct = storage
+		? Math.min(100, Math.round((storage.database_bytes / MAX_DATABASE_BYTES) * 100))
+		: 0;
+
 	return (
-		<aside className="h-full w-64 bg-kumo-recessed flex flex-col shrink-0 border-r border-kumo-line">
+		<aside className="h-full w-60 bg-kumo-recessed flex flex-col shrink-0 border-r border-kumo-line">
 			{/* Back + identity */}
-			<div className="px-4 pt-4 pb-1">
+			<div className="px-3 pt-3 pb-2">
 				<button
 					type="button"
 					onClick={() => {
 						void navigate("/");
 						closeSidebar();
 					}}
-					className="flex items-center gap-1.5 text-kumo-subtle text-sm hover:text-kumo-default transition-colors mb-2.5 cursor-pointer bg-transparent border-0 p-0"
+					className="flex items-center gap-1 text-kumo-subtle text-xs font-medium hover:text-kumo-default transition-colors cursor-pointer bg-transparent border-0 p-0 mb-2.5"
 				>
-					<CaretLeftIcon size={14} />
+					<CaretLeftIcon size={12} />
 					<span>Mailboxes</span>
 				</button>
-				<div className="px-1">
-					<div className="text-base font-semibold text-kumo-default truncate">
-						{displayName}
-					</div>
-					<div className="text-sm text-kumo-subtle truncate mt-0.5">
-						{currentMailbox?.email || mailboxId}
+				<div className="flex items-center gap-2.5 px-1">
+					<span
+						aria-hidden="true"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-xs font-bold text-kumo-default"
+					>
+						{identityInitial}
+					</span>
+					<div className="min-w-0">
+						<div className="truncate text-sm font-semibold text-kumo-default">
+							{displayName}
+						</div>
+						<div className="truncate text-xs text-kumo-subtle">
+							{currentMailbox?.email || mailboxId}
+						</div>
 					</div>
 				</div>
 			</div>
 
 			{/* Compose */}
-			<div className="px-3 py-3">
+			<div className="px-3 pt-1 pb-3">
 				<Button
 					variant="primary"
 					icon={<PencilSimpleIcon size={16} />}
 					onClick={() => startCompose()}
-					className="w-full"
+					className="w-full shadow-sm"
 				>
 					Compose
 				</Button>
 			</div>
 
-			{/* Navigation */}
-			<nav className="flex-1 overflow-y-auto px-2 space-y-0.5">
-				<FolderLink
-					to="/all"
-					icon={<EnvelopeOpenIcon size={18} />}
-					label="All Accounts"
-					onClick={handleNavClick}
-				/>
+			<div className="mx-3 border-t border-kumo-line" aria-hidden="true" />
 
+			{/* Navigation */}
+			<nav className="sidebar-scroll flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
 				{SYSTEM_FOLDER_LINKS.map((folder) => (
 					<FolderLink
 						key={folder.id}
@@ -269,7 +319,7 @@ export default function Sidebar() {
 
 				{/* Custom folders */}
 				{customFolders.length > 0 && (
-					<div className="pt-5">
+					<div className="mt-3 pt-3 border-t border-kumo-line">
 						<div className="flex items-center justify-between px-3 mb-1.5">
 							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 								Folders
@@ -321,7 +371,7 @@ export default function Sidebar() {
 
 				{/* Add folder button when no custom folders */}
 				{customFolders.length === 0 && (
-					<div className="pt-5">
+					<div className="mt-3 pt-3 border-t border-kumo-line">
 						<div className="flex items-center justify-between px-3 mb-1.5">
 							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 								Folders
@@ -342,7 +392,7 @@ export default function Sidebar() {
 				{/* Saved searches — named queries kept per mailbox. The section
 				    only appears once the mailbox holds at least one. */}
 				{savedSearches.length > 0 && (
-					<div className="pt-5">
+					<div className="mt-3 pt-3 border-t border-kumo-line">
 						<div className="flex items-center justify-between px-3 mb-1.5">
 							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 								Saved searches
@@ -401,7 +451,7 @@ export default function Sidebar() {
 				    The search route narrows by the `label` URL param (matched
 				    by name), so each row links there with the label's name. */}
 				{mailboxLabels.length > 0 && (
-					<div className="pt-5">
+					<div className="mt-3 pt-3 border-t border-kumo-line">
 						<div className="flex items-center justify-between px-3 mb-1.5">
 							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 								Labels
@@ -439,7 +489,7 @@ export default function Sidebar() {
 				)}
 
 				{/* Today — the morning brief for this mailbox */}
-				<div className="pt-5">
+				<div className="mt-3 pt-3 border-t border-kumo-line">
 					<div className="flex items-center justify-between px-3 mb-1.5">
 						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 							Today
@@ -454,7 +504,7 @@ export default function Sidebar() {
 				</div>
 
 				{/* Sending — the composer's queued and past scheduled sends */}
-				<div className="pt-5">
+				<div className="mt-3 pt-3 border-t border-kumo-line">
 					<div className="flex items-center justify-between px-3 mb-1.5">
 						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 							Sending
@@ -469,7 +519,7 @@ export default function Sidebar() {
 				</div>
 
 				{/* Automation — deterministic rules run before the AI classifier */}
-				<div className="pt-5">
+				<div className="mt-3 pt-3 border-t border-kumo-line">
 					<div className="flex items-center justify-between px-3 mb-1.5">
 						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 							Automation
@@ -484,7 +534,7 @@ export default function Sidebar() {
 				</div>
 
 				{/* Tasks — deadlines and obligations extracted from incoming mail */}
-				<div className="pt-5">
+				<div className="mt-3 pt-3 border-t border-kumo-line">
 					<div className="flex items-center justify-between px-3 mb-1.5">
 						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 							Tasks
@@ -499,7 +549,7 @@ export default function Sidebar() {
 				</div>
 
 				{/* Agent — what the AI agent and MCP clients did to this mailbox */}
-				<div className="pt-5">
+				<div className="mt-3 pt-3 border-t border-kumo-line">
 					<div className="flex items-center justify-between px-3 mb-1.5">
 						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
 							Agent
@@ -515,6 +565,45 @@ export default function Sidebar() {
 
 
 			</nav>
+
+			{/* Footer: account-level links + storage note */}
+			<div className="border-t border-kumo-line px-2 py-2 space-y-0.5 shrink-0">
+				<FolderLink
+					to={`/mailbox/${mailboxId}/settings`}
+					icon={<GearSixIcon size={18} />}
+					label="Settings"
+					onClick={handleNavClick}
+				/>
+				<FolderLink
+					to="/all"
+					icon={<EnvelopeOpenIcon size={18} />}
+					label="All Accounts"
+					onClick={handleNavClick}
+				/>
+				{storage && (
+					<div className="px-3 pt-2 pb-1">
+						<div className="flex items-baseline justify-between gap-2">
+							<span className="text-[11px] font-medium text-kumo-subtle">Storage</span>
+							<span className="text-[11px] text-kumo-subtle">
+								{formatBytes(storageTotalBytes)} used
+							</span>
+						</div>
+						<div
+							className="mt-1.5 h-1 overflow-hidden rounded-full bg-kumo-fill"
+							role="progressbar"
+							aria-valuenow={databasePct}
+							aria-valuemin={0}
+							aria-valuemax={100}
+							aria-label={`Message database ${formatBytes(storage.database_bytes)} of ${formatBytes(MAX_DATABASE_BYTES)} quota`}
+						>
+							<div
+								className="h-full rounded-full bg-kumo-fill-strong"
+								style={{ width: `${databasePct}%` }}
+							/>
+						</div>
+					</div>
+				)}
+			</div>
 
 			{/* Create folder dialog */}
 			<Dialog.Root
