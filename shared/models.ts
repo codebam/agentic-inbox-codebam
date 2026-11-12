@@ -17,7 +17,7 @@
 /** Built-in defaults: the model ids the app shipped with. */
 export const DEFAULT_MODELS = {
 	/** Chat model used by the built-in email agent. */
-	agent: "@cf/qwen/qwen3.8-27b",
+	agent: "meta/muse-ember-1.0",
 	/** Model that proofreads drafts (verifyDraft). */
 	draftVerify: "@cf/meta/llama-4-scout-17b-16e-instruct",
 	/** Model that scans inbound mail for prompt injection. */

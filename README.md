@@ -83,7 +83,7 @@ This fork keeps the upstream architecture while adding per-domain catch-all rout
 
 - **Frontend:** React 19, React Router v7, Tailwind CSS, Zustand, TipTap, `@cloudflare/kumo`
 - **Backend:** Hono, Cloudflare Workers, Durable Objects (SQLite), R2, Email Routing
-- **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI (`@cf/qwen/qwen3.8-27b`), Cloudflare Clef-flash (`@cf/cloudflare/clef-flash`) for inbound spam + category classification, `react-markdown` + `remark-gfm`
+- **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI / AI Gateway (`meta/muse-ember-1.0`), Cloudflare Clef-flash (`@cf/cloudflare/clef-flash`) for inbound spam + category classification, `react-markdown` + `remark-gfm`
 - **Auth:** Cloudflare Access JWT validation for the browser UI; Wrangler credential bearer auth for the agent-facing `/mcp` endpoint; per-mailbox scoped bearer tokens for `/api/v1/scoped`
 
 ## Getting Started
