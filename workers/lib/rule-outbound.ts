@@ -17,7 +17,11 @@
  *   - Auto-replies are suppressed for machine-generated mail (Auto-Submitted,
  *     List-Id, or a bulk/junk/list Precedence header), when the sender is the
  *     mailbox itself, and when this mailbox already auto-replied to that
- *     sender within the last 24 hours.
+ *     sender within the last 24 hours. Forwards get the mirror guard: one
+ *     forward of a given sender's mail per 24 hours.
+ *   - Both outbound kinds are checked against the mailbox send rate limit
+ *     (MailboxDO.checkSendRateLimit: 20 sends/hour, 100/day) before the
+ *     send, and skipped when the quota is exhausted.
  *   - Sends go through the existing send path (workers/email-sender.ts,
  *     `sendEmail`) behind an injectable seam: without an EMAIL binding (the
  *     test config has none) nothing is sent and the report says so.
@@ -75,10 +79,25 @@ export interface RuleOutboundSentCopy {
 export interface RuleOutboundDeps {
 	/** null when this deployment has no EMAIL binding. */
 	sender: RuleOutboundSender | null;
+	/**
+	 * The mailbox send rate limit (MailboxDO.checkSendRateLimit: 20/hour,
+	 * 100/day): an error string when the quota is exhausted, else null.
+	 * Optional: a caller without a mailbox (a unit test with a fake sender)
+	 * omits it, and the quota check is skipped. Consulted before every
+	 * outbound send.
+	 */
+	checkSendRateLimit?: (() => Promise<string | null>) | undefined;
 	/** Timestamp of the last auto-reply to this sender, or null. */
 	lastAutoReplyAt: (senderAddress: string) => Promise<string | null>;
 	/** Remember that an auto-reply went out to this sender at `at`. */
 	recordAutoReply: (senderAddress: string, at: string) => Promise<void>;
+	/**
+	 * Timestamp of the last forward of this sender's mail, or null. Optional
+	 * like checkSendRateLimit: when omitted, no forward cooldown is enforced.
+	 */
+	lastForwardAt?: ((senderAddress: string) => Promise<string | null>) | undefined;
+	/** Remember that this sender's mail was forwarded at `at`. */
+	recordForward?: ((senderAddress: string, at: string) => Promise<void>) | undefined;
 	/**
 	 * Store the Sent copy of a delivered message. Optional: a caller that
 	 * cannot store mail (a test with a fake sender) simply omits it, and the
@@ -138,6 +157,12 @@ export interface RuleOutboundReport {
 
 /** One auto-reply per sender per day, per mailbox. */
 export const AUTO_REPLY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+
+/** One forward of a sender's mail per day, per mailbox — the mirror of the
+ * auto-reply cap above, so a chatty sender's mail is never forwarded twice
+ * within 24 hours. */
+export const FORWARD_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 
 /** Header names that mark a message as automated mail, not a person. */
@@ -226,6 +251,19 @@ export function isWithinAutoReplyCooldown(
 	const last = Date.parse(lastAt);
 	if (!Number.isFinite(last)) return false;
 	return now.getTime() - last < AUTO_REPLY_COOLDOWN_MS;
+}
+
+
+/** True while the last forward of a sender's mail is still inside the
+ * forward cooldown — mirrors isWithinAutoReplyCooldown. */
+export function isWithinForwardCooldown(
+	lastAt: string | null | undefined,
+	now: Date,
+): boolean {
+	if (!lastAt) return false;
+	const last = Date.parse(lastAt);
+	if (!Number.isFinite(last)) return false;
+	return now.getTime() - last < FORWARD_COOLDOWN_MS;
 }
 
 
@@ -332,6 +370,37 @@ export async function runRuleOutboundActions(
 				});
 				continue;
 			}
+			// Per-sender forward cooldown, mirroring the auto-reply cap: one
+			// forward of the same sender's mail per 24 hours.
+			const forwardFrom = (email.sender ?? "").trim().toLowerCase();
+			const sentAt = now();
+			if (deps.lastForwardAt) {
+				const lastForward = await deps.lastForwardAt(forwardFrom);
+				if (isWithinForwardCooldown(lastForward, sentAt)) {
+					record({
+						kind: "forward",
+						rule_id: action.rule_id,
+						rule_name: action.rule_name,
+						to,
+						status: "skipped",
+						reason: "already forwarded this sender's mail in the last 24h",
+					});
+					continue;
+				}
+			}
+			const rateLimitError = await deps.checkSendRateLimit?.();
+			if (rateLimitError) {
+				log(`forward to ${to} skipped: ${rateLimitError}`);
+				record({
+					kind: "forward",
+					rule_id: action.rule_id,
+					rule_name: action.rule_name,
+					to,
+					status: "skipped",
+					reason: rateLimitError,
+				});
+				continue;
+			}
 			try {
 				const params = buildForwardParams(action, email);
 				const result = await deps.sender.send(params);
@@ -342,6 +411,9 @@ export async function runRuleOutboundActions(
 					body: params.html ?? params.text ?? "",
 					send_message_id: result.messageId,
 				});
+				// Recorded only after a successful send: a failed attempt must
+				// not consume the sender's daily forward slot.
+				await deps.recordForward?.(forwardFrom, sentAt.toISOString());
 				record({
 					kind: "forward",
 					rule_id: action.rule_id,
@@ -396,6 +468,12 @@ export async function runRuleOutboundActions(
 		}
 		if (!deps.sender) {
 			skip("no EMAIL binding configured");
+			continue;
+		}
+		const rateLimitError = await deps.checkSendRateLimit?.();
+		if (rateLimitError) {
+			log(`auto-reply to ${to} skipped: ${rateLimitError}`);
+			skip(rateLimitError);
 			continue;
 		}
 		const sentAt = now();
@@ -504,6 +582,20 @@ export interface RuleOutboundBookkeepingStub {
 	getLastAutoReplyAt: (senderAddress: string) => Promise<string | null>;
 	recordAutoReply: (senderAddress: string, at: string) => Promise<void>;
 	/**
+	 * The mailbox send rate limit (MailboxDO.checkSendRateLimit: 20/hour,
+	 * 100/day) — an error string when the quota is exhausted, else null.
+	 * Optional so a stub without the method skips the quota check.
+	 */
+	checkSendRateLimit?: (() => Promise<string | null>) | undefined;
+	/**
+	 * Timestamp of the last forward of this sender's mail, or null
+	 * (MailboxDO.getLastForwardAt, mirroring getLastAutoReplyAt). Optional:
+	 * when absent, no forward cooldown is enforced.
+	 */
+	getLastForwardAt?: ((senderAddress: string) => Promise<string | null>) | undefined;
+	/** Remember when this mailbox last forwarded this sender's mail. */
+	recordForward?: ((senderAddress: string, at: string) => Promise<void>) | undefined;
+	/**
 	 * Store a message in a folder (MailboxDO.createEmail). Optional: the
 	 * pipeline uses it to keep the Sent copy of a rule-driven send like every
 	 * other send path does; a caller that cannot store mail omits it and the
@@ -603,8 +695,17 @@ export async function handleInboundRuleOutbound(
 
 	return runRuleOutboundActions(actions, email, {
 		sender: resolveRuleOutboundSender(env),
+		checkSendRateLimit: stub.checkSendRateLimit
+			? () => stub.checkSendRateLimit!()
+			: undefined,
 		lastAutoReplyAt: (address) => stub.getLastAutoReplyAt(address),
 		recordAutoReply: (address, at) => stub.recordAutoReply(address, at),
+		lastForwardAt: stub.getLastForwardAt
+			? (address) => stub.getLastForwardAt!(address)
+			: undefined,
+		recordForward: stub.recordForward
+			? (address, at) => stub.recordForward!(address, at)
+			: undefined,
 		storeSentCopy: buildSentCopyStore(stub, email.mailboxId),
 		log: (message) => console.log(`Rule outbound: ${message}`),
 	});

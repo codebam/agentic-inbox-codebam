@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Checkbox, Pagination, Select, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
+import { Button, Checkbox, Dialog, Pagination, Select, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
@@ -18,6 +18,7 @@ import {
 	StarIcon,
 	TrashIcon,
 	TrayIcon,
+	WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,6 +31,7 @@ import BulkActionBar from "~/components/BulkActionBar";
 import CategoryBadge from "~/components/CategoryBadge";
 import KeyboardCheatsheet, { KeyboardCheatsheetButton } from "~/components/KeyboardCheatsheet";
 import MailboxSplitView from "~/components/MailboxSplitView";
+import SnoozeMenu from "~/components/email-panel/SnoozeMenu";
 import SelectionCheckbox from "~/components/SelectionCheckbox";
 import { formatSnoozeTime, SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import { getSnippetText } from "~/lib/utils";
@@ -39,12 +41,15 @@ import {
 	useEmails,
 	useEmptyTrash,
 	useMarkThreadRead,
+	useMoveEmail,
+	useSnoozeEmail,
 	useSnoozedEmails,
 	useUnsnoozeEmail,
 	useUpdateEmail,
 } from "~/queries/emails";
 import type { EmailStream, StreamCounts } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
+import { useAttachLabel, useLabels } from "~/queries/labels";
 import { useMailbox } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
 import { queryKeys } from "~/queries/keys";
@@ -174,6 +179,38 @@ function FolderEmptyState({
 	);
 }
 
+/**
+ * Error panel mirroring the digest route's: a failed list query must never
+ * fall through to the empty state (whose Compose CTA would promise mail
+ * that simply failed to load). Retry re-runs the query via `refetch`.
+ */
+function EmailListError({
+	title,
+	error,
+	onRetry,
+}: {
+	title: string;
+	error: unknown;
+	onRetry: () => void;
+}) {
+	return (
+		<div className="px-4 py-4 md:px-6">
+			<div className="flex flex-col items-center rounded-lg border border-kumo-line bg-kumo-base p-6 text-center">
+				<WarningCircleIcon size={40} weight="thin" className="mb-3 text-kumo-danger" />
+				<h3 className="mb-1.5 text-base font-semibold text-kumo-default">
+					{title}
+				</h3>
+				<p className="mb-4 max-w-sm text-sm text-kumo-subtle">
+					{error instanceof Error ? error.message : "Something went wrong"}
+				</p>
+				<Button variant="secondary" size="sm" onClick={onRetry}>
+					Try again
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 /** The stream tabs a folder list offers, in display order. */
 const STREAM_TABS = [
 	{ value: "all", label: "All" },
@@ -265,11 +302,42 @@ export default function EmailListRoute() {
 
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
+	const moveEmail = useMoveEmail();
+	const snoozeEmail = useSnoozeEmail();
 	const unsnoozeEmail = useUnsnoozeEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
 	const emptyTrash = useEmptyTrash();
+	const attachLabel = useAttachLabel();
 	const toastManager = useKumoToastManager();
+	// Roving-tabindex focus owner for the listbox rows.
+	const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+	// Destructive confirmations go through a Kumo dialog, never window.confirm.
+	const [confirmState, setConfirmState] = useState<{
+		message: string;
+		confirmLabel: string;
+		onConfirm: () => void;
+	} | null>(null);
+	const confirm = (message: string, confirmLabel: string, onConfirm: () => void) =>
+		setConfirmState({ message, confirmLabel, onConfirm });
+
+	/** A success toast with an Undo action (the composer's scheduled-send pattern). */
+	const toastWithUndo = (title: string, undo: () => void) => {
+		const toastId = toastManager.add({
+			title,
+			actions: [
+				{
+					children: "Undo",
+					variant: "secondary",
+					size: "sm",
+					onClick: () => {
+						undo();
+						toastManager.close(toastId);
+					},
+				},
+			],
+		}) as string;
+	};
 
 	const { data: mailbox } = useMailbox(mailboxId);
 	// Retention days shown next to "Empty trash"; 0 means the mailbox opted out.
@@ -301,13 +369,26 @@ export default function EmailListRoute() {
 	const {
 		data: emailData,
 		isFetching: isRefreshingEmails,
+		isError: isEmailsError,
+		error: emailsError,
+		refetch: refetchEmails,
 	} = useEmails(mailboxId, params, {
 		refetchInterval: 30_000,
 		enabled: !isSnoozedFolder,
 	});
 	// Snoozed rows come from the dedicated endpoint (whole list, no paging).
-	const { data: snoozedData, isFetching: isRefreshingSnoozed } =
-		useSnoozedEmails(mailboxId, { enabled: isSnoozedFolder });
+	const {
+		data: snoozedData,
+		isFetching: isRefreshingSnoozed,
+		isError: isSnoozedError,
+		error: snoozedError,
+		refetch: refetchSnoozed,
+	} = useSnoozedEmails(mailboxId, { enabled: isSnoozedFolder });
+	// The active query's error state — kept distinct per view so the Snoozed
+	// folder reports (and retries) its own failed endpoint.
+	const listIsError = isSnoozedFolder ? isSnoozedError : isEmailsError;
+	const listError = isSnoozedFolder ? snoozedError : emailsError;
+	const refetchList = isSnoozedFolder ? refetchSnoozed : refetchEmails;
 	const isRefreshing = isSnoozedFolder
 		? isRefreshingSnoozed
 		: isRefreshingEmails;
@@ -325,6 +406,14 @@ export default function EmailListRoute() {
 	const streamCounts = isSnoozedFolder ? undefined : emailData?.streamCounts;
 
 	const { data: folders = [] } = useFolders(mailboxId);
+	const { data: labelsData } = useLabels(mailboxId);
+	const mailboxLabels = labelsData?.labels ?? [];
+	// The tabbable listbox row: the focused row, else the open row, else the first.
+	const tabbableRowId = useMemo(() => {
+		if (focusedRowId && emails.some((email) => email.id === focusedRowId)) return focusedRowId;
+		if (selectedEmailId && emails.some((email) => email.id === selectedEmailId)) return selectedEmailId;
+		return emails[0]?.id ?? null;
+	}, [emails, focusedRowId, selectedEmailId]);
 
 	const pageKeys = useMemo(() => emails.map((email) => email.id), [emails]);
 	const {
@@ -377,12 +466,17 @@ export default function EmailListRoute() {
 			.map((f) => ({ id: f.id, name: f.name }));
 	}, [folders, folder]);
 
-	const runBulkAction = (
+	const executeBulkAction = (
 		action: BulkEmailAction,
-		options?: { folderId?: string; confirm?: string },
+		options?: { folderId?: string },
 	) => {
 		if (!mailboxId || selectedEmails.length === 0) return;
-		if (options?.confirm && !window.confirm(options.confirm)) return;
+		// Inverse state captured before the mutation: Undo moves every row
+		// back to the folder it was in (trash/archive/move only).
+		const inverse = selectedEmails.map((email) => ({
+			id: email.id,
+			folderId: email.folder_id ?? Folders.INBOX,
+		}));
 
 		bulkAction.mutate(
 			{
@@ -403,10 +497,16 @@ export default function EmailListRoute() {
 						counts.purged += result.purged ?? 0;
 						counts.restored += result.restored ?? 0;
 					}
+					const undoMove = () => {
+						for (const row of inverse) {
+							moveEmail.mutate({ mailboxId, id: row.id, folderId: row.folderId });
+						}
+					};
 					if (action === "trash") {
-						toastManager.add({
-							title: `Moved ${counts.trashed} email${counts.trashed === 1 ? "" : "s"} to Trash`,
-						});
+						toastWithUndo(
+							`Moved ${counts.trashed} email${counts.trashed === 1 ? "" : "s"} to Trash`,
+							undoMove,
+						);
 					} else if (action === "restore") {
 						toastManager.add({
 							title: `Restored ${counts.restored} email${counts.restored === 1 ? "" : "s"} to the inbox`,
@@ -416,6 +516,8 @@ export default function EmailListRoute() {
 						if (counts.trashed > 0) parts.push(`${counts.trashed} moved to Trash`);
 						if (counts.purged > 0) parts.push(`${counts.purged} deleted forever`);
 						toastManager.add({ title: parts.join(" · ") || "Nothing to delete" });
+					} else if (action === "move") {
+						toastWithUndo("Moved selected emails", undoMove);
 					}
 					if (
 						(action === "trash" || action === "delete" || action === "restore") &&
@@ -427,6 +529,46 @@ export default function EmailListRoute() {
 				},
 			},
 		);
+	};
+
+	const runBulkAction = (
+		action: BulkEmailAction,
+		options?: { folderId?: string; confirm?: string; confirmLabel?: string },
+	) => {
+		if (!mailboxId || selectedEmails.length === 0) return;
+		if (options?.confirm) {
+			confirm(options.confirm, options.confirmLabel ?? "Confirm", () =>
+				executeBulkAction(action, options),
+			);
+			return;
+		}
+		executeBulkAction(action, options);
+	};
+
+	const handleBulkLabel = (label: { id: string; name: string }) => {
+		if (!mailboxId) return;
+		for (const email of selectedEmails) {
+			attachLabel.mutate({ mailboxId, emailId: email.id, labelId: label.id });
+		}
+		toastManager.add({
+			title: `Labelled ${selectedEmails.length} email${selectedEmails.length === 1 ? "" : "s"} as ${label.name}`,
+		});
+		clear();
+	};
+
+	const handleBulkSnooze = (until: string) => {
+		if (!mailboxId || selectedEmails.length === 0) return;
+		const targets = selectedEmails.map((email) => ({ mailboxId, id: email.id }));
+		for (const target of targets) {
+			snoozeEmail.mutate({ ...target, until });
+		}
+		toastWithUndo(
+			`Snoozed ${targets.length} email${targets.length === 1 ? "" : "s"} until ${formatSnoozeTime(until)}`,
+			() => {
+				for (const target of targets) unsnoozeEmail.mutate(target);
+			},
+		);
+		clear();
 	};
 
 	const folderName = useMemo(() => {
@@ -452,6 +594,19 @@ export default function EmailListRoute() {
 		}
 	}, [mailboxId, folder, closePanel, clear]);
 
+	// When the panel closes, focus returns to the row that was open (if it
+	// is still on the page) so keyboard triage continues where it left off.
+	const prevSelectedRef = useRef<string | null>(null);
+	useEffect(() => {
+		const prev = prevSelectedRef.current;
+		prevSelectedRef.current = selectedEmailId;
+		if (prev && !selectedEmailId && !isComposing) {
+			document
+				.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(prev)}"]`)
+				?.focus();
+		}
+	}, [selectedEmailId, isComposing]);
+
 	const toggleStar = (e: React.MouseEvent, email: Email) => {
 		e.preventDefault();
 		e.stopPropagation();
@@ -466,41 +621,76 @@ export default function EmailListRoute() {
 	const handleDelete = (e: React.MouseEvent, emailId: string) => {
 		e.preventDefault();
 		e.stopPropagation();
-		if (mailboxId) {
-			const confirmed = window.confirm(
-				isTrashFolder
-					? "Delete this email forever? This cannot be undone."
-					: "Move this email to Trash?",
-			);
-			if (!confirmed) return;
-			deleteEmail.mutate({ mailboxId, id: emailId, permanent: isTrashFolder });
-			if (selectedEmailId === emailId) closePanel();
-		}
+		if (!mailboxId) return;
+		const email = emails.find((row) => row.id === emailId);
+		const originFolder = email?.folder_id ?? Folders.INBOX;
+		const permanent = isTrashFolder;
+		confirm(
+			permanent
+				? "Delete this email forever? This cannot be undone."
+				: "Move this email to Trash?",
+			permanent ? "Delete forever" : "Move to Trash",
+			() => {
+				deleteEmail.mutate(
+					{ mailboxId, id: emailId, permanent },
+					{
+						onSuccess: () => {
+							// A delete in Trash is permanent and cannot be undone.
+							if (permanent) {
+								toastManager.add({ title: "Deleted forever" });
+							} else {
+								toastWithUndo("Moved to Trash", () =>
+									moveEmail.mutate({
+										mailboxId,
+										id: emailId,
+										folderId: originFolder,
+									}),
+								);
+							}
+						},
+					},
+				);
+				if (selectedEmailId === emailId) closePanel();
+			},
+		);
+	};
+
+	const handleRowSnooze = (email: Email, until: string) => {
+		if (!mailboxId) return;
+		snoozeEmail.mutate(
+			{ mailboxId, id: email.id, until },
+			{
+				onSuccess: () =>
+					toastWithUndo(`Snoozed until ${formatSnoozeTime(until)}`, () =>
+						unsnoozeEmail.mutate({ mailboxId, id: email.id }),
+					),
+			},
+		);
+		if (selectedEmailId === email.id) closePanel();
 	};
 
 
 	const handleEmptyTrash = () => {
 		if (!mailboxId) return;
-		if (
-			!window.confirm(
-				"Permanently delete every email in Trash? This cannot be undone.",
-			)
-		) {
-			return;
-		}
-		emptyTrash.mutate(
-			{ mailboxId },
-			{
-				onSuccess: ({ purged }) => {
-					toastManager.add({
-						title:
-							purged > 0
-								? `Trash emptied — ${purged} email${purged === 1 ? "" : "s"} deleted forever`
-								: "Trash is already empty",
-					});
-					closePanel();
-					clear();
-				},
+		confirm(
+			"Permanently delete every email in Trash? This cannot be undone.",
+			"Empty trash",
+			() => {
+				emptyTrash.mutate(
+					{ mailboxId },
+					{
+						onSuccess: ({ purged }) => {
+							toastManager.add({
+								title:
+									purged > 0
+										? `Trash emptied — ${purged} email${purged === 1 ? "" : "s"} deleted forever`
+										: "Trash is already empty",
+							});
+							closePanel();
+							clear();
+						},
+					},
+				);
 			},
 		);
 	};
@@ -602,15 +792,20 @@ export default function EmailListRoute() {
 							onTrash={() =>
 								runBulkAction("trash", {
 									confirm: `Move ${selectedCount} email${selectedCount === 1 ? "" : "s"} to Trash?`,
+									confirmLabel: "Move to Trash",
 								})
 							}
 							onRestore={() => runBulkAction("restore")}
 							onDelete={() =>
 								runBulkAction("delete", {
 									confirm: `Permanently delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? This cannot be undone.`,
+									confirmLabel: "Delete forever",
 								})
 							}
 							onClear={clear}
+							labels={mailboxLabels}
+							onLabel={handleBulkLabel}
+							onSnooze={handleBulkSnooze}
 						/>
 					) : (
 						<>
@@ -703,19 +898,31 @@ export default function EmailListRoute() {
 
 				{/* Email rows */}
 				<div className="flex-1 overflow-y-auto">
-				{isRefreshing && emails.length === 0 ? (
+				{listIsError && emails.length === 0 ? (
+					<EmailListError
+						title={isSnoozedFolder ? "Couldn't load snoozed emails" : "Couldn't load emails"}
+						error={listError}
+						onRetry={() => { void refetchList(); }}
+					/>
+				) : isRefreshing && emails.length === 0 ? (
 					<EmailListSkeleton />
 				) : emails.length > 0 ? (
-						<div>
+						<div role="listbox" aria-label={`${folderName} conversations`}>
 							{emails.map((email) => {
 								const isSelected = selectedEmailId === email.id;
 								const isRowChecked = isRowSelected(email.id);
 								const snippet = getSnippetText(email.snippet);
+								const rowLabels =
+									(email as Email & { labels?: Array<{ name: string; color?: string | null }> })
+										.labels ?? [];
 								return (
 									<div
 										key={email.id}
-										role="button"
-										tabIndex={0}
+										data-row-id={email.id}
+										role="option"
+										aria-selected={isSelected}
+										tabIndex={email.id === tabbableRowId ? 0 : -1}
+										onFocus={() => setFocusedRowId(email.id)}
 										onClick={() => handleRowClick(email)}
 										onKeyDown={(e) => {
 											if (e.key === "Enter" || e.key === " ") {
@@ -729,7 +936,7 @@ export default function EmailListRoute() {
 									>
 										{/* Selection checkbox (always visible in selection mode) */}
 										<div
-											className={`shrink-0 ${
+											className={`row-select shrink-0 ${
 												selectedCount > 0
 													? ""
 													: "invisible group-hover:visible group-focus-within:visible"
@@ -752,7 +959,7 @@ export default function EmailListRoute() {
 										{/* Star */}
 										<button
 											type="button"
-											className="shrink-0 p-0.5 bg-transparent border-0 cursor-pointer"
+											className="row-star shrink-0 p-0.5 bg-transparent border-0 cursor-pointer"
 											onClick={(e) => {
 												e.stopPropagation();
 												toggleStar(e, email);
@@ -791,6 +998,21 @@ export default function EmailListRoute() {
 													category={email.category}
 													categories={categories}
 												/>
+												{rowLabels.map((label) => (
+													<span
+														key={label.name}
+														className="shrink-0 inline-flex max-w-32 items-center gap-1 truncate rounded-full bg-kumo-fill px-1.5 py-0.5 text-xs font-medium text-kumo-strong"
+													>
+														{label.color && (
+															<span
+																aria-hidden="true"
+																className="h-1.5 w-1.5 shrink-0 rounded-full"
+																style={{ backgroundColor: label.color }}
+															/>
+														)}
+														<span className="truncate">{label.name}</span>
+													</span>
+												))}
 												{email.snooze_until && (
 													<span className="shrink-0 inline-flex items-center gap-1 text-xs text-kumo-subtle">
 														<ClockCounterClockwiseIcon size={14} />
@@ -831,7 +1053,17 @@ export default function EmailListRoute() {
 									</div>
 
 										{/* Hover actions */}
-										<div className="hidden group-hover:flex items-center shrink-0">
+										<div className="row-actions hidden group-hover:flex items-center shrink-0">
+											{!email.snooze_until && mailboxId && (
+												<div onClick={(e) => e.stopPropagation()}>
+													<SnoozeMenu
+														label="Snooze"
+														icon={<ClockCounterClockwiseIcon size={14} />}
+														header="Snooze until"
+														onPick={(until) => handleRowSnooze(email, until)}
+													/>
+												</div>
+											)}
 											{email.snooze_until && mailboxId ? (
 												<Tooltip content="Unsnooze" asChild>
 													<Button
@@ -841,7 +1073,18 @@ export default function EmailListRoute() {
 														icon={<ClockCounterClockwiseIcon size={14} />}
 														onClick={(e) => {
 															e.stopPropagation();
-															unsnoozeEmail.mutate({ mailboxId, id: email.id });
+															const wakeAt = email.snooze_until;
+														unsnoozeEmail.mutate(
+															{ mailboxId, id: email.id },
+															{
+																onSuccess: () => {
+																	if (!wakeAt) return;
+																	toastWithUndo("Unsnoozed", () =>
+																		snoozeEmail.mutate({ mailboxId, id: email.id, until: wakeAt }),
+																	);
+																},
+															},
+														);
 														}}
 														aria-label="Unsnooze"
 													/>
@@ -922,6 +1165,42 @@ export default function EmailListRoute() {
 				open={keyboardTriage.isCheatsheetOpen}
 				onOpenChange={keyboardTriage.setCheatsheetOpen}
 			/>
+			{/* Destructive confirmations (Kumo dialog, never window.confirm) */}
+			<Dialog.Root
+				open={confirmState !== null}
+				onOpenChange={(open) => {
+					if (!open) setConfirmState(null);
+				}}
+			>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="mb-2 text-base font-semibold">
+						Confirm
+					</Dialog.Title>
+					<Dialog.Description className="mb-4 text-sm text-kumo-subtle">
+						{confirmState?.message}
+					</Dialog.Description>
+					<div className="flex justify-end gap-2">
+						<Dialog.Close
+							render={({ className, ...props }) => (
+								<Button {...props} {...(className ? { className } : {})} variant="secondary">
+									Cancel
+								</Button>
+							)}
+						/>
+						<Button
+							variant={
+								confirmState?.confirmLabel === "Move to Trash" ? "primary" : "destructive"
+							}
+							onClick={() => {
+								confirmState?.onConfirm();
+								setConfirmState(null);
+							}}
+						>
+							{confirmState?.confirmLabel ?? "Confirm"}
+						</Button>
+					</div>
+				</Dialog>
+			</Dialog.Root>
 		</MailboxSplitView>
 	);
 }

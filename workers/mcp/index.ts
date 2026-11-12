@@ -104,7 +104,10 @@ import {
 	MAX_CONTACT_SEARCH_LIMIT,
 } from "../lib/contacts";
 import type { McpScopedBinding, McpSessionProps } from "../lib/mcp-auth";
-import { SCOPED_TOOL_SCOPES } from "../lib/scoped-surface";
+import {
+	APP_ONLY_SCOPED_TOOL_SCOPES,
+	SCOPED_TOOL_SCOPES,
+} from "../lib/scoped-surface";
 import type { AccessTokenScope } from "../../shared/access-tokens";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import { SEMANTIC_SEARCH_LIMIT_MAX } from "../../shared/semantic";
@@ -172,13 +175,11 @@ type ToolRegistrar = <Shape extends ZodRawShapeCompat>(
  * The extra tools an app-token session may call beyond SCOPED_TOOL_SCOPES,
  * each gated by the scope it requires. They are read-only answers over every
  * mailbox — exactly the reach an app token exists for — so each counts as
- * `read`.
+ * `read`. This is APP_ONLY_SCOPED_TOOL_SCOPES (workers/lib/scoped-surface.ts,
+ * derived from TOOL_REGISTRY) under the name this gate gives it.
  */
-const APP_SESSION_EXTRA_TOOL_SCOPES: Record<string, AccessTokenScope> = {
-	list_mailboxes: "read",
-	search_all_mailboxes: "read",
-	list_all_emails: "read",
-};
+const APP_SESSION_EXTRA_TOOL_SCOPES: Record<string, AccessTokenScope> =
+	APP_ONLY_SCOPED_TOOL_SCOPES;
 
 /**
  * Every tool name an app-token session may invoke: the SCOPED_TOOL_SCOPES
@@ -794,7 +795,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── delete_email ───────────────────────────────────────────
 		registerTool(
 			"delete_email",
-			"Delete an email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible.",
+			"Delete an email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible and requires confirm=true. Only call that when the operator explicitly asks to delete the email forever.",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				emailId: z.string().describe("The email ID to delete"),
@@ -804,8 +805,14 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 					.describe(
 						"true to permanently delete (irreversible); omit or false to move the email to Trash",
 					),
+				confirm: z
+					.boolean()
+					.optional()
+					.describe(
+						"Required when permanent=true: pass true only after the operator has explicitly confirmed this permanent deletion",
+					),
 			},
-			async ({ mailboxId, emailId, permanent }) => {
+			async ({ mailboxId, emailId, permanent, confirm }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				const result = await runAudited(
@@ -817,7 +824,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 						emailId,
 						args: { emailId, permanent: permanent === true },
 					},
-					() => toolDeleteEmail(env, mailboxId, emailId, permanent === true),
+					() => toolDeleteEmail(env, mailboxId, emailId, permanent === true, confirm === true),
 				);
 				return mcpResult(result);
 			},
@@ -846,11 +853,16 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── empty_trash ────────────────────────────────────────────
 		registerTool(
 			"empty_trash",
-			"Permanently delete every email in the Trash folder, including its attachments. Irreversible — trashed mail cannot be restored afterwards. Only call this when the operator explicitly asks to empty the Trash; nothing is sent.",
+			"Permanently delete every email in the Trash folder, including its attachments. Irreversible — trashed mail cannot be restored afterwards. Only call this when the operator explicitly asks to empty the Trash, and pass confirm=true; the call is refused without it. Nothing is sent.",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
+				confirm: z
+					.boolean()
+					.describe(
+						"Must be true: pass true only after the operator has explicitly confirmed emptying the Trash",
+					),
 			},
-			async ({ mailboxId }) => {
+			async ({ mailboxId, confirm }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				const result = await runAudited(
@@ -862,7 +874,7 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 						emailId: null,
 						args: {},
 					},
-					() => toolEmptyTrash(env, mailboxId),
+					() => toolEmptyTrash(env, mailboxId, confirm),
 				);
 				return mcpResult(result);
 			},
@@ -913,19 +925,21 @@ Never invent recipients, and never send without confirmation. Prefer reply tools
 		// ── delete_spam_emails ─────────────────────────────────────
 		registerTool(
 			"delete_spam_emails",
-			"Permanently delete every email marked as spam (Spam folder, spam category, or classifier is_spam). Irreversible — spam is never moved to Trash. Omit mailboxId to clear spam from every mailbox.",
+			"Permanently delete every email marked as spam (Spam folder, spam category, or classifier is_spam) in one named mailbox. Irreversible — spam is never moved to Trash. mailboxId is required: this tool never purges every mailbox at once, so call it once per mailbox. Only call this when the operator explicitly asks to delete spam, and pass confirm=true; the call is refused without it.",
 			{
 				mailboxId: z
 					.string()
-					.optional()
-					.describe("Mailbox address; omit to clear spam from every mailbox"),
+					.describe("The mailbox email address to clear spam from (required)"),
+				confirm: z
+					.boolean()
+					.describe(
+						"Must be true: pass true only after the operator has explicitly confirmed this permanent deletion",
+					),
 			},
-			async ({ mailboxId }) => {
-				if (mailboxId !== undefined) {
-					const denied = await verifyMailbox(mailboxId);
-					if (denied) return denied;
-				}
-				const result = await toolDeleteSpamEmails(env, mailboxId);
+			async ({ mailboxId, confirm }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolDeleteSpamEmails(env, mailboxId, confirm);
 				return mcpResult(result);
 			},
 		);

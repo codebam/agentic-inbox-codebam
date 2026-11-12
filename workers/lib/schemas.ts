@@ -33,7 +33,17 @@ import {
 	MAX_TEMPLATE_SUBJECT_LENGTH,
 } from "./templates";
 import { MAX_UPLOAD_ID_CHARS } from "./pending-uploads";
-import { MAX_SCHEDULED_UPLOADS } from "./scheduled-sends";
+import {
+	MAX_SCHEDULED_BODY_CHARS,
+	MAX_SCHEDULED_SUBJECT_CHARS,
+	MAX_SCHEDULED_UPLOADS,
+} from "./scheduled-sends";
+import {
+	formatFileSize,
+	MAX_FILES,
+	MAX_FILE_BYTES,
+	MAX_TOTAL_BYTES,
+} from "../../app/lib/attachments";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -90,6 +100,100 @@ export const ErrorResponseSchema = z.object({
 	error: z.string(),
 });
 
+// ── Server-side size caps (SendEmailRequestSchema, DraftBodySchema) ──
+
+/**
+ * Estimated decoded bytes of a base64 payload without decoding it: every
+ * four characters carry three bytes. The result over-estimates by at most
+ * two bytes per file (the omitted padding), which is conservative — an
+ * over-limit batch is rejected before storeAttachments decodes it, and a
+ * batch that fits the estimate fits exactly too.
+ */
+function estimatedBase64Bytes(content: string): number {
+	return Math.floor((content.length * 3) / 4);
+}
+
+/**
+ * Per-file and total over-limit issues for one inline attachment list, in
+ * the composer's message shape. The per-file and total thresholds are
+ * distinct constants even though both are 25 MiB today
+ * (MAX_FILE_BYTES / MAX_TOTAL_BYTES): a single oversized file is reported
+ * with its name, and a batch of individually allowed files that add up
+ * too large reports the total.
+ */
+function attachmentSizeIssues(
+	entries: readonly { filename: string; content: string }[],
+): { path: (string | number)[]; message: string }[] {
+	const issues: { path: (string | number)[]; message: string }[] = [];
+	let total = 0;
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const bytes = estimatedBase64Bytes(entry.content);
+		if (bytes > MAX_FILE_BYTES) {
+			issues.push({
+				path: [index, "content"],
+				message: `"${entry.filename || "file"}" is ${formatFileSize(bytes)} (estimated) — over the ${formatFileSize(MAX_FILE_BYTES)} per-file limit`,
+			});
+		}
+		total += bytes;
+	}
+	if (total > MAX_TOTAL_BYTES) {
+		issues.push({
+			path: [],
+			message: `attachments total ${formatFileSize(total)} (estimated) — over the ${formatFileSize(MAX_TOTAL_BYTES)} total limit`,
+		});
+	}
+	return issues;
+}
+
+/**
+ * One inline attachment entry: the composer's file bytes travel base64 in
+ * the request body. The length caps on the fields below (count, per-file
+ * and total bytes) are checked on the estimate, never on a decoded copy.
+ */
+const InlineAttachmentEntrySchema = z.object({
+	content: z.string(), // base64 encoded
+	filename: z.string(),
+	type: z.string(),
+	disposition: z.enum(["attachment", "inline"]),
+	contentId: z.string().optional(),
+});
+
+/**
+ * The attachment list shared by the send and draft schemas, with the
+ * composer's caps enforced server-side (app/lib/attachments.ts):
+ * MAX_FILES files, MAX_FILE_BYTES per file and MAX_TOTAL_BYTES in total
+ * (all 20 / 25 MiB — the Cloudflare Email Service outbound message
+ * limit). The MCP send tool caps tighter (5 files / 5 MiB,
+ * workers/lib/tools.ts MAX_TOOL_ATTACHMENT_*); the API schemas follow
+ * the composer limit so a direct API caller cannot store more than one
+ * message may carry, without rejecting composer-approved payloads.
+ * Linked attachments keep their own caps (workers/lib/attachment-links.ts,
+ * enforced on the send route) and are deliberately not capped here, to
+ * avoid duplicating those numbers.
+ */
+const CappedInlineAttachmentsSchema = z
+	.array(InlineAttachmentEntrySchema)
+	.max(MAX_FILES, `must have at most ${MAX_FILES} files`)
+	.superRefine((entries, ctx) => {
+		for (const issue of attachmentSizeIssues(entries)) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: issue.path,
+				message: issue.message,
+			});
+		}
+	});
+
+/**
+ * The send/draft text caps mirror the queued send's stored bounds
+ * (MAX_SCHEDULED_* in workers/lib/scheduled-sends.ts): a message too
+ * large to queue is too large to send immediately or save as a draft,
+ * and the scheduled-send schema inherits these caps by extending this
+ * one. An over-limit request fails schema validation (a 400 naming the
+ * field) before anything is stored or sent.
+ */
 export const SendEmailRequestSchema = z
 	.object({
 		to: RecipientFieldSchema,
@@ -99,20 +203,18 @@ export const SendEmailRequestSchema = z
 			z.string().email(),
 			z.object({ email: z.string().email(), name: z.string() }),
 		]),
-		subject: z.string(),
-		html: z.string().optional(),
-		text: z.string().optional(),
-		attachments: z
-			.array(
-				z.object({
-					content: z.string(), // base64 encoded
-					filename: z.string(),
-					type: z.string(),
-					disposition: z.enum(["attachment", "inline"]),
-					contentId: z.string().optional(),
-				}),
-			)
+		subject: z
+			.string()
+			.max(MAX_SCHEDULED_SUBJECT_CHARS, `must be at most ${MAX_SCHEDULED_SUBJECT_CHARS} characters`),
+		html: z
+			.string()
+			.max(MAX_SCHEDULED_BODY_CHARS, `must be at most ${MAX_SCHEDULED_BODY_CHARS} characters`)
 			.optional(),
+		text: z
+			.string()
+			.max(MAX_SCHEDULED_BODY_CHARS, `must be at most ${MAX_SCHEDULED_BODY_CHARS} characters`)
+			.optional(),
+		attachments: CappedInlineAttachmentsSchema.optional(),
 		// Files too large for the send binding: their bytes go to R2 and the
 		// body carries a public download link. Same entry shape as
 		// `attachments[]` — `mimetype` is accepted as an alias for `type` —
@@ -396,21 +498,17 @@ export const DraftBodySchema = z.object({
 	to: z.string().optional(),
 	cc: z.string().optional(),
 	bcc: z.string().optional(),
-	subject: z.string().optional(),
-	body: z.string(),
-	// Same shape as SendEmailRequestSchema.attachments: the composer sends the
-	// files it is holding so a saved draft keeps them.
-	attachments: z
-		.array(
-			z.object({
-				content: z.string(), // base64 encoded
-				filename: z.string(),
-				type: z.string(),
-				disposition: z.enum(["attachment", "inline"]),
-				contentId: z.string().optional(),
-			}),
-		)
+	subject: z
+		.string()
+		.max(MAX_SCHEDULED_SUBJECT_CHARS, `must be at most ${MAX_SCHEDULED_SUBJECT_CHARS} characters`)
 		.optional(),
+	body: z
+		.string()
+		.max(MAX_SCHEDULED_BODY_CHARS, `must be at most ${MAX_SCHEDULED_BODY_CHARS} characters`),
+	// Same shape and caps as SendEmailRequestSchema.attachments (see the
+	// cap block above): the composer sends the files it is holding so a
+	// saved draft keeps them, under the same server-side limits.
+	attachments: CappedInlineAttachmentsSchema.optional(),
 	in_reply_to: z.string().optional(),
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),

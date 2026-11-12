@@ -47,9 +47,23 @@ import {
 } from "../lib/sender-policy";
 import type { AgentActionSource } from "../lib/agent-actions";
 import type { StorageUsage } from "../lib/quota";
+import { assertSendQuota } from "../lib/quota";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { findDuplicateEmailId, type CreateEmailResult } from "./dedupe";
+import {
+	clearThreadReminder,
+	dueReminders,
+	dueSnoozes,
+	fireDueReminder,
+	folderExists,
+	getReminderRows,
+	getSnoozedRows,
+	listRowSelection as snoozeListRowSelection,
+	restoreSnoozed,
+	wakeSnoozedThread,
+	type SnoozedListOptions,
+} from "./snooze";
 import { likePatternsFor } from "../lib/like-terms";
 import { attachmentR2Key } from "../lib/attachments";
 import {
@@ -679,6 +693,18 @@ export interface AccessTokenInput {
 }
 
 
+/**
+ * The mailbox Durable Object: one DO instance per mailbox address, owning
+ * that mailbox's SQLite database.
+ *
+ * Modularisation status: the snooze/reminder domain lives in
+ * workers/durableObject/snooze.ts (helpers taking `(db, sql)`, this class
+ * kept as a thin delegating shell) and inbound-message deduplication in
+ * workers/durableObject/dedupe.ts. The remaining domains are still in this
+ * file — do NOT attempt a full split of the ~6k-line class in one step;
+ * extract one domain at a time following snooze.ts's pattern and keep
+ * every RPC signature byte-compatible.
+ */
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
@@ -696,30 +722,11 @@ export class MailboxDO extends DurableObject<Env> {
 	 * snooze/reminder state, so a row can render its badge from any listing
 	 * (folder, Snoozed, Reminders). `getEmail` returns the whole row instead.
 	 */
+	// The list-row shape is owned by the extracted snooze domain
+	// (workers/durableObject/snooze.ts); this shell keeps the historic call
+	// site so getEmails and the Snoozed/Reminders listings share one shape.
 	#listRowSelection() {
-		return {
-			id: schema.emails.id,
-			subject: schema.emails.subject,
-			sender: schema.emails.sender,
-			recipient: schema.emails.recipient,
-			envelope_recipient: schema.emails.envelope_recipient,
-			cc: schema.emails.cc,
-			bcc: schema.emails.bcc,
-			date: schema.emails.date,
-			read: schema.emails.read,
-			starred: schema.emails.starred,
-			in_reply_to: schema.emails.in_reply_to,
-			email_references: schema.emails.email_references,
-			thread_id: schema.emails.thread_id,
-			folder_id: schema.emails.folder_id,
-			category: schema.emails.category,
-			category_confidence: schema.emails.category_confidence,
-			snooze_until: schema.emails.snooze_until,
-			snoozed_from_folder: schema.emails.snoozed_from_folder,
-			remind_at: schema.emails.remind_at,
-			reminded_at: schema.emails.reminded_at,
-			snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
-		};
+		return snoozeListRowSelection();
 	}
 
 	getEmails(options: GetEmailsOptions = {}) {
@@ -1116,14 +1123,23 @@ export class MailboxDO extends DurableObject<Env> {
 
 		const emailIds = emailRows.map((e) => e.id);
 
-		// Batch-fetch all attachments for the thread in a single query
-		const placeholders = emailIds.map((_, i) => `?${i + 1}`).join(",");
-		const attachmentRows = [
-			...this.ctx.storage.sql.exec(
-				`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
-				...emailIds,
-			),
-		] as unknown as AttachmentRow[];
+		// Batch-fetch all attachments for the thread, chunked at 100 ids per
+		// statement: Durable Object SQLite caps one statement at 100 bound
+		// parameters (the same chunking listEmailsForExport uses), so a
+		// thread with more than 100 messages would otherwise fail the
+		// attachment lookup outright.
+		const attachmentRows: AttachmentRow[] = [];
+		const attachmentLookupChunk = 100;
+		for (let start = 0; start < emailIds.length; start += attachmentLookupChunk) {
+			const chunk = emailIds.slice(start, start + attachmentLookupChunk);
+			const placeholders = chunk.map((_, i) => `?${i + 1}`).join(",");
+			attachmentRows.push(
+				...this.ctx.storage.sql.exec(
+					`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
+					...chunk,
+				) as unknown as AttachmentRow[],
+			);
+		}
 
 		// Group attachments by email_id
 		const attachmentsByEmail = new Map<string, AttachmentRow[]>();
@@ -1850,43 +1866,20 @@ export class MailboxDO extends DurableObject<Env> {
 	// ── Snooze & reminders (alarm-driven) ──────────────────────────
 
 	/**
-	 * Messages currently snoozed, earliest wake time first. Rows carry the
-	 * same fields as a folder listing so the UI can render them like any
-	 * other message.
+	 * Messages currently snoozed, earliest wake time first. Delegates to
+	 * workers/durableObject/snooze.ts (paginated; the no-options shape is
+	 * byte-identical to the historical array answer).
 	 */
-	getSnoozed() {
-		const rows = this.db
-			.select(this.#listRowSelection())
-			.from(schema.emails)
-			.where(isNotNull(schema.emails.snooze_until))
-			.orderBy(asc(schema.emails.snooze_until), asc(schema.emails.id))
-			.all();
-
-		return rows.map((email) => ({
-			...email,
-			read: !!email.read,
-			starred: !!email.starred,
-		}));
+	getSnoozed(options: SnoozedListOptions = {}) {
+		return getSnoozedRows(this.db, options);
 	}
 
 	/**
-	 * Follow-ups that already fired, newest message first. A pending reminder
-	 * is not listed here: until it fires it is just `remind_at` on its own
-	 * row, so a cancelled reminder can never leave a stale entry behind.
+	 * Follow-ups that already fired, newest message first. Delegates to
+	 * workers/durableObject/snooze.ts (paginated; see getSnoozed).
 	 */
-	getReminders() {
-		const rows = this.db
-			.select(this.#listRowSelection())
-			.from(schema.emails)
-			.where(isNotNull(schema.emails.reminded_at))
-			.orderBy(desc(schema.emails.date), desc(schema.emails.id))
-			.all();
-
-		return rows.map((email) => ({
-			...email,
-			read: !!email.read,
-			starred: !!email.starred,
-		}));
+	getReminders(options: SnoozedListOptions = {}) {
+		return getReminderRows(this.db, options);
 	}
 
 	/**
@@ -2008,25 +2001,13 @@ export class MailboxDO extends DurableObject<Env> {
 	 * columns are cleared as part of the wake, so a second pass finds nothing.
 	 */
 	wakeDueSnoozes(now: string) {
-		const due = this.db
-			.select({
-				id: schema.emails.id,
-				snoozed_from_folder: schema.emails.snoozed_from_folder,
-			})
-			.from(schema.emails)
-			.where(
-				and(
-					isNotNull(schema.emails.snooze_until),
-					lte(schema.emails.snooze_until, now),
-				),
-			)
-			.all();
+		const due = dueSnoozes(this.db, now);
 
 		if (due.length === 0) return 0;
 
 		this.ctx.storage.transactionSync(() => {
 			for (const email of due) {
-				this.#restoreSnoozed(email.id, email.snoozed_from_folder, now);
+				restoreSnoozed(this.db, this.ctx.storage.sql, email.id, email.snoozed_from_folder, now);
 			}
 		});
 
@@ -2043,41 +2024,16 @@ export class MailboxDO extends DurableObject<Env> {
 	 * is cleared either way, so a second pass finds nothing due.
 	 */
 	fireDueReminders(now: string) {
-		const due = this.db
-			.select({
-				id: schema.emails.id,
-				thread_id: schema.emails.thread_id,
-				folder_id: schema.emails.folder_id,
-			})
-			.from(schema.emails)
-			.where(
-				and(
-					isNotNull(schema.emails.remind_at),
-					lte(schema.emails.remind_at, now),
-					isNull(schema.emails.reminded_at),
-				),
-			)
-			.all();
+		const due = dueReminders(this.db, now);
 
 		if (due.length === 0) return 0;
 
 		let fired = 0;
 		this.ctx.storage.transactionSync(() => {
 			for (const email of due) {
-				if (!this.#threadNeedsReply(email)) {
-					this.ctx.storage.sql.exec(
-						`UPDATE emails SET remind_at = NULL WHERE id = ?1`,
-						email.id,
-					);
-					continue;
+				if (fireDueReminder(this.db, this.ctx.storage.sql, email, now)) {
+					fired += 1;
 				}
-				this.ctx.storage.sql.exec(
-					`UPDATE emails SET remind_at = NULL, reminded_at = ?1, folder_id = ?2, trashed_at = NULL WHERE id = ?3`,
-					now,
-					Folders.INBOX,
-					email.id,
-				);
-				fired += 1;
 			}
 		});
 
@@ -2781,107 +2737,36 @@ export class MailboxDO extends DurableObject<Env> {
 		return due.length > 0 ? Math.min(...due) : null;
 	}
 
-	/**
-	 * Put a snoozed message back where it came from and clear its snooze
-	 * columns. `now` only stamps `trashed_at` when the origin is Trash, so
-	 * every folder move keeps the retention invariant intact.
-	 */
+	// ── Snooze/reminder internals (delegating shells) ──────────────
+	// The implementations live in workers/durableObject/snooze.ts; these
+	// shells keep the historic private names so every other call site in
+	// this file (createEmail's thread wake, clearSnooze, …) is untouched.
+
+	/** Put a snoozed message back where it came from and clear its snooze columns. */
 	#restoreSnoozed(
 		id: string,
 		fromFolder: string | null,
 		now: string = new Date().toISOString(),
 	): void {
-		const target = this.#restoreTargetFolder(fromFolder);
-		this.ctx.storage.sql.exec(
-			`UPDATE emails
-			 SET folder_id = ?1, trashed_at = ?2, snooze_until = NULL, snoozed_from_folder = NULL
-			 WHERE id = ?3`,
-			target,
-			target === Folders.TRASH ? now : null,
-			id,
-		);
+		restoreSnoozed(this.db, this.ctx.storage.sql, id, fromFolder, now);
 	}
 
-	/**
-	 * Folder a message snoozed from `fromFolder` lands in. Falls back to the
-	 * Inbox when nothing was recorded, when the recording is Snoozed itself
-	 * (a message must never wake back into Snoozed), or when the remembered
-	 * folder has since been deleted — the foreign key would otherwise reject
-	 * the move and the alarm would retry forever.
-	 */
-	#restoreTargetFolder(fromFolder: string | null): string {
-		if (fromFolder && fromFolder !== Folders.SNOOZED && this.#folderExists(fromFolder)) {
-			return fromFolder;
-		}
-		return Folders.INBOX;
-	}
-
-	/** Whether a folder row exists (see #restoreTargetFolder). */
+	/** Whether a folder row exists (see snooze.ts). */
 	#folderExists(folderId: string): boolean {
-		const row = this.db
-			.select({ id: schema.folders.id })
-			.from(schema.folders)
-			.where(eq(schema.folders.id, folderId))
-			.get();
-		return row !== undefined;
-	}
-
-	/**
-	 * Whether a thread still expects a reply: the newest message in it is not
-	 * in Sent. A message without a thread_id is its own thread, and equal
-	 * dates break by id so the answer is deterministic.
-	 */
-	#threadNeedsReply(email: {
-		id: string;
-		thread_id: string | null;
-		folder_id: string;
-	}): boolean {
-		if (!email.thread_id) return email.folder_id !== Folders.SENT;
-
-		const newest = this.db
-			.select({ folder_id: schema.emails.folder_id })
-			.from(schema.emails)
-			.where(eq(schema.emails.thread_id, email.thread_id))
-			.orderBy(desc(schema.emails.date), desc(schema.emails.id))
-			.limit(1)
-			.get();
-
-		return (newest?.folder_id ?? email.folder_id) !== Folders.SENT;
+		return folderExists(this.db, folderId);
 	}
 
 	/** Wake every snoozed message in a thread because new mail arrived in it. */
 	#wakeSnoozedThread(threadId: string): void {
-		const snoozed = this.db
-			.select({
-				id: schema.emails.id,
-				snoozed_from_folder: schema.emails.snoozed_from_folder,
-			})
-			.from(schema.emails)
-			.where(
-				and(
-					eq(schema.emails.thread_id, threadId),
-					isNotNull(schema.emails.snooze_until),
-				),
-			)
-			.all();
-
-		if (snoozed.length === 0) return;
-
-		this.ctx.storage.transactionSync(() => {
-			for (const email of snoozed) {
-				this.#restoreSnoozed(email.id, email.snoozed_from_folder);
-			}
-		});
+		wakeSnoozedThread(this.db, this.ctx.storage.sql, (callback) =>
+			this.ctx.storage.transactionSync(callback),
+			threadId,
+		);
 	}
 
 	/** Drop every reminder on a thread: a reply answered the follow-up. */
 	#clearThreadReminder(threadId: string): void {
-		this.ctx.storage.sql.exec(
-			`UPDATE emails
-			 SET remind_at = NULL, reminded_at = NULL
-			 WHERE thread_id = ?1 AND (remind_at IS NOT NULL OR reminded_at IS NOT NULL)`,
-			threadId,
-		);
+		clearThreadReminder(this.ctx.storage.sql, threadId);
 	}
 
 	// ── Unsubscribe (RFC 8058) ─────────────────────────────────────
@@ -3387,6 +3272,23 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Email creation (Drizzle) ───────────────────────────────────
 
+	/**
+	 * Id of an email already stored in this mailbox with the same
+	 * `message_id` (the RFC 5322 Message-ID, brackets stripped by the
+	 * ingest path), or null — the same lookup `createEmail` runs
+	 * authoritatively at insert time (workers/durableObject/dedupe.ts).
+	 *
+	 * The inbound ingest path calls this BEFORE uploading any attachment
+	 * bytes to R2 or extracting attachment text, so a redelivery leaves no
+	 * orphan blobs or search rows behind. `createEmail` still checks again
+	 * on insert, so a duplicate that arrives between this check and the
+	 * insert is still dropped; only the bytes uploaded in that race window
+	 * remain as orphans.
+	 */
+	findDuplicateEmailId(messageId: string | null): string | null {
+		return findDuplicateEmailId(this.db, messageId);
+	}
+
 	createEmail(
 		folder: string,
 		email: EmailData,
@@ -3417,6 +3319,30 @@ export class MailboxDO extends DurableObject<Env> {
 		const duplicateId = findDuplicateEmailId(this.db, email.message_id);
 		if (duplicateId) {
 			return { id: duplicateId, duplicate: true };
+		}
+
+		// Soft quota (workers/lib/quota.ts): refuse new rows once the
+		// mailbox's SQLite database is at/over MAX_DATABASE_BYTES. The
+		// duplicate return above runs first — a redelivery of already-
+		// stored mail is still a duplicate, not a quota refusal, because
+		// it does not grow the database. The quota error carries a 503
+		// status + Retry-After (see QuotaExceededError); HTTP callers
+		// map it to a 503 response (workers/index.ts onError) and the
+		// inbound path lets it propagate so Email Routing can retry.
+		// Measuring the database is fail-open: if `databaseSize` itself
+		// throws, log and continue instead of blocking ingest — the
+		// quota is a safety rail, not a hard invariant.
+		{
+			let databaseSize: number | null = null;
+			try {
+				databaseSize = this.ctx.storage.sql.databaseSize;
+			} catch (e) {
+				console.error(
+					`Quota measurement failed for ${email.id}; continuing:`,
+					(e as Error).message,
+				);
+			}
+			if (databaseSize !== null) assertSendQuota(databaseSize);
 		}
 
 		const isSent = folderId === Folders.SENT;
@@ -4322,6 +4248,32 @@ export class MailboxDO extends DurableObject<Env> {
 		const normalized = (senderAddress ?? "").trim().toLowerCase();
 		if (!normalized) return null;
 		return `ruleAutoReply:${normalized}`;
+	}
+
+	/**
+	 * Timestamp of the last forward of a sender's mail (MailboxDO storage,
+	 * keyed by the sender address), or null. Mirrors getLastAutoReplyAt:
+	 * the per-sender 24-hour forward cooldown in rule-outbound.
+	 */
+	async getLastForwardAt(senderAddress: string): Promise<string | null> {
+		const key = this.#forwardKey(senderAddress);
+		if (!key) return null;
+		const value = await this.ctx.storage.get<string>(key);
+		return typeof value === "string" ? value : null;
+	}
+
+	/** Remember when this mailbox last forwarded a sender's mail. */
+	async recordForward(senderAddress: string, at: string): Promise<void> {
+		const key = this.#forwardKey(senderAddress);
+		if (!key || typeof at !== "string" || !at) return;
+		await this.ctx.storage.put(key, at);
+	}
+
+	/** Storage key for the per-sender forward cap; null for junk input. */
+	#forwardKey(senderAddress: string): string | null {
+		const normalized = (senderAddress ?? "").trim().toLowerCase();
+		if (!normalized) return null;
+		return `ruleForward:${normalized}`;
 	}
 
 

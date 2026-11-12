@@ -2,162 +2,32 @@ import { env } from "cloudflare:workers";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
+import {
+	AGENT_GLOBAL_TOOL_NAMES,
+	AGENT_SCOPED_TOOL_NAMES,
+	MCP_TOOL_NAMES,
+	TOOL_REGISTRY,
+} from "../workers/lib/tools";
 import { createEmailTools } from "../workers/agent/index";
-import { toolSetSenderPolicy, toolStarEmail } from "../workers/lib/tools";
+import {
+	toolDeleteEmail,
+	toolDeleteSpamEmails,
+	toolEmptyTrash,
+	toolSetSenderPolicy,
+	toolStarEmail,
+} from "../workers/lib/tools";
 
-/** Every tool the MCP server exposes, as a contract for the surface. */
-const MCP_TOOLS = [
-	"add_label",
-	"apply_rule",
-	"cancel_scheduled_send",
-	"clear_reminder",
-	"create_draft",
-	"create_folder",
-	"create_label",
-	"create_rule",
-	"create_saved_search",
-	"create_template",
-	"delete_email",
-	"delete_folder",
-	"delete_label",
-	"delete_rule",
-	"delete_saved_search",
-	"delete_spam_emails",
-	"delete_template",
-	"discard_draft",
-	"draft_reply",
-	"empty_trash",
-	"export_email",
-	"get_attachment",
-	"get_calendar_invite",
-	"get_digest",
-	"get_email",
-	"get_sender_policy",
-	"get_storage",
-	"get_thread",
-	"list_agent_actions",
-	"list_all_emails",
-	"list_emails",
-	"list_folders",
-	"list_items",
-	"list_labels",
-	"list_mailboxes",
-	"list_rules",
-	"list_saved_searches",
-	"list_scheduled_sends",
-	"list_snoozed",
-	"list_templates",
-	"mark_email_read",
-	"mark_thread_read",
-	"move_email",
-	"mute_thread",
-	"preview_rule",
-	"remove_label",
-	"remove_sender_policy",
-	"reorder_rules",
-	"respond_to_invite",
-	"restore_email",
-	"retry_scheduled_send",
-	"schedule_send",
-	"search_all_mailboxes",
-	"search_contacts",
-	"search_emails",
-	"semantic_search",
-	"send_email",
-	"send_reply",
-	"set_reminder",
-	"set_sender_policy",
-	"snooze_email",
-	"star_email",
-	"summarize_thread",
-	"undo_action",
-	"unmute_thread",
-	"unsnooze_email",
-	"update_draft",
-	"update_folder",
-	"update_item",
-	"update_label",
-	"update_rule",
-	"update_saved_search",
-	"update_template",
-];
-
-/** Agent tool names for a chat scoped to a single mailbox. */
-const AGENT_SCOPED_TOOLS = [
-	"add_label",
-	"apply_rule",
-	"cancel_scheduled_send",
-	"clear_reminder",
-	"create_folder",
-	"create_label",
-	"create_rule",
-	"create_saved_search",
-	"create_template",
-	"delete_email",
-	"delete_folder",
-	"delete_label",
-	"delete_rule",
-	"delete_saved_search",
-	"delete_spam_emails",
-	"delete_template",
-	"discard_draft",
-	"draft_email",
-	"draft_reply",
-	"empty_trash",
-	"export_email",
-	"get_attachment",
-	"get_calendar_invite",
-	"get_digest",
-	"get_email",
-	"get_sender_policy",
-	"get_storage",
-	"get_thread",
-	"list_agent_actions",
-	"list_emails",
-	"list_folders",
-	"list_items",
-	"list_labels",
-	"list_rules",
-	"list_saved_searches",
-	"list_scheduled_sends",
-	"list_snoozed",
-	"list_templates",
-	"mark_email_read",
-	"mark_thread_read",
-	"move_email",
-	"mute_thread",
-	"preview_rule",
-	"remove_label",
-	"remove_sender_policy",
-	"reorder_rules",
-	"respond_to_invite",
-	"restore_email",
-	"search_contacts",
-	"search_emails",
-	"semantic_search",
-	"set_reminder",
-	"set_sender_policy",
-	"snooze_email",
-	"star_email",
-	"summarize_thread",
-	"undo_action",
-	"unmute_thread",
-	"unsnooze_email",
-	"update_draft",
-	"update_folder",
-	"update_item",
-	"update_label",
-	"update_rule",
-	"update_saved_search",
-	"update_template",
-];
-
-/** Agent tools that only make sense when the chat spans mailboxes. */
-const AGENT_GLOBAL_ONLY = [
-	"list_all_emails",
-	"list_mailboxes",
-	"search_all_mailboxes",
-];
+/**
+ * Expectations come from the single tool registry
+ * (shared/tool-registry.ts, re-exported by ../workers/lib/tools) — never a
+ * hand-maintained copy. The MCP test below compares the registry's MCP set
+ * against the live `/mcp` tools/list, and the agent tests compare the
+ * registry's agent sets against `createEmailTools`, so adding a tool to one
+ * surface without the other (or without the registry) fails here.
+ */
+const MCP_TOOLS = MCP_TOOL_NAMES;
+const AGENT_SCOPED_TOOLS = AGENT_SCOPED_TOOL_NAMES;
+const AGENT_GLOBAL_ONLY = AGENT_GLOBAL_TOOL_NAMES;
 
 function parseSse(text: string) {
 	return text
@@ -317,5 +187,74 @@ describe("set_sender_policy", () => {
 		expect(await toolSetSenderPolicy(env, mailbox, "missing", "block")).toEqual({
 			error: "Email not found",
 		});
+	});
+});
+
+describe("destructive tools require confirm:true", () => {
+	it("flags exactly the destructive tools in the registry", () => {
+		const destructive = Object.entries(TOOL_REGISTRY)
+			.filter(([, entry]) => entry.requiresConfirm)
+			.map(([name]) => name)
+			.sort();
+		expect(destructive).toEqual([
+			"delete_email",
+			"delete_spam_emails",
+			"empty_trash",
+		]);
+	});
+
+	it("refuses a permanent delete_email without confirm and leaves the row", async () => {
+		const mailbox = "parity-confirm-delete@example.com";
+		const stub = await seed(mailbox, "confirm-del-1");
+
+		expect(await toolDeleteEmail(env, mailbox, "confirm-del-1", true)).toMatchObject({
+			error: expect.stringContaining("confirm:true"),
+		});
+		expect(await stub.getEmail("confirm-del-1")).not.toBeNull();
+
+		expect(
+			await toolDeleteEmail(env, mailbox, "confirm-del-1", true, true),
+		).toEqual({ status: "deleted_permanently", emailId: "confirm-del-1" });
+		expect(await stub.getEmail("confirm-del-1")).toBeNull();
+	});
+
+	it("still trashes an email without permanent, no confirm needed", async () => {
+		const mailbox = "parity-confirm-trash@example.com";
+		const stub = await seed(mailbox, "confirm-trash-1");
+
+		expect(await toolDeleteEmail(env, mailbox, "confirm-trash-1")).toEqual({
+			status: "trashed",
+			emailId: "confirm-trash-1",
+		});
+		expect(
+			((await stub.getEmail("confirm-trash-1")) as { folder_id: string })
+				.folder_id,
+		).toBe(Folders.TRASH);
+	});
+
+	it("refuses to empty Trash without confirm", async () => {
+		const mailbox = "parity-confirm-empty@example.com";
+		const stub = await seed(mailbox, "confirm-empty-1", { folder: Folders.TRASH });
+
+		expect(await toolEmptyTrash(env, mailbox)).toMatchObject({
+			error: expect.stringContaining("confirm:true"),
+		});
+		expect(await stub.getEmail("confirm-empty-1")).not.toBeNull();
+	});
+
+	it("refuses to delete spam without confirm and requires one mailbox", async () => {
+		const mailbox = "parity-confirm-spam@example.com";
+		const stub = await seed(mailbox, "confirm-spam-1", { folder: Folders.SPAM });
+
+		expect(await toolDeleteSpamEmails(env, mailbox)).toMatchObject({
+			error: expect.stringContaining("confirm:true"),
+		});
+		expect(await stub.getEmail("confirm-spam-1")).not.toBeNull();
+
+		expect(await toolDeleteSpamEmails(env, mailbox, true)).toMatchObject({
+			status: "spam_deleted",
+			deletedCount: 1,
+		});
+		expect(await stub.getEmail("confirm-spam-1")).toBeNull();
 	});
 });

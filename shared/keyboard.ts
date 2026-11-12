@@ -18,8 +18,10 @@
  *   6. command modifier     — Ctrl / Meta / Alt held. Shift is allowed: the
  *                             spec's `#` and `?` are Shift combinations.
  *   7. unknown key          — not in the table
- *   8. interactive target   — never steal a key from a focused interactive
- *                             element (button, link, checkbox, role=button …)
+ *   8. interactive target   — only activation keys (Enter / Space) are left
+ *                             to a focused interactive element (button, link,
+ *                             checkbox …); a triage letter key (j/k/e/# …)
+ *                             never activates it, so it still triages
  *   9. key repeat           — a held key only repeats bindings that opt in
  */
 
@@ -39,6 +41,7 @@ export type TriageActionId =
 	| "search"
 	| "select"
 	| "clear-selection"
+	| "snooze"
 	| "help";
 
 
@@ -78,6 +81,7 @@ export const KEY_BINDINGS: readonly TriageBinding[] = [
 	{ keys: ["Enter", "o"], action: "open", label: "Open message", section: "navigation", allowRepeat: true, mutating: false },
 	{ keys: ["/"], action: "search", label: "Focus search", section: "navigation", allowRepeat: true, mutating: false },
 	{ keys: ["e"], action: "archive", label: "Archive", section: "actions", allowRepeat: false, mutating: true },
+	{ keys: ["b"], action: "snooze", label: "Snooze until tomorrow", section: "actions", allowRepeat: false, mutating: true },
 	{ keys: ["#"], action: "trash", label: "Move to Trash", section: "actions", allowRepeat: false, mutating: true },
 	{ keys: ["s"], action: "star", label: "Toggle star", section: "actions", allowRepeat: false, mutating: true },
 	{ keys: ["u"], action: "unread", label: "Toggle read / unread", section: "actions", allowRepeat: false, mutating: true },
@@ -266,6 +270,17 @@ export function isInsideComposer(target: unknown): boolean {
 
 
 /**
+ * True for keys that would both activate the focused element and triage: a
+ * focused button (or row) answers Enter/Space by activating, so those two
+ * keys belong to the element. Every other key (j/k, e, #, letters) never
+ * activates a button, so triage still runs when focus sits on one.
+ */
+export function isActivationKey(event: Pick<KeyEventLike, "key">): boolean {
+	return event.key === "Enter" || event.key === " ";
+}
+
+
+/**
  * True for anything that already handles its own keys: buttons, links, form
  * fields, anything with a button-like role. Triage never steals keys from it.
  */
@@ -291,7 +306,9 @@ export function resolveKeyAction(
 	if (hasCommandModifier(event)) return { type: "ignore", reason: "modifier" };
 	const binding = bindingForKey(normalizeKeyToken(event));
 	if (!binding) return { type: "ignore", reason: "unknown-key" };
-	if (isInteractiveTarget(event.target)) return { type: "ignore", reason: "interactive-target" };
+	if (isInteractiveTarget(event.target) && isActivationKey(event)) {
+		return { type: "ignore", reason: "interactive-target" };
+	}
 	if (event.repeat && !binding.allowRepeat) return { type: "ignore", reason: "key-repeat" };
 	return { type: "action", action: binding.action, binding };
 }

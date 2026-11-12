@@ -378,7 +378,9 @@ describe("scoped trash tools", () => {
 		await seedEmail(stub, "purge-2", Folders.TRASH);
 		const { token } = await mintToken(mailbox, ["read", "manage"]);
 
-		const emptied = await scopedCall("empty_trash", token);
+		const emptied = await scopedCall("empty_trash", token, {
+			confirm: true,
+		});
 		expect(emptied.status).toBe(200);
 		expect((emptied.body.result as { purged: number }).purged).toBe(2);
 		const remaining = (await stub.getEmails({})) as unknown[];

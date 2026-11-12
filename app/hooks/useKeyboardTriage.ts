@@ -14,10 +14,12 @@ import {
 } from "shared/keyboard";
 import type { EmailSelection } from "~/hooks/useEmailSelection";
 import { useUIStore } from "~/hooks/useUIStore";
+import { snoozePresets } from "~/lib/snooze";
 import {
 	useBulkEmailAction,
 	useDeleteEmail,
 	useMoveEmail,
+	useSnoozeEmail,
 	useUpdateEmail,
 } from "~/queries/emails";
 import type { BulkEmailTarget, Email } from "~/types";
@@ -43,6 +45,16 @@ export interface KeyboardTriageOptions {
 	isTrashFolder?: boolean;
 	/** Compose session open: the composer owns the keyboard. */
 	isComposing?: boolean;
+	/**
+	 * Owning mailbox for one row (All Accounts rows span mailboxes).
+	 * Defaults to `mailboxId` for every row.
+	 */
+	mailboxIdForEmail?: ((email: Email) => string | undefined) | undefined;
+	/**
+	 * Selection key for one row (All Accounts keys are mailbox-scoped).
+	 * Defaults to the row id.
+	 */
+	selectionKeyForEmail?: ((email: Email) => string) | undefined;
 }
 
 
@@ -94,15 +106,16 @@ function focusSearchInput(): boolean {
  * row buttons. Reply, reply-all, forward and compose only open the composer —
  * a shortcut never sends.
  *
- * Wired into the mailbox list route (app/routes/email-list.tsx). The All
- * Accounts view (app/routes/all-accounts.tsx) renders its own copy of the row
- * markup instead of sharing a list component, so it is not wired yet.
+ * Wired into both list routes: the mailbox list (app/routes/email-list.tsx)
+ * with one owning mailbox, and All Accounts (app/routes/all-accounts.tsx)
+ * with per-row mailboxes via `mailboxIdForEmail` / `selectionKeyForEmail`.
  */
 export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriage {
 	const { selectEmail, startCompose, closePanel } = useUIStore();
 	const updateEmail = useUpdateEmail();
 	const moveEmail = useMoveEmail();
 	const deleteEmail = useDeleteEmail();
+	const snoozeEmail = useSnoozeEmail();
 	const bulkAction = useBulkEmailAction();
 	const toastManager = useKumoToastManager();
 	const [isCheatsheetOpen, setCheatsheetOpen] = useState(false);
@@ -113,26 +126,28 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 	// refreshed after every commit — reading or writing a ref during render is
 	// what React forbids, and the listener only ever runs after a commit.
 	const latest = useRef(options);
-	const actions = useRef({ selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, bulkAction, toastManager });
+	const actions = useRef({ selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, snoozeEmail, bulkAction, toastManager });
 	useEffect(() => {
 		latest.current = options;
-		actions.current = { selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, bulkAction, toastManager };
+		actions.current = { selectEmail, startCompose, closePanel, updateEmail, moveEmail, deleteEmail, snoozeEmail, bulkAction, toastManager };
 	});
 
 
 	const runAction = useCallback((action: TriageActionId): boolean => {
 		const state = latest.current;
 		const ui = actions.current;
-		const { emails, mailboxId, currentEmailId, selection, isTrashFolder = false } = state;
+		const { emails, mailboxId, currentEmailId, selection, isTrashFolder = false, mailboxIdForEmail, selectionKeyForEmail } = state;
 		const currentEmail = emails.find((email) => email.id === currentEmailId) ?? null;
-		const selectedEmails = emails.filter((email) => selection.selectedKeys.has(email.id));
+		const keyFor = (email: Email) => selectionKeyForEmail?.(email) ?? email.id;
+		const mailboxFor = (email: Email) => mailboxIdForEmail?.(email) ?? mailboxId;
+		const selectedEmails = emails.filter((email) => selection.selectedKeys.has(keyFor(email)));
 		const targetsFor = (rows: Email[]): BulkEmailTarget[] =>
-			rows.map((email) => ({
-				mailboxId: mailboxId as string,
-				id: email.id,
-				threadId: email.thread_id,
-				threadCount: email.thread_count,
-			}));
+			rows.flatMap((email) => {
+				const owner = mailboxFor(email);
+				return owner
+					? [{ mailboxId: owner, id: email.id, threadId: email.thread_id, threadCount: email.thread_count }]
+					: [];
+			});
 
 
 		switch (action) {
@@ -162,17 +177,17 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 				const next = emails[nextIndex];
 				if (!next || next.id === currentEmailId) return false;
 				// Opening for reading only: j/k never marks mail read, `u` does.
-				ui.selectEmail(next.id, mailboxId);
+				ui.selectEmail(next.id, mailboxFor(next));
 				return true;
 			}
 			case "open": {
 				if (!currentEmail) return false;
-				ui.selectEmail(currentEmail.id, mailboxId);
+				ui.selectEmail(currentEmail.id, mailboxFor(currentEmail));
 				return true;
 			}
 			case "select": {
 				if (!currentEmail) return false;
-				selection.toggle(currentEmail.id);
+				selection.toggle(keyFor(currentEmail));
 				return true;
 			}
 			case "clear-selection": {
@@ -190,27 +205,24 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 				return true;
 			}
 			case "star": {
-				if (!mailboxId) return false;
 				if (selectedEmails.length > 0) {
 					ui.bulkAction.mutate({ action: "star", targets: targetsFor(selectedEmails) });
 					return true;
 				}
-				if (!currentEmail) return false;
-				ui.updateEmail.mutate({ mailboxId, id: currentEmail.id, data: { starred: !currentEmail.starred } });
+				if (!currentEmail || !mailboxFor(currentEmail)) return false;
+				ui.updateEmail.mutate({ mailboxId: mailboxFor(currentEmail) as string, id: currentEmail.id, data: { starred: !currentEmail.starred } });
 				return true;
 			}
 			case "unread": {
-				if (!mailboxId) return false;
 				if (selectedEmails.length > 0) {
 					ui.bulkAction.mutate({ action: "mark_unread", targets: targetsFor(selectedEmails) });
 					return true;
 				}
-				if (!currentEmail) return false;
-				ui.updateEmail.mutate({ mailboxId, id: currentEmail.id, data: { read: !currentEmail.read } });
+				if (!currentEmail || !mailboxFor(currentEmail)) return false;
+				ui.updateEmail.mutate({ mailboxId: mailboxFor(currentEmail) as string, id: currentEmail.id, data: { read: !currentEmail.read } });
 				return true;
 			}
 			case "archive": {
-				if (!mailboxId) return false;
 				if (selectedEmails.length > 0) {
 					ui.bulkAction.mutate({
 						action: "move",
@@ -219,13 +231,32 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 					});
 					return true;
 				}
-				if (!currentEmail) return false;
-				ui.moveEmail.mutate({ mailboxId, id: currentEmail.id, folderId: Folders.ARCHIVE });
+				if (!currentEmail || !mailboxFor(currentEmail)) return false;
+				ui.moveEmail.mutate({ mailboxId: mailboxFor(currentEmail) as string, id: currentEmail.id, folderId: Folders.ARCHIVE });
+				ui.closePanel();
+				return true;
+			}
+			case "snooze": {
+				// 'b' snoozes until tomorrow's canned wake time (the same
+				// presets the row/panel Snooze menus offer) — a shortcut
+				// never waits on a date picker.
+				const until = snoozePresets()[1]?.until.toISOString();
+				if (!until) return false;
+				if (selectedEmails.length > 0) {
+					for (const email of selectedEmails) {
+						const owner = mailboxFor(email);
+						if (owner) ui.snoozeEmail.mutate({ mailboxId: owner, id: email.id, until });
+					}
+					selection.clear();
+					return true;
+				}
+				if (!currentEmail || !mailboxFor(currentEmail)) return false;
+				ui.snoozeEmail.mutate({ mailboxId: mailboxFor(currentEmail) as string, id: currentEmail.id, until });
 				ui.closePanel();
 				return true;
 			}
 			case "trash": {
-				if (!mailboxId) return false;
+				if (!mailboxId && selectedEmails.length === 0 && (!currentEmail || !mailboxFor(currentEmail))) return false;
 				// Same semantics as the buttons: a selection uses the toolbar's
 				// trash-aware batch action, a single row uses the row's delete
 				// (which purges for good when the row already lives in Trash).
@@ -265,7 +296,8 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 					}
 					return true;
 				}
-				if (!currentEmail) return false;
+				if (!currentEmail || !mailboxFor(currentEmail)) return false;
+				const owner = mailboxFor(currentEmail) as string;
 				const confirmed = window.confirm(
 					isTrashFolder
 						? "Delete this email forever? This cannot be undone."
@@ -273,7 +305,7 @@ export function useKeyboardTriage(options: KeyboardTriageOptions): KeyboardTriag
 				);
 				if (!confirmed) return true;
 				ui.deleteEmail.mutate(
-					{ mailboxId, id: currentEmail.id, permanent: isTrashFolder },
+					{ mailboxId: owner, id: currentEmail.id, permanent: isTrashFolder },
 					{
 						onSuccess: () =>
 							ui.toastManager.add({

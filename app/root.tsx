@@ -125,12 +125,61 @@ const KumoLink = forwardRef<
 	return <a href={href} ref={ref} {...props} />;
 });
 
+/**
+ * Push support note: the push-only card (PushNotificationsCard) already
+ * explains missing support per mailbox, but browsers without PushManager
+ * (older Safari, some in-app webviews) get this one dismissible banner so
+ * the absence is visible without hunting for the card. Desktop behavior is
+ * unchanged — nothing renders where PushManager exists.
+ */
+function PushUnsupportedNote() {
+	// Lazy initializer: the check runs once, on first render, without an
+	// effect — this sidesteps the cascading-render warning a setState-in-effect
+	// would earn and leaves SSR (no window) with nothing to show.
+	const [visible, setVisible] = useState(() => {
+		if (typeof window === "undefined") return false;
+		if ("PushManager" in window) return false;
+		try {
+			return localStorage.getItem("push-unsupported-dismissed") !== "1";
+		} catch {
+			// Private mode / no storage: still show the note for this session.
+			return true;
+		}
+	});
+	if (!visible) return null;
+	return (
+		<div
+			role="note"
+			className="flex items-center justify-between gap-3 border-b border-kumo-line bg-kumo-base px-4 py-2 text-xs text-kumo-subtle"
+		>
+			<span>
+				Push notifications aren&apos;t supported in this browser — install the
+				app or try Chrome/Edge for new-mail alerts.
+			</span>
+			<button
+				type="button"
+				className="shrink-0 underline hover:text-kumo-default"
+				onClick={() => {
+					try {
+						localStorage.setItem("push-unsupported-dismissed", "1");
+					} catch {
+						// Dismiss still hides the note for this mount.
+					}
+					setVisible(false);
+				}}
+			>
+				Dismiss
+			</button>
+		</div>
+	);
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
 	// Register the service worker for every visitor. Chromium on Android will
 	// not offer a real install ("Install app" → WebAPK) without a service
-	// worker that has a fetch handler — public/sw.js passes every request
-	// straight through and caches nothing. The push card registers the same
-	// worker again on subscribe; registration is idempotent.
+	// worker that has a fetch handler — public/sw.js caches the app shell
+	// with an offline fallback and queues draft saves offline. The push card
+	// registers the same worker again on subscribe; registration is idempotent.
 	useEffect(() => {
 		if (!("serviceWorker" in navigator)) return;
 		void navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -225,9 +274,13 @@ export default function App() {
 	const [queryClient] = useState(getQueryClient);
 	return (
 		<QueryClientProvider client={queryClient}>
+			<a href="#main" className="skip-link">
+				Skip to main content
+			</a>
 			<LinkProvider component={KumoLink}>
 				<TooltipProvider>
 					<Toasty>
+						<PushUnsupportedNote />
 						<Outlet />
 					</Toasty>
 				</TooltipProvider>

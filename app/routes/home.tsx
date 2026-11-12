@@ -14,6 +14,8 @@ import {
 } from "@cloudflare/kumo";
 import {
 	CaretRightIcon,
+	CheckCircleIcon,
+	CircleIcon,
 	EnvelopeIcon,
 	EnvelopeOpenIcon,
 	GearSixIcon,
@@ -107,15 +109,44 @@ export default function HomeRoute() {
 		}
 		autoCreateDone.current = true;
 		let cancelled = false;
-		void Promise.all(
+		void Promise.allSettled(
 			toCreate.map((addr) => {
 				const localPart = addr.split("@")[0] || addr;
 				const name = isCatchAllAddress(addr) ? "Catch-all" : localPart;
-				return api.createMailbox(addr, name).catch(() => {});
+				return api.createMailbox(addr, name);
 			}),
-		).then(() => { if (!cancelled) void refetchMailboxes(); });
+		).then((results) => {
+			if (cancelled) return;
+			// Surface auto-create failures instead of swallowing them: log each
+			// failure and toast the count so a missing mailbox is obvious.
+			const failures = results
+				.map((result, index) => ({ result, addr: toCreate[index] }))
+				.filter(
+					(x): x is { result: PromiseRejectedResult; addr: string } =>
+						x.result.status === "rejected",
+				);
+			if (failures.length > 0) {
+				for (const { result, addr } of failures) {
+					console.error(`Auto-create mailbox failed for ${addr}:`, result.reason);
+				}
+				const firstReason: unknown = failures[0]?.result.reason;
+				const detail =
+					firstReason instanceof Error
+						? firstReason.message
+						: typeof firstReason === "string"
+							? firstReason
+							: "unknown error";
+				toastManager.add({
+					title: `Failed to create ${failures.length} mailbox${
+						failures.length === 1 ? "" : "es"
+					}: ${detail}`,
+					variant: "error",
+				});
+			}
+			void refetchMailboxes();
+		});
 		return () => { cancelled = true; };
-	}, [configData, configuredMailboxAddresses, mailboxes, mailboxesFetched, refetchMailboxes]);
+	}, [configData, configuredMailboxAddresses, mailboxes, mailboxesFetched, refetchMailboxes, toastManager]);
 
 
 	const handleCreate = async (e: FormEvent) => {
@@ -171,6 +202,99 @@ export default function HomeRoute() {
 
 	const isLoading = !configData;
 
+	// First-run checklist: every step reads from /config or the mailbox list
+	// (plus a Sent-folder probe and the push-config endpoint), so it needs no
+	// new server state. The card disappears once all five steps are done.
+	const firstMailbox = mailboxes[0];
+	const { data: pushConfig } = useQuery({
+		queryKey: ["push-config-check"],
+		queryFn: () => api.getPushConfig(),
+		staleTime: 60_000,
+		retry: false,
+	});
+	const { data: sentCount } = useQuery({
+		queryKey: ["sent-check", firstMailbox?.id ?? "none"],
+		queryFn: async () => {
+			const data = await api.listEmails(firstMailbox!.id, {
+				folder: "sent",
+				limit: "1",
+			});
+			if (data && typeof data === "object" && "totalCount" in data) {
+				return (data as { totalCount: number | undefined }).totalCount ?? 0;
+			}
+			return Array.isArray(data) ? data.length : 0;
+		},
+		enabled: !!firstMailbox?.id,
+		staleTime: 30_000,
+		retry: false,
+	});
+	const routingDone =
+		domains.length > 0 || emailAddresses.length > 0;
+	const mailboxDone = mailboxes.length > 0;
+	const sendTestDone = (sentCount ?? 0) > 0;
+	const signatureDone = mailboxes.some((m) => {
+		const s = m.settings?.signature;
+		return (
+			!!s?.enabled && (!!s.text?.trim() || !!s.html?.trim())
+		);
+	});
+	const pushDone = pushConfig?.enabled === true;
+	const checklistSteps = [
+		{
+			label: "Email routing",
+			description:
+				routingDone && domains.length > 0
+					? `Domains configured: ${domains.join(", ")}`
+					: routingDone
+						? "Email addresses configured"
+						: "Ask the operator to set DOMAINS / EMAIL_ADDRESSES, or create a mailbox below.",
+			done: routingDone,
+			href: "/settings",
+			linkLabel: "Global settings",
+		},
+		{
+			label: "Create a mailbox",
+			description: mailboxDone
+				? `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"} ready`
+				: "Create your first mailbox to send and receive email.",
+			done: mailboxDone,
+			href: undefined,
+			linkLabel: undefined,
+		},
+		{
+			label: "Send a test message",
+			description: sendTestDone
+				? "Test message found in Sent"
+				: "Open a mailbox and send yourself a test email.",
+			done: sendTestDone,
+			href: firstMailbox ? `/mailbox/${firstMailbox.id}` : undefined,
+			linkLabel: firstMailbox ? "Open mailbox" : undefined,
+		},
+		{
+			label: "Add a signature",
+			description: signatureDone
+				? "Signature is on"
+				: "Set your display name and signature in mailbox settings.",
+			done: signatureDone,
+			href: firstMailbox
+				? `/mailbox/${firstMailbox.id}/settings`
+				: undefined,
+			linkLabel: firstMailbox ? "Mailbox settings" : undefined,
+		},
+		{
+			label: "Enable push notifications",
+			description: pushDone
+				? "Server push is configured — enable it per mailbox"
+				: "Push needs a VAPID key on the server, then enable it in mailbox settings.",
+			done: pushDone,
+			href: firstMailbox
+				? `/mailbox/${firstMailbox.id}/settings`
+				: undefined,
+			linkLabel: firstMailbox ? "Mailbox settings" : undefined,
+		},
+	] as const;
+	const checklistDoneCount = checklistSteps.filter((s) => s.done).length;
+	const showChecklist = !isLoading && checklistDoneCount < checklistSteps.length;
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
@@ -204,6 +328,80 @@ export default function HomeRoute() {
 					)}
 				</div>
 
+				{showChecklist && (
+					<div className="rounded-xl border border-kumo-line bg-kumo-base p-5 mb-8">
+						<div className="flex items-center justify-between mb-2">
+							<h2 className="text-base font-semibold text-kumo-default">
+								Get started
+							</h2>
+							<span className="text-xs text-kumo-subtle">
+								{checklistDoneCount} of {checklistSteps.length} complete
+							</span>
+						</div>
+						<div
+							className="h-1.5 rounded-full bg-kumo-fill overflow-hidden mb-4"
+							role="progressbar"
+							aria-valuemin={0}
+							aria-valuemax={checklistSteps.length}
+							aria-valuenow={checklistDoneCount}
+						>
+							<div
+								className="h-full bg-kumo-fill-strong"
+								style={{
+									width: `${(checklistDoneCount / checklistSteps.length) * 100}%`,
+								}}
+							/>
+						</div>
+						<ul className="space-y-3">
+							{checklistSteps.map((step) => (
+								<li key={step.label} className="flex items-start gap-3">
+									{step.done ? (
+										<CheckCircleIcon
+											size={18}
+											weight="fill"
+											className="mt-0.5 shrink-0 text-kumo-subtle"
+											aria-label="done"
+										/>
+									) : (
+										<CircleIcon
+											size={18}
+											className="mt-0.5 shrink-0 text-kumo-subtle"
+											aria-label="todo"
+										/>
+									)}
+									<div className="min-w-0 flex-1">
+										<div className="text-sm font-medium text-kumo-default">
+											{step.label}
+										</div>
+										<div className="text-sm text-kumo-subtle">
+											{step.description}
+										</div>
+									</div>
+									{!step.done && step.href && step.linkLabel && (
+										<RouterLink
+											to={step.href}
+											className="shrink-0 text-xs text-kumo-subtle hover:text-kumo-default no-underline"
+										>
+											{step.linkLabel} →
+										</RouterLink>
+									)}
+									{!step.done &&
+										!step.href &&
+										step.label === "Create a mailbox" &&
+										!isConfigured && (
+											<Button
+												variant="secondary"
+												size="xs"
+												onClick={() => setIsCreateOpen(true)}
+											>
+												Create
+											</Button>
+										)}
+								</li>
+							))}
+						</ul>
+					</div>
+				)}
 
 				{isLoading ? (
 					<div className="flex justify-center py-20">

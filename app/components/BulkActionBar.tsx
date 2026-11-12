@@ -7,14 +7,18 @@ import {
 	ArchiveIcon,
 	ArrowUUpLeftIcon,
 	CaretDownIcon,
+	ClockCounterClockwiseIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
 	FolderIcon,
 	ProhibitIcon,
 	StarIcon,
+	TagIcon,
 	TrashIcon,
 	XIcon,
 } from "@phosphor-icons/react";
+import SnoozeMenu from "~/components/email-panel/SnoozeMenu";
+import type { Label } from "~/services/api";
 
 interface BulkActionBarProps {
 	/** Number of selected rows. */
@@ -41,6 +45,12 @@ interface BulkActionBarProps {
 	onRestore?: () => void;
 	onDelete: () => void;
 	onClear: () => void;
+	/** Mailbox labels offered by "Label as". Absent hides the action. */
+	labels?: Label[] | undefined;
+	/** Attach one label to every selected row. */
+	onLabel?: ((label: Label) => void) | undefined;
+	/** Snooze every selected row until the picked ISO instant. */
+	onSnooze?: ((untilIso: string) => void) | undefined;
 }
 
 /**
@@ -68,6 +78,9 @@ export default function BulkActionBar({
 	onRestore,
 	onDelete,
 	onClear,
+	labels,
+	onLabel,
+	onSnooze,
 }: BulkActionBarProps) {
 	const destructiveLabel = inTrash
 		? "Delete forever"
@@ -194,6 +207,54 @@ export default function BulkActionBar({
 						aria-label="Mark as spam"
 					/>
 				</Tooltip>
+
+				{onSnooze && (
+					<SnoozeMenu
+						label="Snooze selected"
+						icon={<ClockCounterClockwiseIcon size={16} />}
+						header="Snooze until"
+						onPick={onSnooze}
+					/>
+				)}
+				{onLabel && labels && labels.length > 0 && (
+					<DropdownMenu>
+						<Tooltip side="bottom" content="Label as" asChild>
+							<DropdownMenu.Trigger
+								render={
+									<Button
+										variant="ghost"
+										size="sm"
+										icon={<TagIcon size={16} />}
+										disabled={isPending}
+										aria-label="Label as"
+									/>
+								}
+							/>
+						</Tooltip>
+						<DropdownMenu.Content align="start" className="max-h-72 overflow-y-auto">
+							<DropdownMenu.Group>
+								<DropdownMenu.Label>Label as</DropdownMenu.Label>
+								<DropdownMenu.Separator />
+								{labels.map((label) => (
+									<DropdownMenu.Item
+										key={label.id}
+										icon={TagIcon}
+										onClick={() => onLabel(label)}
+									>
+										{label.color && (
+											<span
+												aria-hidden="true"
+												className="h-2 w-2 shrink-0 rounded-full"
+												style={{ backgroundColor: label.color }}
+											/>
+										)}
+										{label.name}
+									</DropdownMenu.Item>
+								))}
+							</DropdownMenu.Group>
+						</DropdownMenu.Content>
+					</DropdownMenu>
+				)}
 
 				<span className="mx-1 h-4 w-px shrink-0 bg-kumo-line" aria-hidden="true" />
 

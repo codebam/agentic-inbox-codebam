@@ -6,6 +6,48 @@ body {
   margin: 0;
 }
 
+/* Skip link: visually hidden until keyboard focus lands on it. */
+.skip-link {
+  position: absolute;
+  z-index: 100;
+  top: -100px;
+  left: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background: var(--kumo-elevated, #fff);
+  color: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.skip-link:focus-visible {
+  top: 0.5rem;
+}
+
+/*
+ * Coarse pointers (touch): there is no hover, so hover-only row controls
+ * would be unreachable. The selection checkbox (.row-select) and the row
+ * hover actions (.row-actions) stay visible, and the star button gets a
+ * full-size touch target.
+ */
+@media (pointer: coarse) {
+  .row-select {
+    visibility: visible !important;
+  }
+
+  .row-actions {
+    display: flex !important;
+  }
+
+  .row-star {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 /* TipTap list styles */
 .ProseMirror ul {
   list-style-type: disc;

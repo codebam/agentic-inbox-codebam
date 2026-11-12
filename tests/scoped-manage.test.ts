@@ -262,6 +262,7 @@ describe("scoped manage tools", () => {
 		const purged = await scopedCall("delete_email", token, {
 			emailId: "manage-delete-1",
 			permanent: true,
+			confirm: true,
 		});
 		expect((purged.body.result as { status: string }).status).toBe(
 			"deleted_permanently",

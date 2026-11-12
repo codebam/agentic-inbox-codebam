@@ -214,6 +214,12 @@ export async function revokeAppAccessToken(
  * failed write is logged and the verify still answers the record, because a
  * read that authenticated must not fail on a bookkeeping write. Returns the
  * metadata record (no hash), or null for an unknown hash.
+ *
+ * The bump re-reads the list before writing: the `stored` snapshot above may
+ * be stale by the time the write lands, and writing it back would resurrect
+ * a token revoked in between (or drop one created in between). The fresh
+ * list is what gets the stamp, and a token no longer present in it answers
+ * null instead of a write that would bring it back.
  */
 export async function verifyAppAccessToken(
 	bucket: R2Bucket,
@@ -232,9 +238,17 @@ export async function verifyAppAccessToken(
 		now - lastUsedMs >= APP_ACCESS_TOKEN_LAST_USED_REFRESH_MS
 	) {
 		const previous = found.last_used_at;
-		found.last_used_at = new Date(now).toISOString();
+		const stamp = new Date(now).toISOString();
 		try {
-			await bucket.put(APP_ACCESS_TOKENS_KEY, JSON.stringify({ tokens: stored }));
+			// Re-read immediately before the write and stamp only that fresh
+			// list: a revoke (or create) that landed since `stored` was read
+			// stays landed, instead of being undone by a stale rewrite.
+			const fresh = await readStoredAppAccessTokens(bucket);
+			const freshFound = fresh.find((row) => row.token_hash === tokenHash);
+			if (!freshFound) return null;
+			freshFound.last_used_at = stamp;
+			await bucket.put(APP_ACCESS_TOKENS_KEY, JSON.stringify({ tokens: fresh }));
+			found.last_used_at = stamp;
 		} catch (error) {
 			// Best-effort bookkeeping: report the stamp that was actually
 			// written (none), not one a failed write never committed.

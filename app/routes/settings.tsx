@@ -87,6 +87,10 @@ export default function SettingsRoute() {
 	);
 	const [webhook, setWebhook] = useState({ url: "", secret: "" });
 	const [isSaving, setIsSaving] = useState(false);
+	// Settings search query: filters the cards below by keyword (see the
+	// data-search strings on each card). Every card stays mounted, so a
+	// hidden card's edits still save with the rest of the form.
+	const [search, setSearch] = useState("");
 
 	// Re-seed the editable copies whenever a freshly loaded mailbox arrives (its
 	// identity changes on each refetch). Adjusting state during render instead of
@@ -176,13 +180,88 @@ export default function SettingsRoute() {
 	const isCustomPrompt = agentPrompt.trim().length > 0;
 	const trashRetentionEnabled = normalizeTrashRetentionDays(trashRetentionDays) > 0;
 
+	// Settings search: every card carries a data-search keyword string; a card
+	// is visible when every search term appears in its keywords. This only
+	// hides cards — per-card immediate saves and the single Save below are
+	// untouched, so hidden cards still save with the rest of the page.
+	const searchTerms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	const matchesSearch = (keywords: string) => {
+		if (searchTerms.length === 0) return true;
+		const hay = keywords.toLowerCase();
+		return searchTerms.every((t) => hay.includes(t));
+	};
+	const cardClass = (keywords: string) =>
+		matchesSearch(keywords) ? "" : "hidden";
+
+	// Visible cards, for the "no results" empty state. Every keyword string
+	// must be listed here and handed to the card it describes below.
+	const settingsCards = [
+		"account display name email from name identity",
+		"signature plain text html sign footer",
+		"categorization categories ai classifier",
+		"sender policy spam allow block",
+		"semantic search vectors embeddings",
+		"items tasks deadlines",
+		"message view display email view",
+		"webhook notify notification url secret",
+		"digest morning brief daily notifications webhook",
+		"push notifications browser vapid subscribe",
+		"ai agent prompt system instructions auto draft reply",
+		"ai models override model",
+		"trash retention deletion permanent delete days",
+		"storage usage quota r2 size",
+		"export mailbox download mbox eml data",
+		"import mailbox upload mbox eml data",
+		"access tokens api automation bearer scopes",
+	] as const;
+	const anyCardVisible = settingsCards.some((k) => matchesSearch(k));
+
 	return (
 		<div className="max-w-2xl px-4 py-4 md:px-8 md:py-6 h-full overflow-y-auto">
-			<h1 className="text-lg font-semibold text-kumo-default mb-6">Settings</h1>
+			<h1 className="text-lg font-semibold text-kumo-default mb-2">Settings</h1>
+
+			{/* Anchor nav: jumps to the section ids below. */}
+			<nav
+				aria-label="Settings sections"
+				className="flex flex-wrap gap-2 mb-4 text-sm"
+			>
+				{(
+					[
+						["Account", "section-account"],
+						["Inbox", "section-inbox"],
+						["Notifications", "section-notifications"],
+						["Automation", "section-automation"],
+						["Data", "section-data"],
+						["Access tokens", "section-tokens"],
+					] as const
+				).map(([label, id]) => (
+					<a
+						key={id}
+						href={`#${id}`}
+						className="rounded-full border border-kumo-line bg-kumo-base px-3 py-1 text-kumo-subtle hover:text-kumo-default no-underline transition-colors"
+					>
+						{label}
+					</a>
+				))}
+			</nav>
+
+			{/* Search filters the cards below by keyword; it never saves by itself. */}
+			<div className="mb-6">
+				<Input
+					label="Search settings"
+					placeholder="e.g. signature, push, tokens…"
+					value={search}
+					onChange={(e) => setSearch(e.target.value)}
+				/>
+			</div>
 
 			<div className="space-y-6">
 				{/* Account */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+				<div
+					id="section-account"
+					data-search="account display name email from name identity"
+					className={`scroll-mt-4 rounded-lg border border-kumo-line bg-kumo-base p-5 ${cardClass("account display name email from name identity")}`}
+				>
 					<div className="text-sm font-medium text-kumo-default mb-4">
 						Account
 					</div>
@@ -196,70 +275,11 @@ export default function SettingsRoute() {
 					</div>
 				</div>
 
-				<AiCategorizationCard
-					settings={categorization}
-					onChange={setCategorization}
-				/>
-
-				<ItemsCard mailboxId={mailboxId} />
-
-				<SemanticSearchCard mailboxId={mailboxId} />
-
-				<SenderPolicyCard mailboxId={mailboxId} />
-
-				{/* Agent System Prompt */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-					<div className="flex items-center justify-between mb-4">
-						<div className="flex items-center gap-2">
-							<RobotIcon size={16} weight="duotone" className="text-kumo-subtle" />
-							<span className="text-sm font-medium text-kumo-default">
-								AI Agent Prompt
-							</span>
-							{isCustomPrompt ? (
-								<Badge variant="primary">Custom</Badge>
-							) : (
-								<Badge variant="secondary">Default</Badge>
-							)}
-						</div>
-						{isCustomPrompt && (
-							<Button
-								variant="ghost"
-								size="xs"
-								icon={<ArrowCounterClockwiseIcon size={14} />}
-								onClick={handleResetPrompt}
-							>
-								Reset to default
-							</Button>
-						)}
-					</div>
-					<p className="text-xs text-kumo-subtle mb-3">
-						Customize how the AI agent behaves for this mailbox.
-						Leave empty to use the built-in default prompt.
-					</p>
-					<Switch
-						checked={autoDraft}
-						onCheckedChange={setAutoDraft}
-						label="Draft a reply automatically for each new message"
-					/>
-					<p className="text-xs text-kumo-subtle mt-2 mb-3">
-						With this off, new mail no longer creates a draft on its own — the agent
-						still drafts when asked in chat or over MCP.
-					</p>
-					<textarea
-						value={agentPrompt}
-						onChange={(e) => setAgentPrompt(e.target.value)}
-						placeholder={PROMPT_PLACEHOLDER}
-						rows={12}
-						className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
-					/>
-					<p className="text-xs text-kumo-subtle mt-2">
-						The prompt is sent as the system message to the AI model.
-						It controls the agent's personality, writing style, and behavior rules.
-					</p>
-				</div>
-
 				{/* Signature */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+				<div
+					data-search="signature plain text html sign footer"
+					className={`rounded-lg border border-kumo-line bg-kumo-base p-5 ${cardClass("signature plain text html sign footer")}`}
+				>
 					<div className="flex items-center gap-2 mb-3">
 						<SignatureIcon size={16} weight="duotone" className="text-kumo-subtle" />
 						<span className="text-sm font-medium text-kumo-default">Signature</span>
@@ -326,8 +346,98 @@ export default function SettingsRoute() {
 				</div>
 
 
+				<div
+					id="section-inbox"
+					data-search="categorization categories ai classifier"
+					className={`scroll-mt-4 ${cardClass("categorization categories ai classifier")}`}
+				>
+					<AiCategorizationCard
+						settings={categorization}
+						onChange={setCategorization}
+					/>
+				</div>
+
+				<div
+					data-search="items tasks deadlines"
+					className={cardClass("items tasks deadlines")}
+				>
+					<ItemsCard mailboxId={mailboxId} />
+				</div>
+
+				<div
+					data-search="semantic search vectors embeddings"
+					className={cardClass("semantic search vectors embeddings")}
+				>
+					<SemanticSearchCard mailboxId={mailboxId} />
+				</div>
+
+				<div
+					data-search="sender policy spam allow block"
+					className={cardClass("sender policy spam allow block")}
+				>
+					<SenderPolicyCard mailboxId={mailboxId} />
+				</div>
+
+				{/* Agent System Prompt */}
+				<div
+					id="section-automation"
+					data-search="ai agent prompt system instructions auto draft reply"
+					className={`scroll-mt-4 rounded-lg border border-kumo-line bg-kumo-base p-5 ${cardClass("ai agent prompt system instructions auto draft reply")}`}
+				>
+					<div className="flex items-center justify-between mb-4">
+						<div className="flex items-center gap-2">
+							<RobotIcon size={16} weight="duotone" className="text-kumo-subtle" />
+							<span className="text-sm font-medium text-kumo-default">
+								AI Agent Prompt
+							</span>
+							{isCustomPrompt ? (
+								<Badge variant="primary">Custom</Badge>
+							) : (
+								<Badge variant="secondary">Default</Badge>
+							)}
+						</div>
+						{isCustomPrompt && (
+							<Button
+								variant="ghost"
+								size="xs"
+								icon={<ArrowCounterClockwiseIcon size={14} />}
+								onClick={handleResetPrompt}
+							>
+								Reset to default
+							</Button>
+						)}
+					</div>
+					<p className="text-xs text-kumo-subtle mb-3">
+						Customize how the AI agent behaves for this mailbox.
+						Leave empty to use the built-in default prompt.
+					</p>
+					<Switch
+						checked={autoDraft}
+						onCheckedChange={setAutoDraft}
+						label="Draft a reply automatically for each new message"
+					/>
+					<p className="text-xs text-kumo-subtle mt-2 mb-3">
+						With this off, new mail no longer creates a draft on its own — the agent
+						still drafts when asked in chat or over MCP.
+					</p>
+					<textarea
+						value={agentPrompt}
+						onChange={(e) => setAgentPrompt(e.target.value)}
+						placeholder={PROMPT_PLACEHOLDER}
+						rows={12}
+						className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
+					/>
+					<p className="text-xs text-kumo-subtle mt-2">
+						The prompt is sent as the system message to the AI model.
+						It controls the agent's personality, writing style, and behavior rules.
+					</p>
+				</div>
+
 				{/* Trash retention */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+				<div
+					data-search="trash retention deletion permanent delete days"
+					className={`rounded-lg border border-kumo-line bg-kumo-base p-5 ${cardClass("trash retention deletion permanent delete days")}`}
+				>
 					<div className="flex items-center gap-2 mb-3">
 						<TrashIcon size={16} weight="duotone" className="text-kumo-subtle" />
 						<span className="text-sm font-medium text-kumo-default">
@@ -356,35 +466,97 @@ export default function SettingsRoute() {
 					/>
 				</div>
 
-				<AiModelsCard
-					title="AI Models"
-					description="Override the app-wide model choice for this mailbox. Leave a field empty to inherit the app-wide model (shown as the placeholder)."
-					models={models}
-					onChange={setModels}
-					inherited={globalModels?.models}
-				/>
+				<div
+					data-search="ai models override model"
+					className={cardClass("ai models override model")}
+				>
+					<AiModelsCard
+						title="AI Models"
+						description="Override the app-wide model choice for this mailbox. Leave a field empty to inherit the app-wide model (shown as the placeholder)."
+						models={models}
+						onChange={setModels}
+						inherited={globalModels?.models}
+					/>
+				</div>
 
-				<EmailViewCard
-					title="Message view"
-					description="Override the app-wide default for this mailbox. Leave it blank to inherit it (shown in the badge)."
-					value={defaultEmailView}
-					onChange={setDefaultEmailView}
-					inherited={resolveDefaultEmailView(undefined, globalEmailView)}
-				/>
+				<div
+					data-search="message view display email view"
+					className={cardClass("message view display email view")}
+				>
+					<EmailViewCard
+						title="Message view"
+						description="Override the app-wide default for this mailbox. Leave it blank to inherit it (shown in the badge)."
+						value={defaultEmailView}
+						onChange={setDefaultEmailView}
+						inherited={resolveDefaultEmailView(undefined, globalEmailView)}
+					/>
+				</div>
 
+				<div
+					id="section-notifications"
+					data-search="webhook notify notification url secret"
+					className={`scroll-mt-4 ${cardClass("webhook notify notification url secret")}`}
+				>
+					<WebhookCard
+						mailboxId={mailboxId!}
+						url={webhook.url}
+						secret={webhook.secret}
+						onChange={setWebhook}
+					/>
+				</div>
+				<div
+					data-search="digest morning brief daily notifications webhook"
+					className={cardClass("digest morning brief daily notifications webhook")}
+				>
+					<DigestCard mailboxId={mailboxId} />
+				</div>
+				<div
+					data-search="push notifications browser vapid subscribe"
+					className={cardClass("push notifications browser vapid subscribe")}
+				>
+					<PushNotificationsCard mailboxId={mailboxId} />
+				</div>
+				<div
+					id="section-data"
+					data-search="storage usage quota r2 size"
+					className={`scroll-mt-4 ${cardClass("storage usage quota r2 size")}`}
+				>
+					<StorageCard mailboxId={mailboxId} />
+				</div>
+				<div
+					data-search="export mailbox download mbox eml data"
+					className={cardClass("export mailbox download mbox eml data")}
+				>
+					<MailboxExportCard mailboxId={mailboxId} />
+				</div>
+				<div
+					data-search="import mailbox upload mbox eml data"
+					className={cardClass("import mailbox upload mbox eml data")}
+				>
+					<ImportCard mailboxId={mailboxId} />
+				</div>
+				<div
+					id="section-tokens"
+					data-search="access tokens api automation bearer scopes"
+					className={`scroll-mt-4 ${cardClass("access tokens api automation bearer scopes")}`}
+				>
+					<AccessTokensCard mailboxId={mailboxId} />
+				</div>
 
-				<WebhookCard
-					mailboxId={mailboxId!}
-					url={webhook.url}
-					secret={webhook.secret}
-					onChange={setWebhook}
-				/>
-				<DigestCard mailboxId={mailboxId} />
-				<PushNotificationsCard mailboxId={mailboxId} />
-				<StorageCard mailboxId={mailboxId} />
-				<MailboxExportCard mailboxId={mailboxId} />
-				<ImportCard mailboxId={mailboxId} />
-				<AccessTokensCard mailboxId={mailboxId} />
+				{!anyCardVisible && (
+					<div className="rounded-lg border border-kumo-line bg-kumo-base p-5 text-center">
+						<p className="text-sm text-kumo-subtle">
+							No settings match “{search}”.
+						</p>
+						<Button
+							variant="secondary"
+							size="sm"
+							onClick={() => setSearch("")}
+						>
+							Clear search
+						</Button>
+					</div>
+				)}
 
 
 				{/* Save */}

@@ -56,7 +56,8 @@ export default function KeyboardCheatsheet({
 				<Dialog.Title>Keyboard shortcuts</Dialog.Title>
 				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
 					Shortcuts are ignored while you are typing, while the composer is
-					open, and while a button, link or form field has focus.
+					open, and while a form field has focus. Letter shortcuts still work on
+				buttons; Enter activates the focused button instead.
 				</Dialog.Description>
 				<div className="mt-4 grid max-h-[60vh] gap-5 overflow-y-auto sm:grid-cols-2">
 					{TRIAGE_SECTIONS.map((section) => {

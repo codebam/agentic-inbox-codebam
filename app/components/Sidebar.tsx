@@ -20,6 +20,7 @@ import {
 	ProhibitIcon,
 	PulseIcon,
 	SunIcon,
+	TagIcon,
 	TrashIcon,
 	TrayIcon,
 } from "@phosphor-icons/react";
@@ -29,6 +30,7 @@ import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { SNOOZE_FOLDER_ID } from "~/lib/snooze";
 import { useCreateFolder, useDeleteFolder, useFolders, useUpdateFolder } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
+import { useLabels } from "~/queries/labels";
 import {
 	useDeleteSavedSearch,
 	useSavedSearches,
@@ -105,6 +107,8 @@ export default function Sidebar() {
 	const { data: currentMailbox } = useMailbox(mailboxId);
 	const { data: savedSearchesData } = useSavedSearches(mailboxId);
 	const savedSearches = savedSearchesData?.searches ?? [];
+	const { data: labelsData } = useLabels(mailboxId);
+	const mailboxLabels = labelsData?.labels ?? [];
 	const [searchParams] = useSearchParams();
 	// Every saved search shares the search route's pathname, so NavLink's
 	// isActive is true for all of them there; the row only counts as the
@@ -389,6 +393,47 @@ export default function Sidebar() {
 									</button>
 								)}
 							</div>
+						))}
+					</div>
+				)}
+
+				{/* Labels — the search page's label filter, one link per label.
+				    The search route narrows by the `label` URL param (matched
+				    by name), so each row links there with the label's name. */}
+				{mailboxLabels.length > 0 && (
+					<div className="pt-5">
+						<div className="flex items-center justify-between px-3 mb-1.5">
+							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+								Labels
+							</span>
+						</div>
+						{mailboxLabels.map((label) => (
+							<NavLink
+								key={label.id}
+								to={`/mailbox/${mailboxId}/search?label=${encodeURIComponent(label.name)}`}
+								onClick={handleNavClick}
+								title={`Search for label ${label.name}`}
+								className={({ isActive }) =>
+									`flex items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${
+										isActive
+											? "bg-kumo-fill font-semibold text-kumo-default"
+											: "text-kumo-strong hover:bg-kumo-tint"
+									}`
+								}
+							>
+								<span className="shrink-0">
+									{label.color ? (
+										<span
+											aria-hidden="true"
+											className="block h-2.5 w-2.5 rounded-full"
+											style={{ backgroundColor: label.color }}
+										/>
+									) : (
+										<TagIcon size={18} />
+									)}
+								</span>
+								<span className="truncate flex-1">{label.name}</span>
+							</NavLink>
 						))}
 					</div>
 				)}

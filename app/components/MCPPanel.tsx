@@ -5,6 +5,7 @@
 import { Button, Tooltip } from "@cloudflare/kumo";
 import { CheckIcon, CopyIcon, KeyIcon, PlugsIcon, WrenchIcon } from "@phosphor-icons/react";
 import { useState } from "react";
+import { TOOL_REGISTRY } from "../../shared/tool-registry";
 
 function CopyButton({ text }: { text: string }) {
 	const [copied, setCopied] = useState(false);
@@ -39,31 +40,14 @@ function CopyButton({ text }: { text: string }) {
 	);
 }
 
-const TOOLS = [
-	{ name: "list_mailboxes", desc: "List mailboxes" },
-	{ name: "list_emails", desc: "List folder messages" },
-	{ name: "get_email", desc: "Read one email" },
-	{ name: "get_thread", desc: "Read a conversation" },
-	{ name: "search_emails", desc: "Search subject and body" },
-	{ name: "draft_reply", desc: "Draft a reply" },
-	{ name: "create_draft", desc: "Create a new draft" },
-	{ name: "update_draft", desc: "Update a draft" },
-	{ name: "send_reply", desc: "Send a reply" },
-	{ name: "send_email", desc: "Send a new email" },
-	{ name: "mark_email_read", desc: "Toggle read state" },
-	{ name: "move_email", desc: "Move to a folder" },
-	{ name: "delete_email", desc: "Delete an email" },
-	{ name: "list_rules", desc: "List automation rules" },
-	{ name: "create_rule", desc: "Create an automation rule" },
-	{ name: "update_rule", desc: "Update a rule" },
-	{ name: "delete_rule", desc: "Delete a rule" },
-	{ name: "preview_rule", desc: "Preview a rule against stored mail" },
-	{ name: "reorder_rules", desc: "Reorder rule priority" },
-	{ name: "list_folders", desc: "List folders" },
-	{ name: "create_folder", desc: "Create a folder" },
-	{ name: "update_folder", desc: "Rename a folder" },
-	{ name: "delete_folder", desc: "Delete a folder" },
-];
+// The full MCP tool set, generated from the single tool registry
+// (shared/tool-registry.ts) — never hand-edit this list. Adding a tool there
+// adds its row here; the parity test compares the registry against the live
+// /mcp tools/list so the panel cannot go stale unnoticed.
+const TOOLS = Object.entries(TOOL_REGISTRY)
+	.filter(([, entry]) => entry.mcp)
+	.map(([name, entry]) => ({ name, desc: entry.description }))
+	.sort((a, b) => a.name.localeCompare(b.name));
 
 const BRIDGE_PATH = "/path/to/agentic-inbox-codebam/scripts/mcp-bridge.mjs";
 

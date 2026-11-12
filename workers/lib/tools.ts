@@ -102,6 +102,21 @@ import {
 import { runThreadSummary } from "./thread-summary";
 import type { Env } from "../types";
 
+// The single tool registry (shared/tool-registry.ts) documents every tool
+// this module implements — which surfaces expose it, the token scope each
+// surface requires, and whether the handler is destructive — and is
+// re-exported here so server-side callers have one import. The registry is
+// metadata only; registrations live in workers/mcp/index.ts and
+// workers/agent/index.ts, and the parity test compares all three.
+export {
+	TOOL_REGISTRY,
+	TOOL_NAMES,
+	MCP_TOOL_NAMES,
+	AGENT_SCOPED_TOOL_NAMES,
+	AGENT_GLOBAL_TOOL_NAMES,
+	type ToolRegistryEntry,
+} from "../../shared/tool-registry";
+
 // ── Type casts for DO methods not on the base stub type ────────────
 type MailboxSearchStub = {
 	searchEmails: (options: Record<string, unknown>) => Promise<
@@ -1167,15 +1182,25 @@ export async function toolDiscardDraft(
  *
  * Without `permanent` the email is moved to the Trash folder and can still be
  * restored; an email already in Trash is left there. With `permanent: true`
- * the row and its R2 attachment blobs are removed irreversibly.
+ * the row and its R2 attachment blobs are removed irreversibly — and only
+ * when the caller also passes `confirm: true` after the operator has
+ * explicitly confirmed this deletion. A permanent delete without
+ * `confirm: true` is refused, never executed.
  */
 export async function toolDeleteEmail(
 	env: Env,
 	mailboxId: string,
 	emailId: string,
 	permanent = false,
+	confirm = false,
 ) {
 	const stub = getMailboxStub(env, mailboxId);
+	if (permanent && confirm !== true) {
+		return {
+			error:
+				"Refusing to permanently delete an email without confirmation. Pass confirm:true only after the operator has explicitly confirmed this deletion.",
+		};
+	}
 	if (!permanent) {
 		const { trashed, alreadyInTrash } = await stub.trashEmails([emailId]);
 		if (trashed.length > 0) return { status: "trashed", emailId };
@@ -1230,11 +1255,16 @@ export interface DeleteSpamMailboxResult {
  * Rows are de-duplicated, so a message with several spam markers is deleted
  * once.
  *
- * If `mailboxId` is omitted, every mailbox in the deployment is purged.
+ * `mailboxId` is required: this tool purges exactly one named mailbox,
+ * never every mailbox at once. Callers who want every mailbox covered
+ * must call it once per mailbox. And the purge only runs with
+ * `confirm: true` after the operator has explicitly confirmed it, like
+ * every irreversible delete here.
  */
 export async function toolDeleteSpamEmails(
 	env: Env,
-	mailboxId?: string,
+	mailboxId: string,
+	confirm = false,
 ): Promise<{
 	status: "spam_deleted";
 	deletedCount: number;
@@ -1244,13 +1274,13 @@ export async function toolDeleteSpamEmails(
 	deletedCount: number;
 	mailboxes: DeleteSpamMailboxResult[];
 } | { error: string }> {
-	const mailboxIds = mailboxId
-		? [mailboxId]
-		: (await listMailboxes(env.BUCKET)).map((mailbox) => mailbox.id);
-
-	if (mailboxIds.length === 0) {
-		return { error: "No mailboxes found" };
+	if (confirm !== true) {
+		return {
+			error:
+				"Refusing to permanently delete spam without confirmation. Pass confirm:true only after the operator has explicitly confirmed this deletion.",
+		};
 	}
+	const mailboxIds = [mailboxId];
 
 	const mailboxResults: DeleteSpamMailboxResult[] = [];
 	let deletedCount = 0;
@@ -2482,9 +2512,21 @@ export async function toolUpdateItem(
  * Permanently delete every message in the Trash folder, including its R2
  * attachment blobs — the exact work of the POST /trash/empty route, so an
  * explicit "empty the trash" request goes through the same path. Answers
- * the number of purged messages. Irreversible. Nothing is sent.
+ * the number of purged messages. Irreversible. Nothing is sent. Only runs
+ * with `confirm: true` after the operator has explicitly confirmed it;
+ * without it the purge is refused, never executed.
  */
-export async function toolEmptyTrash(env: Env, mailboxId: string) {
+export async function toolEmptyTrash(
+	env: Env,
+	mailboxId: string,
+	confirm = false,
+) {
+	if (confirm !== true) {
+		return {
+			error:
+				"Refusing to permanently empty Trash without confirmation. Pass confirm:true only after the operator has explicitly confirmed this deletion.",
+		};
+	}
 	const stub = getMailboxStub(env, mailboxId);
 	const { purged, attachments } = await stub.emptyTrash();
 	if (attachments.length > 0) {
@@ -2593,6 +2635,15 @@ export async function toolSendReply(
 	const originalEmail = (await stub.getEmail(params.originalEmailId)) as EmailFull | null;
 	if (!originalEmail) {
 		return { error: "Original email not found" };
+	}
+	// Sending a reply to spam is refused like drafting one (toolDraftReply):
+	// the Spam folder, the spam category and the classifier audit trail all
+	// count, and the check runs before any draft verification or send.
+	if (isSpamMarkedEmail(originalEmail)) {
+		return {
+			error:
+				"Refusing to send a reply: this email is marked as spam. Move it out of Spam or remove the spam category if this is a mistake.",
+		};
 	}
 
 	const { originalMsgId, references, threadId } = buildReferencesChain(originalEmail);

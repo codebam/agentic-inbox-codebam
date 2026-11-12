@@ -212,6 +212,8 @@ import {
 	authenticateScopedRequest,
 	runScopedTool,
 } from "./lib/scoped-surface";
+import { log } from "./lib/logger";
+import { isQuotaExceededError } from "./lib/quota";
 
 type AppContext = Context<MailboxContext>;
 
@@ -284,6 +286,17 @@ const app = new Hono<MailboxContext>();
  * turn into a 500. It answers 400 naming the field instead.
  */
 app.onError((error, c) => {
+	// Mailbox storage-quota refusal (MailboxDO.createEmail): answer 503 +
+	// Retry-After so the client retries after the operator frees space,
+	// instead of a generic 500. Readers/deletes are unaffected — only
+	// createEmail can throw this.
+	if (isQuotaExceededError(error)) {
+		c.header("Retry-After", String(error.retryAfter));
+		return c.json(
+			{ error: error.message, retryAfter: error.retryAfter },
+			error.status,
+		);
+	}
 	if (error instanceof ZodError) {
 		const issue = error.issues[0];
 		const field = issue && issue.path.length > 0 ? issue.path.join(".") : "body";
@@ -462,7 +475,19 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId");
 	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 	if (!obj) return c.json({ error: "Not found" }, 404);
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
+	const storedRaw: unknown = await obj.json();
+	const stored: Record<string, unknown> =
+		storedRaw !== null && typeof storedRaw === "object"
+			? (storedRaw as Record<string, unknown>)
+			: {};
+	// Write-only secret: the GET never returns the webhook signing secret,
+	// only whether one is set (`hasSecret`, on both the envelope and the
+	// settings so callers can read it either way). The secret itself is
+	// accepted on PUT as `notifyWebhookSecret`.
+	const hasSecret = typeof stored["notifyWebhookSecret"] === "string" && stored["notifyWebhookSecret"].trim().length > 0;
+	const settings: Record<string, unknown> = { ...stored, hasSecret };
+	delete settings["notifyWebhookSecret"];
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, hasSecret, settings });
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
@@ -472,7 +497,13 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		return c.json({ error: "settings must be an object" }, 400);
 	}
 	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
+	const existingObj = await c.env.BUCKET.get(key);
+	if (!existingObj) return c.json({ error: "Not found" }, 404);
+	const existingRaw: unknown = await existingObj.json().catch(() => null);
+	const existingSettings: Record<string, unknown> =
+		existingRaw !== null && typeof existingRaw === "object"
+			? (existingRaw as Record<string, unknown>)
+			: {};
 	// An unusable webhook URL is rejected outright: notification settings are
 	// only stored once the endpoint is known to be deliverable (absolute https).
 	const webhookUrlError = validateWebhookUrl(settings["notifyWebhookUrl"]);
@@ -480,8 +511,18 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	// Normalize server-side so an edited stale client cannot store malformed
 	// categorization, model or Trash retention settings that would break
 	// inbound classification, AI calls or the retention sweep.
+	// Write-only secret: the GET never returns it, so a settings save that
+	// omits `notifyWebhookSecret` keeps the stored one. An explicitly present
+	// value (including "" to clear) is normalized and stored.
+	const incomingSecret = settings["notifyWebhookSecret"];
+	const notifyWebhookSecret = incomingSecret === undefined
+		? normalizeWebhookSecret(existingSettings["notifyWebhookSecret"])
+		: normalizeWebhookSecret(incomingSecret);
+	// Drop the GET's `hasSecret` echo: it is a read-only hint, never stored.
+	const incomingSettings = { ...settings };
+	delete incomingSettings["hasSecret"];
 	const normalizedSettings = {
-		...settings,
+		...incomingSettings,
 		categorization: normalizeCategorizationSettings(settings["categorization"]),
 		models: normalizeModelConfig(settings["models"]),
 		defaultEmailView: normalizeEmailViewMode(settings["defaultEmailView"]) ?? null,
@@ -489,7 +530,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		// trashed mail until someone empties Trash by hand.
 		trashRetentionDays: normalizeTrashRetentionDays(settings["trashRetentionDays"]),
 		notifyWebhookUrl: normalizeWebhookUrl(settings["notifyWebhookUrl"]),
-		notifyWebhookSecret: normalizeWebhookSecret(settings["notifyWebhookSecret"]),
+		notifyWebhookSecret,
 		imageAllowlist: normalizeImageAllowlist(settings["imageAllowlist"]),
 		autoDraft: normalizeAutoDraft(settings["autoDraft"]),
 		digestEnabled: normalizeDigestEnabled(settings["digestEnabled"]),
@@ -663,17 +704,28 @@ type MailboxSearchStub = {
 };
 
 /**
+ * Pagination options MailboxDO.getSnoozed/getReminders accept (both
+ * optional; omitted means the first page at the DO's default size).
+ */
+type SnoozedListOptions = NonNullable<Parameters<MailboxDO["getSnoozed"]>[0]>;
+
+/** One Snoozed/Reminders page: the row array, plus `hasMore` when truncated. */
+type MailboxSnoozedPage = MailboxEmailRow[] & { hasMore?: boolean };
+
+/**
  * The snooze/reminder RPCs the routes call. The mutators answer with the
  * updated email (the shape getEmail returns) or null for an unknown id; the
- * lists answer with rows in the same shape as a folder listing.
+ * lists answer with rows in the same shape as a folder listing, paginated
+ * (`hasMore` rides only on a truncated page so the historical array shape
+ * is preserved whenever the listing fits in one page).
  */
 type MailboxSnoozeStub = {
 	setSnooze: (id: string, until: string) => Promise<MailboxThreadEmailRow | null>;
 	clearSnooze: (id: string) => Promise<MailboxThreadEmailRow | null>;
 	setReminder: (id: string, at: string) => Promise<MailboxThreadEmailRow | null>;
 	clearReminder: (id: string) => Promise<MailboxThreadEmailRow | null>;
-	getSnoozed: () => Promise<MailboxEmailRow[]>;
-	getReminders: () => Promise<MailboxEmailRow[]>;
+	getSnoozed: (options?: SnoozedListOptions) => Promise<MailboxSnoozedPage>;
+	getReminders: (options?: SnoozedListOptions) => Promise<MailboxSnoozedPage>;
 };
 
 /**
@@ -3293,6 +3345,241 @@ function extractDeliveryReport(
 	};
 }
 
+// ── receiveEmail stages (named, behaviour-identical) ───────────────
+// receiveEmail is the inbound ingest pipeline; it is decomposed into the
+// named stages below so each stage can be read (and tested) on its own.
+// The orchestrator below keeps the exact historical stage ORDER:
+//   1. route to a mailbox + load its settings
+//   2. deterministic rules (before any AI classifier)
+//   3. duplicate check (before any R2 put or extraction)
+//   4. attachment bytes → R2 (bounded parallel chunks)
+//   5. sender policy + classification + store (createEmail)
+//   6. outbound rule actions + notifications (push, auto-draft, webhook)
+// Stages 5–6 still run inline (they interleave stored-row state with the
+// waitUntil notifications) and are marked with banners in receiveEmail.
+
+/**
+ * Stage 1a — resolve the target mailbox for an inbound message: the first
+ * routing recipient that has a mailbox row wins; otherwise the recipient's
+ * domain catch-all mailbox (hand-made catchall@/catch_all@ aliases honoured
+ * before the canonical catch-all@ address). Undefined when there is none.
+ */
+async function resolveInboundMailbox(
+	env: Env,
+	routingRecipients: string[],
+	allowedAddresses: Set<string>,
+	hasAllowList: boolean,
+	catchAllMailboxes: ReturnType<typeof resolveCatchAllMailboxes>,
+): Promise<{ mailboxId: string; mailboxIsCatchAll: boolean } | undefined> {
+	let mailboxId: string | undefined;
+	let mailboxIsCatchAll = false;
+
+	const directCandidates = hasAllowList
+		? routingRecipients.filter((address) => allowedAddresses.has(address))
+		: routingRecipients;
+
+	for (const candidate of directCandidates) {
+		if (await env.BUCKET.head(`mailboxes/${candidate}.json`)) {
+			mailboxId = candidate;
+			break;
+		}
+	}
+
+	// No dedicated mailbox: hand the message to the catch-all mailbox for the
+	// recipient's domain. Hand-made aliases (catchall@, catch_all@) are honoured
+	// before falling back to the canonical catch-all@ address.
+	if (!mailboxId) {
+		for (const candidate of routingRecipients) {
+			const domain = emailDomain(candidate);
+			if (!domain) continue;
+			const target = catchAllMailboxes.get(domain);
+			if (!target) continue;
+
+			// Only conventional catch-all names are resolved to hand-made
+			// aliases; an explicit CATCH_ALL_MAILBOXES target is used verbatim.
+			const targetAddresses = isCatchAllAddress(target)
+				? [
+					...new Set([
+						target,
+						...CATCH_ALL_LOCAL_PARTS.map((localPart) => `${localPart}@${domain}`),
+					]),
+				]
+				: [target];
+			for (const address of targetAddresses) {
+				if (await env.BUCKET.head(`mailboxes/${address}.json`)) {
+					mailboxId = address;
+					break;
+				}
+			}
+			if (!mailboxId) mailboxId = target;
+			mailboxIsCatchAll = true;
+			break;
+		}
+	}
+
+	return mailboxId === undefined ? undefined : { mailboxId, mailboxIsCatchAll };
+}
+
+/**
+ * Stage 1b — load a resolved mailbox's settings JSON. A catch-all target
+ * with no stored settings gets a fresh settings row (the mailbox is
+ * created on first delivery); a non-catch-all address with no row is a
+ * silent ignore — null means "do not ingest this message".
+ */
+async function loadInboundMailboxSettings(
+	env: Env,
+	mailboxId: string,
+	mailboxIsCatchAll: boolean,
+): Promise<Record<string, unknown> | null> {
+	const mailboxKey = `mailboxes/${mailboxId}.json`;
+	const mailboxObject = await env.BUCKET.get(mailboxKey);
+	if (mailboxObject) {
+		return (await mailboxObject.json().catch(() => ({}))) as Record<string, unknown>;
+	}
+	if (mailboxIsCatchAll) {
+		const localPart = mailboxId.split("@")[0] || mailboxId;
+		const created = defaultMailboxSettings(
+			isCatchAllAddress(mailboxId) ? "Catch-all" : localPart,
+		);
+		await env.BUCKET.put(mailboxKey, JSON.stringify(created));
+		console.log(`Catch-all mailbox created: ${mailboxId}`);
+		return created;
+	}
+	console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`);
+	return null;
+}
+
+/** The mailbox RPCs the rules stage needs (the full stub is assignable). */
+type InboundRuleRunner = Pick<DurableObjectStub<MailboxDO>, "listRules" | "recordRuleFirings">;
+
+/**
+ * Stage 2 — run the mailbox's deterministic rules over the parsed message
+ * (precedence: discard drops outright; any other match shapes the stored
+ * row authoritatively and skips the AI classifier; only unruled messages
+ * reach the classifier) and record firing statistics best-effort. Rule
+ * loading/evaluation failures never block delivery: the message is
+ * delivered unruled.
+ */
+async function runInboundRules(
+	stub: InboundRuleRunner,
+	parsedEmail: ParsedMail,
+	input: {
+		allRecipients: string[];
+		ccRecipients: string[];
+		bccRecipients: string[];
+		envelopeRecipient: string | null;
+		routingRecipients: string[];
+	},
+): Promise<ReturnType<typeof runRules>> {
+	let ruleResult = emptyRuleRunResult();
+	try {
+		ruleResult = runRules(await stub.listRules(), {
+			sender: (parsedEmail.from?.address || "").toLowerCase(),
+			recipient: input.allRecipients.join(", "),
+			envelope_recipient: input.envelopeRecipient ?? input.routingRecipients[0] ?? null,
+			cc: input.ccRecipients.join(", ") || null,
+			bcc: input.bccRecipients.join(", ") || null,
+			subject: parsedEmail.subject || "",
+			body: parsedEmail.html || parsedEmail.text || "",
+			has_attachment: (parsedEmail.attachments?.length ?? 0) > 0,
+			// Inbound mail carries no category until classification runs, so
+			// category_equals cannot match on arrival.
+			category: null,
+		});
+	} catch (e) {
+		console.error("Rule evaluation failed; delivering without rules:", (e as Error).message);
+	}
+
+	// Firing statistics: every rule that acted on this message is counted,
+	// including a discard rule — the message is dropped, but the rule fired.
+	// Best-effort: a stats failure must never block delivery.
+	if (ruleResult.appliedRuleIds.length > 0) {
+		try {
+			await stub.recordRuleFirings(ruleResult.appliedRuleIds);
+		} catch (e) {
+			console.error("Rule stats update failed:", (e as Error).message);
+		}
+	}
+
+	return ruleResult;
+}
+
+/** One attachment's bytes, kept until the message is stored (see below). */
+interface AttachmentTextSource {
+	attachment_id: string;
+	email_id: string;
+	filename: string;
+	mimetype: string;
+	bytes: Uint8Array;
+}
+
+/**
+ * Stage 4a — turn the parsed attachments into storage rows, search-index
+ * byte sources and R2 put jobs, in attachment order. The synchronous part
+ * (sanitize, decode, repair) runs here so every job's key and rows are
+ * known before any put starts; the puts themselves are `uploadAttachmentJobs`.
+ */
+function prepareInboundAttachments(
+	parsedEmail: ParsedMail,
+	messageId: string,
+): {
+	attachmentData: StoredAttachment[];
+	attachmentTextSources: AttachmentTextSource[];
+	attachmentJobs: { key: string; content: Uint8Array }[];
+} {
+	const attachmentData: StoredAttachment[] = [];
+	// Bytes of every attachment, kept only until the message is stored: the
+	// text extracted from them goes into the mailbox's search index (below,
+	// in ctx.waitUntil after createEmail).
+	const attachmentTextSources: AttachmentTextSource[] = [];
+	// R2 puts are jobs like the decode/repair above: the synchronous part
+	// (sanitize, decode, repair) runs first so every job's key and rows
+	// are known and in attachment order, then the puts run in bounded
+	// chunks of five in parallel — the next chunk starts only once the
+	// previous is fully stored. The bound keeps a many-attachment message
+	// from fanning out into dozens of concurrent subrequests while still
+	// taking one slow blob off the serial path.
+	const attachmentJobs: { key: string; content: Uint8Array }[] = [];
+	if (parsedEmail.attachments) {
+		for (const att of parsedEmail.attachments) {
+			const attId = crypto.randomUUID();
+			// Control characters and path separators are exactly what has to go.
+			// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
+			const filename = (att.filename || "untitled").replace(/[/\\:*?"<>|\x00-\x1f]/g, "_");
+			const received = typeof att.content === "string"
+				? new TextEncoder().encode(att.content)
+				: new Uint8Array(att.content as ArrayBuffer);
+			const content = repairBase64Attachment(received, att.mimeType || "application/octet-stream");
+			attachmentJobs.push({ key: `attachments/${messageId}/${attId}/${filename}`, content });
+			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
+				size: content.byteLength,
+				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
+			attachmentTextSources.push({
+				attachment_id: attId,
+				email_id: messageId,
+				filename,
+				mimetype: att.mimeType || "application/octet-stream",
+				bytes: content,
+			});
+		}
+	}
+	return { attachmentData, attachmentTextSources, attachmentJobs };
+}
+
+/** Stage 4b — upload every attachment job to R2 in bounded parallel chunks of five. */
+async function uploadAttachmentJobs(
+	env: Env,
+	attachmentJobs: { key: string; content: Uint8Array }[],
+): Promise<void> {
+	for (let chunkStart = 0; chunkStart < attachmentJobs.length; chunkStart += 5) {
+		await Promise.all(
+			attachmentJobs
+				.slice(chunkStart, chunkStart + 5)
+				.map((job) => env.BUCKET.put(job.key, job.content)),
+		);
+	}
+}
+
 async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	// Parts sent without base64/quoted-printable lose their CR bytes inside the
@@ -3329,54 +3616,15 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const allowedAddresses = new Set(normalizeEmailAddressList(env.EMAIL_ADDRESSES));
 	const hasAllowList = hasConfiguredAddresses(env.EMAIL_ADDRESSES);
 	const catchAllMailboxes = resolveCatchAllMailboxes(env);
-
-	let mailboxId: string | undefined;
-	let mailboxIsCatchAll = false;
-
-	const directCandidates = hasAllowList
-		? routingRecipients.filter((address) => allowedAddresses.has(address))
-		: routingRecipients;
-
-	for (const candidate of directCandidates) {
-		if (await env.BUCKET.head(`mailboxes/${candidate}.json`)) {
-			mailboxId = candidate;
-			break;
-		}
-	}
-
-	// No dedicated mailbox: hand the message to the catch-all mailbox for the
-	// recipient's domain. Hand-made aliases (catchall@, catch_all@) are honoured
-	// before falling back to the canonical catch-all@ address.
-	if (!mailboxId) {
-		for (const candidate of routingRecipients) {
-			const domain = emailDomain(candidate);
-			if (!domain) continue;
-			const target = catchAllMailboxes.get(domain);
-			if (!target) continue;
-
-			// Only conventional catch-all names are resolved to hand-made
-			// aliases; an explicit CATCH_ALL_MAILBOXES target is used verbatim.
-			const targetAddresses = isCatchAllAddress(target)
-				? [
-						...new Set([
-							target,
-							...CATCH_ALL_LOCAL_PARTS.map((localPart) => `${localPart}@${domain}`),
-						]),
-					]
-				: [target];
-			for (const address of targetAddresses) {
-				if (await env.BUCKET.head(`mailboxes/${address}.json`)) {
-					mailboxId = address;
-					break;
-				}
-			}
-			if (!mailboxId) mailboxId = target;
-			mailboxIsCatchAll = true;
-			break;
-		}
-	}
-
-	if (!mailboxId) {
+	// ── Stage 1: route to a mailbox + load its settings ───────────
+	const resolved = await resolveInboundMailbox(
+		env,
+		routingRecipients,
+		allowedAddresses,
+		hasAllowList,
+		catchAllMailboxes,
+	);
+	if (!resolved) {
 		console.log(
 			hasAllowList
 				? "Ignoring email: no recipient matches EMAIL_ADDRESSES or a catch-all mailbox."
@@ -3384,157 +3632,92 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		);
 		return;
 	}
+	const { mailboxId, mailboxIsCatchAll } = resolved;
 
-	const mailboxKey = `mailboxes/${mailboxId}.json`;
-	const mailboxObject = await env.BUCKET.get(mailboxKey);
-	let mailboxSettings: Record<string, unknown>;
-	if (mailboxObject) {
-		mailboxSettings = (await mailboxObject.json().catch(() => ({}))) as Record<string, unknown>;
-	} else if (mailboxIsCatchAll) {
-		const localPart = mailboxId.split("@")[0] || mailboxId;
-		mailboxSettings = defaultMailboxSettings(
-			isCatchAllAddress(mailboxId) ? "Catch-all" : localPart,
-		);
-		await env.BUCKET.put(mailboxKey, JSON.stringify(mailboxSettings));
-		console.log(`Catch-all mailbox created: ${mailboxId}`);
-	} else {
-		console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`);
-		return;
-	}
+	const mailboxSettings = await loadInboundMailboxSettings(env, mailboxId, mailboxIsCatchAll);
+	if (mailboxSettings === null) return;
 	const categorization = normalizeCategorizationSettings(mailboxSettings["categorization"]);
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
 
-	// ── Deterministic rules run BEFORE the AI classifier ────────────
-	// Precedence, in order:
-	//   1. A rule with `discard` drops the message outright: it is never
-	//      stored and no attachment bytes reach R2 (this block runs before
-	//      the attachment upload below).
-	//   2. Any other matched rule shapes the stored row (folder, category,
-	//      read, starred) and is authoritative — the Clef-flash classifier is
-	//      skipped for messages a rule already routed, so AI never overrides
-	//      user-authored automation.
-	//   3. Only messages no rule matched reach the classifier.
-	// Rule loading/evaluation failures never block delivery: they are logged
-	// and the message is delivered unruled.
-	let ruleResult = emptyRuleRunResult();
-	try {
-		ruleResult = runRules(await stub.listRules(), {
-			sender: (parsedEmail.from?.address || "").toLowerCase(),
-			recipient: allRecipients.join(", "),
-			envelope_recipient: envelopeRecipient ?? routingRecipients[0] ?? null,
-			cc: ccRecipients.join(", ") || null,
-			bcc: bccRecipients.join(", ") || null,
-			subject: parsedEmail.subject || "",
-			body: parsedEmail.html || parsedEmail.text || "",
-			has_attachment: (parsedEmail.attachments?.length ?? 0) > 0,
-			// Inbound mail carries no category until classification runs, so
-			// category_equals cannot match on arrival.
-			category: null,
-		});
-	} catch (e) {
-		console.error("Rule evaluation failed; delivering without rules:", (e as Error).message);
-	}
+	// ── Stage 2: deterministic rules (before any AI classifier) ───
+	// Precedence (runInboundRules): a discard rule drops the message
+	// outright; any other match shapes the stored row authoritatively;
+	// only unruled messages reach the classifier.
+	const ruleResult = await runInboundRules(stub, parsedEmail, {
+		allRecipients,
+		ccRecipients,
+		bccRecipients,
+		envelopeRecipient,
+		routingRecipients,
+	});
 
-
-	// Firing statistics: every rule that acted on this message is counted,
-	// including a discard rule — the message is dropped, but the rule fired.
-	// Best-effort: a stats failure must never block delivery.
-	if (ruleResult.appliedRuleIds.length > 0) {
-		try {
-			await stub.recordRuleFirings(ruleResult.appliedRuleIds);
-		} catch (e) {
-			console.error("Rule stats update failed:", (e as Error).message);
-		}
-	}
+	const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
+	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
 	if (ruleResult.discarded) {
 		console.log(`Inbound email discarded by rule(s) for ${mailboxId}: ${ruleResult.appliedRules.join(", ")}`);
+		log("email_discarded", {
+			mailboxId,
+			messageId: originalMessageId ?? null,
+			rules: ruleResult.appliedRules,
+		});
 		return;
 	}
 	if (ruleResult.appliedRules.length > 0) {
 		console.log(`Inbound rules applied for ${mailboxId}: ${ruleResult.appliedRules.join(", ")}`);
 	}
 
-
-	const messageId = crypto.randomUUID();
-	const attachmentData: StoredAttachment[] = [];
-	// Bytes of every attachment, kept only until the message is stored: the
-	// text extracted from them goes into the mailbox's search index (below).
-	const attachmentTextSources: {
-		attachment_id: string;
-		email_id: string;
-		filename: string;
-		mimetype: string;
-		bytes: Uint8Array;
-	}[] = [];
-	if (parsedEmail.attachments) {
-		for (const att of parsedEmail.attachments) {
-			const attId = crypto.randomUUID();
-			// Control characters and path separators are exactly what has to go.
-			// eslint-disable-next-line no-control-regex -- deliberate: strip control characters
-			const filename = (att.filename || "untitled").replace(/[/\\:*?"<>|\x00-\x1f]/g, "_");
-			const received = typeof att.content === "string"
-				? new TextEncoder().encode(att.content)
-				: new Uint8Array(att.content as ArrayBuffer);
-			const content = repairBase64Attachment(received, att.mimeType || "application/octet-stream");
-			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, content);
-			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
-				size: content.byteLength,
-				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
-			attachmentTextSources.push({
-				attachment_id: attId,
-				email_id: messageId,
-				filename,
-				mimetype: att.mimeType || "application/octet-stream",
-				bytes: content,
-			});
-		}
-	}
-
-	// Attachment text for mailbox search (workers/lib/attachment-text.ts):
-	// local extraction for every attachment, plus the Workers AI conversion
-	// for the rich types (application/pdf, text/html), which is free for most
-	// formats. The conversion is deliberately best-effort — it logs and
-	// answers null on any failure — and extraction happens before createEmail
-	// while the rows are stored only AFTER it (below), so a duplicate
-	// delivery never leaves searchable text behind. Sent copies are skipped
-	// by design: the send path is latency- and guardrail-sensitive, and v1
-	// indexes received and imported mail.
-	const attachmentTextRows: AttachmentTextInput[] = [];
-	for (const source of attachmentTextSources) {
+	// ── Stage 3: duplicate check (before any R2 put or extraction) ──
+	// ── Duplicate check runs FIRST, before any R2 put or extraction ──
+	// This mailbox already holds this Message-ID (workers/durableObject/
+	// dedupe.ts): skip the delivery here, before any attachment bytes are
+	// uploaded or any attachment text is extracted, so a redelivery leaves
+	// no orphan R2 blobs or search rows behind. The check is best-effort:
+	// a lookup failure is logged and ingest continues, and `createEmail`
+	// still runs the same lookup authoritatively at insert time — only a
+	// duplicate that arrives in the race window between this check and
+	// that insert can still leave bytes behind.
+	if (originalMessageId) {
+		let duplicateId: string | null = null;
 		try {
-			let text = extractAttachmentText(source.mimetype, source.filename, source.bytes);
-			if (needsMarkdownConversion(source.mimetype)) {
-				const converted = await extractAttachmentTextViaAi(
-					env,
-					source.filename,
-					source.bytes,
-					source.mimetype,
-				);
-				if (converted) text = converted;
-			}
-			if (text) {
-				attachmentTextRows.push({
-					attachment_id: source.attachment_id,
-					email_id: source.email_id,
-					filename: source.filename,
-					mimetype: source.mimetype,
-					text,
-				});
-			}
+			duplicateId = await stub.findDuplicateEmailId(originalMessageId);
 		} catch (e) {
-			// Extraction must never fail the delivery: the message is stored
-			// either way, only this file misses the search index.
 			console.error(
-				`Attachment text extraction failed for ${source.filename}; it will not be searchable:`,
+				"Duplicate check failed; delivering without it:",
 				(e as Error).message,
 			);
 		}
+		if (duplicateId) {
+			console.log(
+				`Skipping duplicate inbound email for ${mailboxId}: message_id ${originalMessageId} already stored as ${duplicateId}`,
+			);
+			log("email_deduped", {
+				mailboxId,
+				messageId: originalMessageId ?? null,
+				duplicateId,
+			});
+			return;
+		}
 	}
 
-	const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
+	// ── Stage 4: attachment bytes → R2 ────────────────────────────
+	// Prepare and upload run as the two named halves of this stage; the
+	// bytes are held in attachmentTextSources until the search-indexing
+	// step below (after createEmail) consumes them.
+	const messageId = crypto.randomUUID();
+	const { attachmentData, attachmentTextSources, attachmentJobs } =
+		prepareInboundAttachments(parsedEmail, messageId);
+	await uploadAttachmentJobs(env, attachmentJobs);
+
+	// Attachment-text extraction used to run inline here — a serial local
+	// decode plus the Workers AI toMarkdown conversion per rich attachment
+	// (workers/lib/attachment-text.ts) — before createEmail. It now runs in
+	// ctx.waitUntil AFTER createEmail (below), so that serial overhead
+	// stays off the blocking ingest path: the bytes are held in
+	// attachmentTextSources until that step runs.
+
 	const inReplyTo = parsedEmail.inReplyTo ? extractMsgId(parsedEmail.inReplyTo) : null;
 	const emailReferences = parsedEmail.references ? parsedEmail.references.split(/\s+/).filter(Boolean).map(extractMsgId) : [];
 	let threadId = emailReferences[0] || inReplyTo || messageId;
@@ -3543,8 +3726,6 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		const subjectThread = await stub.findThreadBySubject(parsedEmail.subject || "", parsedEmail.from?.address || undefined);
 		if (subjectThread) threadId = subjectThread;
 	}
-
-	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
 	// List-Unsubscribe headers (RFC 8058). postal-mime lowercases header keys
 	// and the extractor lowercases both sides anyway; the values are stored
@@ -3571,6 +3752,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const models = await resolveMailboxModels(env, mailboxId, mailboxSettings);
 
 
+	// ── Stage 5: sender policy + classification + store ───────────
 	// ── Per-mailbox sender policy overrides the AI classifier ──────
 	// One lookup plus one pure decision (workers/lib/sender-policy.ts):
 	//   block → filed straight into Spam, classification and auto-draft
@@ -3660,28 +3842,106 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		matched_rule_name: ruleResult.appliedRules[0] ?? null,
 	}, attachmentData);
 
-	// Duplicate delivery: this Message-ID is already stored in the mailbox, so
-	// skip every downstream side effect — no auto-draft trigger, no
-	// notification work — and leave the existing row where it is. The
-	// attachment blobs uploaded above stay unreferenced; they are the only
-	// artefact of the redelivery.
+	// Duplicate delivery caught by createEmail's authoritative check (the
+	// early check above already handled the ordinary redelivery without
+	// uploading anything): this Message-ID was stored between the early
+	// check and the insert, so skip every downstream side effect — no
+	// auto-draft trigger, no notification work — and leave the existing
+	// row where it is. The attachment blobs uploaded in that narrow race
+	// window stay unreferenced; they are the only artefact of the
+	// redelivery.
 	if (createResult.duplicate) {
 		console.log(
 			`Skipping duplicate inbound email for ${mailboxId}: message_id ${originalMessageId} already stored as ${createResult.id}`,
 		);
+		log("email_deduped", {
+			mailboxId,
+			messageId,
+			originalMessageId: originalMessageId ?? null,
+			duplicateId: createResult.id,
+		});
 		return;
 	}
 
-	// Attachment text for mailbox search is stored only now, after the
-	// duplicate check: a redelivered message never leaves text behind. The
+	log("email_stored", {
+		mailboxId,
+		messageId,
+		originalMessageId: originalMessageId ?? null,
+		folder: destinationFolder,
+	});
+
+	// Attachment text for mailbox search (workers/lib/attachment-text.ts)
+	// is extracted and stored here, in ctx.waitUntil after createEmail:
+	// local extraction for every attachment, plus the Workers AI conversion
+	// for the rich types (application/pdf, text/html), which is free for
+	// most formats. The conversion is deliberately best-effort — it logs
+	// and answers null on any failure — and, running off the blocking
+	// path, a redelivered message never leaves searchable text behind.
+	// Sent copies are skipped by design: the send path is latency- and
+	// guardrail-sensitive, and v1 indexes received and imported mail. The
 	// message itself is stored either way — this step is in addition to
 	// storage and can never fail ingest.
-	if (attachmentTextRows.length > 0) {
+	if (attachmentTextSources.length > 0) {
 		try {
-			await stub.storeAttachmentText(attachmentTextRows);
+			ctx.waitUntil(
+				(async () => {
+					const attachmentTextRows: AttachmentTextInput[] = [];
+					for (const source of attachmentTextSources) {
+						try {
+							let text = extractAttachmentText(source.mimetype, source.filename, source.bytes);
+							if (needsMarkdownConversion(source.mimetype)) {
+								const converted = await extractAttachmentTextViaAi(
+									env,
+									source.filename,
+									source.bytes,
+									source.mimetype,
+								);
+								if (converted) text = converted;
+							}
+							if (text) {
+								attachmentTextRows.push({
+									attachment_id: source.attachment_id,
+									email_id: source.email_id,
+									filename: source.filename,
+									mimetype: source.mimetype,
+									text,
+								});
+							}
+						} catch (e) {
+							// Extraction must never fail the delivery: the message is
+							// stored either way, only this file misses the search index.
+							console.error(
+								`Attachment text extraction failed for ${source.filename}; it will not be searchable:`,
+								(e as Error).message,
+							);
+							log("email_extract_failed", {
+								mailboxId,
+								messageId: source.email_id,
+								filename: source.filename,
+								error: (e as Error).message,
+							});
+						}
+					}
+					if (attachmentTextRows.length > 0) {
+						try {
+							await stub.storeAttachmentText(attachmentTextRows);
+						} catch (e) {
+							console.error(
+								`Attachment text could not be stored for ${mailboxId}; the message itself is stored:`,
+								(e as Error).message,
+							);
+						}
+					}
+				})().catch((e) =>
+					console.error(
+						`Attachment text extraction failed for ${mailboxId}; the message itself is stored:`,
+						(e as Error).message,
+					),
+				),
+			);
 		} catch (e) {
 			console.error(
-				`Attachment text could not be stored for ${mailboxId}; the message itself is stored:`,
+				"Attachment text extraction scheduling failed for this message:",
 				(e as Error).message,
 			);
 		}
@@ -3754,6 +4014,7 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		console.error("Calendar invite handling failed:", (e as Error).message);
 	}
 
+	// ── Stage 6: outbound rule actions + notifications ────────────
 	// Rule-driven outbound actions (forward / auto-reply). Both are skipped
 	// for spam and for discarded messages (a discard rule returned above), and
 	// auto-replies carry their own loop guards. Best-effort: a failed send

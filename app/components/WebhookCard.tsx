@@ -8,6 +8,7 @@ import { PaperPlaneTiltIcon, WebhooksLogoIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { validateWebhookUrl } from "shared/webhook";
 import type { WebhookDeliveryResult } from "workers/lib/webhook";
+import { useMailbox } from "~/queries/mailboxes";
 import { useTestWebhook } from "~/queries/webhook";
 
 
@@ -17,6 +18,8 @@ interface WebhookCardProps {
 	url: string;
 	/** Current form value; saved with the rest of the mailbox settings. */
 	secret: string;
+	/** Whether a secret is already stored (write-only: the value is never read back). */
+	hasSecret?: boolean;
 	onChange: (next: { url: string; secret: string }) => void;
 }
 
@@ -31,10 +34,17 @@ export default function WebhookCard({
 	mailboxId,
 	url,
 	secret,
+	hasSecret: hasSecretProp,
 	onChange,
 }: WebhookCardProps) {
 	const testWebhook = useTestWebhook();
 	const [testResult, setTestResult] = useState<WebhookDeliveryResult | null>(null);
+	// The secret is write-only: the GET never returns it, only `hasSecret`.
+	// Read it from the mailbox query when the caller does not pass it.
+	const { data: mailboxData } = useMailbox(mailboxId);
+	const hasSecret = hasSecretProp ?? (mailboxData as { hasSecret?: boolean } | undefined)?.hasSecret
+		?? (mailboxData?.settings as { hasSecret?: boolean } | undefined)?.hasSecret
+		?? false;
 
 	const urlError = url.trim() ? validateWebhookUrl(url) : null;
 	const configured = Boolean(url.trim()) && !urlError;
@@ -70,6 +80,9 @@ export default function WebhookCard({
 				) : (
 					<Badge variant="secondary">Off</Badge>
 				)}
+				{hasSecret && (
+					<Badge variant="secondary">Secret set</Badge>
+				)}
 			</div>
 			<p className="text-xs text-kumo-subtle mb-4">
 				POSTs a JSON notification to this URL for every new non-spam message
@@ -88,9 +101,10 @@ export default function WebhookCard({
 				/>
 				<Input
 					label="Signing secret (optional)"
-					placeholder="Shared secret used to sign the payload"
+					placeholder={hasSecret ? "Secret set — leave blank to keep, or enter a new one" : "Shared secret used to sign the payload"}
 					value={secret}
 					autoComplete="off"
+					{...(hasSecret ? { description: "The stored secret is never shown. Leave blank to keep it; enter a new one to replace." } : {})}
 					onChange={(e) => onChange({ url, secret: e.target.value })}
 				/>
 			</div>

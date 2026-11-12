@@ -228,7 +228,7 @@ You are connected to every mailbox in this account, not just one inbox.
 - Start any request that spans mailboxes by calling \`list_mailboxes\`. Each returned object has an \`id\`/\`email\`; pass that exact value as \`mailboxId\` to every other tool.
 - When the operator asks about "all my inboxes" or "all mailboxes", check every mailbox returned by list_mailboxes rather than only the most recent one.
 - To find spam, call \`list_emails\` with folder="spam" for each mailbox, and also consider emails with category="spam" (a mailbox with moveToSpam disabled still marks spam in the category field).
-- When the operator explicitly asks to delete spam across mailboxes, call \`delete_spam_emails\` (omit mailboxId to cover every mailbox). That tool only deletes messages marked as spam (Spam folder, \`spam\` category, or classifier audit). Report the per-mailbox counts back to the operator.
+- When the operator explicitly asks to delete spam across mailboxes, call \`delete_spam_emails\` once per mailbox with that mailbox's explicit \`mailboxId\` and \`confirm: true\`. That tool only deletes messages marked as spam (Spam folder, \`spam\` category, or classifier audit). Report the per-mailbox counts back to the operator.
 - Never delete non-spam mail through delete_spam_emails, and never try to draft a reply to spam: both are enforced by the tools, but do not attempt to work around a refusal.
 `;
 
@@ -264,11 +264,12 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 
 
-	// Both shapes are spread into every tool's z.object parameters. They carry
-	// an explicit mailboxId type instead of z.ZodRawShape so the key survives in
-	// the params type each execute() sees. The entry itself still reads back as
-	// `unknown` (zod cannot infer the output of a shape entry declared as an
-	// optional property), so resolveMailboxId narrows it back to a string.
+	// The shape is spread into every tool's z.object parameters. It carries
+	// an explicit mailboxId type instead of z.ZodRawShape so the key survives
+	// in the params type each execute() sees. The entry itself still reads
+	// back as `unknown` (zod cannot infer the output of a shape entry
+	// declared as an optional property), so resolveMailboxId narrows it back
+	// to a string.
 	const mailboxIdField: { mailboxId?: z.ZodString } = allMailboxes
 		? {
 				mailboxId: z
@@ -276,17 +277,6 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.min(1)
 					.describe(
 						"The mailbox address from list_mailboxes (e.g. user@example.com)",
-					),
-			}
-		: {};
-	const optionalMailboxIdField: { mailboxId?: z.ZodOptional<z.ZodString> } = allMailboxes
-		? {
-				mailboxId: z
-					.string()
-					.min(1)
-					.optional()
-					.describe(
-						"Mailbox address from list_mailboxes. Omit to operate on every mailbox.",
 					),
 			}
 		: {};
@@ -931,7 +921,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		delete_email: defineTool({
 			description:
-				"Delete one email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible — only use it when the operator explicitly asks to delete the email forever.",
+				"Delete one email by ID. By default the email is moved to Trash and can be restored; set permanent=true to remove it for good. Permanent deletion is irreversible and requires confirm=true — only use it when the operator explicitly asks to delete the email forever.",
 			parameters: z.object({
 				...mailboxIdField,
 				emailId: z.string().describe("The email ID to delete"),
@@ -940,6 +930,12 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 					.optional()
 					.describe(
 						"true to permanently delete (irreversible); omit or false to move the email to Trash",
+					),
+				confirm: z
+					.boolean()
+					.optional()
+					.describe(
+						"Required when permanent=true: pass true only after the operator has explicitly confirmed this permanent deletion",
 					),
 			}),
 			execute: async (args) => {
@@ -957,7 +953,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 							permanent: args.permanent === true,
 						},
 					},
-					() => toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true),
+					() => toolDeleteEmail(env, mailboxId, args.emailId, args.permanent === true, args.confirm === true),
 				);
 			},
 		}),
@@ -990,8 +986,15 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		empty_trash: defineTool({
 			description:
-				"Permanently delete every email in the Trash folder, including its attachments. Irreversible — trashed mail cannot be restored afterwards. Only call this when the operator explicitly asks to empty the Trash; nothing is sent.",
-			parameters: z.object({ ...mailboxIdField }),
+				"Permanently delete every email in the Trash folder, including its attachments. Irreversible — trashed mail cannot be restored afterwards. Only call this when the operator explicitly asks to empty the Trash, and pass confirm=true; the call is refused without it. Nothing is sent.",
+			parameters: z.object({
+				...mailboxIdField,
+				confirm: z
+					.boolean()
+					.describe(
+						"Must be true: pass true only after the operator has explicitly confirmed emptying the Trash",
+					),
+			}),
 			execute: async (args) => {
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
@@ -1004,7 +1007,7 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 						emailId: null,
 						args: {},
 					},
-					() => toolEmptyTrash(env, mailboxId),
+					() => toolEmptyTrash(env, mailboxId, args.confirm),
 				);
 			},
 		}),
@@ -1041,22 +1044,19 @@ export function createEmailTools(env: Env, fixedMailboxId: string | null) {
 
 		delete_spam_emails: defineTool({
 			description:
-				"Permanently delete every email marked as spam (Spam folder, category 'spam', or classifier audit is_spam: true). Permanent deletion is irreversible — spam mail is not moved to Trash. In all-mailbox mode, omit mailboxId to clear spam from every mailbox. Only call this when the operator explicitly asks to delete spam; never delete non-spam mail with it.",
+				"Permanently delete every email marked as spam (Spam folder, category 'spam', or classifier audit is_spam: true) in one named mailbox. Permanent deletion is irreversible — spam mail is not moved to Trash. mailboxId is required: this tool never purges every mailbox at once, so in all-mailbox mode call it once per mailbox. Only call this when the operator explicitly asks to delete spam, and pass confirm=true; the call is refused without it. Never delete non-spam mail with it.",
 			parameters: z.object({
-				...optionalMailboxIdField,
-			}).strict(),
+				...mailboxIdField,
+				confirm: z
+					.boolean()
+					.describe(
+						"Must be true: pass true only after the operator has explicitly confirmed this permanent deletion",
+					),
+			}),
 			execute: async (args) => {
-				if (!allMailboxes) {
-					return toolDeleteSpamEmails(env, fixedMailboxId ?? undefined);
-				}
-				// Omitted mailboxId intentionally means "every mailbox". A supplied
-				// but blank ID must not quietly become the same broad operation.
-				if (args.mailboxId === undefined) {
-					return toolDeleteSpamEmails(env);
-				}
 				const mailboxId = await resolveMailboxId(args.mailboxId);
 				if (typeof mailboxId !== "string") return mailboxId;
-				return toolDeleteSpamEmails(env, mailboxId);
+				return toolDeleteSpamEmails(env, mailboxId, args.confirm);
 			},
 		}),
 

@@ -17,6 +17,7 @@ import {
 import { captureSendMessageId } from "../lib/delivery-match";
 import { SendEmailRequestSchema } from "../lib/schemas";
 import { Folders } from "../../shared/folders";
+import { isSpamMarkedEmail } from "../../shared/spam";
 import type { MailboxContext } from "../lib/mailbox";
 
 type AppContext = Context<MailboxContext>;
@@ -42,6 +43,19 @@ export async function handleReplyEmail(c: AppContext) {
 
 	if (!rawOriginal) {
 		return c.json({ error: "Original email not found" }, 404);
+	}
+
+	// Replying to spam is refused like saving a draft reply to it (the
+	// drafts route): the Spam folder, the spam category and the classifier
+	// audit trail all count.
+	if (isSpamMarkedEmail(rawOriginal)) {
+		return c.json(
+			{
+				error:
+					"Cannot send a reply to an email marked as spam. Move the original out of Spam or remove the spam category first.",
+			},
+			409,
+		);
 	}
 
 	const originalEmail = await resolveOriginalEmail(stub, rawOriginal);
@@ -146,6 +160,19 @@ export async function handleForwardEmail(c: AppContext) {
 
 	if (!rawOriginal) {
 		return c.json({ error: "Original email not found" }, 404);
+	}
+
+	// Forwarding spam is refused like replying to it (handleReplyEmail):
+	// the Spam folder, the spam category and the classifier audit trail all
+	// count.
+	if (isSpamMarkedEmail(rawOriginal)) {
+		return c.json(
+			{
+				error:
+					"Cannot forward an email marked as spam. Move the original out of Spam or remove the spam category first.",
+			},
+			409,
+		);
 	}
 
 	await resolveOriginalEmail(stub, rawOriginal);

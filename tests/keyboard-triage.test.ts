@@ -103,6 +103,7 @@ describe("key → action table", () => {
 			["Enter", "open"],
 			["o", "open"],
 			["e", "archive"],
+			["b", "snooze"],
 			["#", "trash"],
 			["s", "star"],
 			["u", "unread"],
@@ -274,8 +275,9 @@ describe("key repeat handling", () => {
 		expectAction(keyEvent("Enter", { target: BODY, repeat: true }), "open");
 	});
 
-	it("ignores a repeated destructive key (archive, trash)", () => {
+	it("ignores a repeated destructive key (archive, snooze, trash)", () => {
 		expectIgnore(keyEvent("e", { target: BODY, repeat: true }), "key-repeat");
+		expectIgnore(keyEvent("b", { target: BODY, repeat: true }), "key-repeat");
 		expectIgnore(keyEvent("#", { target: BODY, repeat: true }), "key-repeat");
 	});
 
@@ -297,17 +299,24 @@ describe("key repeat handling", () => {
 
 
 describe("interactive target guard", () => {
-	it("never steals keys from a focused button, link or list row", () => {
+	it("keeps triage letters working on a button, link or row (only Enter/Space activate)", () => {
 		for (const target of [BUTTON, LINK, FOCUSED_ROW]) {
-			expectIgnore(keyEvent("j", { target }), "interactive-target");
-			expectIgnore(keyEvent("e", { target }), "interactive-target");
-			expectIgnore(keyEvent("#", { target }), "interactive-target");
-			expectIgnore(keyEvent("Escape", { target }), "interactive-target");
+			expectAction(keyEvent("j", { target }), "next");
+			expectAction(keyEvent("k", { target }), "previous");
+			expectAction(keyEvent("e", { target }), "archive");
+			expectAction(keyEvent("#", { target }), "trash");
+			expectAction(keyEvent("Escape", { target }), "clear-selection");
 		}
 		expect(isInteractiveTarget(BUTTON)).toBe(true);
 		expect(isInteractiveTarget(FOCUSED_ROW)).toBe(true);
 		expect(isInteractiveTarget(BODY)).toBe(false);
 		expect(isInteractiveTarget(INPUT)).toBe(true);
+	});
+
+	it("leaves Enter to a focused interactive element", () => {
+		for (const target of [BUTTON, LINK, FOCUSED_ROW]) {
+			expectIgnore(keyEvent("Enter", { target }), "interactive-target");
+		}
 	});
 
 	it("checks the interactive target after the unknown-key guard", () => {
@@ -327,10 +336,10 @@ describe("Escape and Enter precedence", () => {
 		expectAction(keyEvent("Escape", { target: BODY }), "clear-selection");
 	});
 
-	it("Escape is not stolen from a field, a button or an open overlay", () => {
+	it("Escape is not stolen from a field or an open overlay (a button does not own it)", () => {
 		expectIgnore(keyEvent("Escape", { target: INPUT }), "typing");
 		expectIgnore(keyEvent("Escape", { target: COMPOSER_FIELD }), "composer");
-		expectIgnore(keyEvent("Escape", { target: BUTTON }), "interactive-target");
+		expectAction(keyEvent("Escape", { target: BUTTON }), "clear-selection");
 		expectIgnore(keyEvent("Escape", { target: BODY }), "overlay-open", { overlayOpen: true });
 	});
 

@@ -5,7 +5,7 @@
 	"main": "./workers/app.ts",
 	"observability": {
 		"enabled": true,
-		"redact_query_string": false
+		"redact_query_string": true
 	},
 	// Daily Trash retention sweep at 03:00 UTC; the handler lives in
 	// workers/app.ts and the sweep in workers/lib/trash-retention.ts.

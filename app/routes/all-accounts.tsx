@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Checkbox, Pagination, Tooltip } from "@cloudflare/kumo";
+import { Badge, Button, Checkbox, Dialog, Pagination, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowLeftIcon,
@@ -26,6 +26,7 @@ import { Folders, getFolderDisplayName } from "shared/folders";
 import AgentSidebar from "~/components/AgentSidebar";
 import BulkActionBar from "~/components/BulkActionBar";
 import CategoryBadge from "~/components/CategoryBadge";
+import KeyboardCheatsheet, { KeyboardCheatsheetButton } from "~/components/KeyboardCheatsheet";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import SelectionCheckbox from "~/components/SelectionCheckbox";
 import { getSnippetText } from "~/lib/utils";
@@ -34,12 +35,14 @@ import {
 	useBulkEmailAction,
 	useDeleteEmail,
 	useMarkThreadRead,
+	useMoveEmail,
 	useUpdateEmail,
 } from "~/queries/emails";
 import { useMailboxes } from "~/queries/mailboxes";
 import { useGlobalCategorization } from "~/queries/categorization";
 import { useConfig } from "~/queries/config";
 import { useEmailSelection } from "~/hooks/useEmailSelection";
+import { useKeyboardTriage } from "~/hooks/useKeyboardTriage";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { BulkEmailAction, Email } from "~/types";
 
@@ -159,11 +162,62 @@ export default function AllAccountsRoute() {
 		clear,
 	} = useEmailSelection(pageKeys);
 	const bulkAction = useBulkEmailAction();
+	const moveEmail = useMoveEmail();
+	const toastManager = useKumoToastManager();
+	const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+	const [confirmState, setConfirmState] = useState<{
+		message: string;
+		confirmLabel: string;
+		onConfirm: () => void;
+	} | null>(null);
+	const confirm = (message: string, confirmLabel: string, onConfirm: () => void) =>
+		setConfirmState({ message, confirmLabel, onConfirm });
+
+	// Keyboard-first triage with per-row mailboxes (selection keys are
+	// mailbox-scoped, matching `selectionKey` above).
+	const keyboardTriage = useKeyboardTriage({
+		emails,
+		currentEmailId: selectedEmailId,
+		selection: { selectedKeys, count: selectedCount, toggle, clear },
+		isComposing,
+		mailboxIdForEmail: (email) => email.mailboxId,
+		selectionKeyForEmail: selectionKey,
+	});
+
+	// A success toast with an Undo action (the composer's scheduled-send pattern).
+	const toastWithUndo = (title: string, undo: () => void) => {
+		const toastId = toastManager.add({
+			title,
+			actions: [
+				{
+					children: "Undo",
+					variant: "secondary",
+					size: "sm",
+					onClick: () => {
+						undo();
+						toastManager.close(toastId);
+					},
+				},
+			],
+		}) as string;
+	};
 
 	const selectedEmails = useMemo(
 		() => emails.filter((email) => selectedKeys.has(selectionKey(email))),
 		[emails, selectedKeys],
 	);
+
+	// The tabbable listbox row: the focused row, else the open row, else the first.
+	const tabbableRowKey = useMemo(() => {
+		if (focusedRowId && emails.some((email) => selectionKey(email) === focusedRowId)) {
+			return focusedRowId;
+		}
+		const open = emails.find(
+			(email) => email.id === selectedEmailId && email.mailboxId === selectedMailboxId,
+		);
+		if (open) return selectionKey(open);
+		return emails[0] ? selectionKey(emails[0]) : null;
+	}, [emails, focusedRowId, selectedEmailId, selectedMailboxId]);
 
 	/** Only shared system folders can be batch move targets across mailboxes. */
 	const moveFolders = useMemo(
@@ -175,12 +229,16 @@ export default function AllAccountsRoute() {
 		[folder],
 	);
 
-	const runBulkAction = (
+	const executeBulkAction = (
 		action: BulkEmailAction,
-		options?: { folderId?: string; confirm?: string },
+		options?: { folderId?: string },
 	) => {
 		if (selectedEmails.length === 0) return;
-		if (options?.confirm && !window.confirm(options.confirm)) return;
+		const inverse = selectedEmails.flatMap((email) =>
+			email.mailboxId
+				? [{ mailboxId: email.mailboxId, id: email.id, folderId: email.folder_id ?? Folders.INBOX }]
+				: [],
+		);
 
 		bulkAction.mutate(
 			{
@@ -201,6 +259,16 @@ export default function AllAccountsRoute() {
 			},
 			{
 				onSuccess: () => {
+					if (action === "trash" || action === "move") {
+						toastWithUndo(
+							action === "trash" ? "Moved selected emails to Trash" : "Moved selected emails",
+							() => {
+								for (const row of inverse) {
+									moveEmail.mutate({ mailboxId: row.mailboxId, id: row.id, folderId: row.folderId });
+								}
+							},
+						);
+					}
 					if (
 						action === "delete" &&
 						selectedEmails.some(
@@ -215,6 +283,20 @@ export default function AllAccountsRoute() {
 				},
 			},
 		);
+	};
+
+	const runBulkAction = (
+		action: BulkEmailAction,
+		options?: { folderId?: string; confirm?: string; confirmLabel?: string },
+	) => {
+		if (selectedEmails.length === 0) return;
+		if (options?.confirm) {
+			confirm(options.confirm, options.confirmLabel ?? "Confirm", () =>
+				executeBulkAction(action, options),
+			);
+			return;
+		}
+		executeBulkAction(action, options);
 	};
 
 	// Changing folders resets paging and any in-progress selection.
@@ -282,16 +364,31 @@ export default function AllAccountsRoute() {
 	const handleDelete = (e: React.MouseEvent, email: Email) => {
 		e.stopPropagation();
 		if (!email.mailboxId) return;
-		if (!window.confirm("Are you sure you want to delete this email?")) return;
-		deleteEmail.mutate({ mailboxId: email.mailboxId, id: email.id });
-		if (selectedEmailId === email.id && selectedMailboxId === email.mailboxId) {
-			closePanel();
-		}
+		const mailboxId = email.mailboxId;
+		const originFolder = email.folder_id ?? Folders.INBOX;
+		confirm(
+			"Are you sure you want to delete this email?",
+			"Delete",
+			() => {
+				deleteEmail.mutate(
+					{ mailboxId, id: email.id },
+					{
+						onSuccess: () =>
+							toastWithUndo("Moved to Trash", () =>
+								moveEmail.mutate({ mailboxId, id: email.id, folderId: originFolder }),
+							),
+					},
+				);
+				if (selectedEmailId === email.id && selectedMailboxId === email.mailboxId) {
+					closePanel();
+				}
+			},
+		);
 	};
 
 	return (
 		<div className="flex h-screen overflow-hidden">
-			<div className="flex-1 flex flex-col min-w-0 bg-kumo-base">
+			<div id="main" tabIndex={-1} className="flex-1 flex flex-col min-w-0 bg-kumo-base">
 				{/* Header */}
 				<div className="flex items-center gap-3 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
 					<Tooltip content="Back to mailboxes" side="bottom" asChild>
@@ -328,6 +425,7 @@ export default function AllAccountsRoute() {
 							onDelete={() =>
 								runBulkAction("delete", {
 									confirm: `Delete ${selectedCount} email${selectedCount === 1 ? "" : "s"}? Messages already in Trash are deleted forever; everything else moves to Trash.`,
+									confirmLabel: "Delete",
 								})
 							}
 							onClear={clear}
@@ -353,6 +451,7 @@ export default function AllAccountsRoute() {
 									aria-label="Refresh"
 								/>
 							</Tooltip>
+							<KeyboardCheatsheetButton onClick={keyboardTriage.openCheatsheet} />
 							<Tooltip content="Search all accounts" side="bottom" asChild>
 								<Button
 									variant="ghost"
@@ -418,7 +517,7 @@ export default function AllAccountsRoute() {
 							{isLoading && emails.length === 0 ? (
 								<AllAccountsSkeleton />
 							) : emails.length > 0 ? (
-								<div>
+								<div role="listbox" aria-label="All accounts conversations">
 									{emails.map((email) => {
 										const isSelected = selectedEmailId === email.id && selectedMailboxId === email.mailboxId;
 										const isRowChecked = isRowSelected(selectionKey(email));
@@ -427,8 +526,11 @@ export default function AllAccountsRoute() {
 										return (
 											<div
 												key={`${email.mailboxId ?? "mailbox"}-${email.id}`}
-												role="button"
-												tabIndex={0}
+												data-row-id={selectionKey(email)}
+												role="option"
+												aria-selected={isSelected}
+												tabIndex={selectionKey(email) === tabbableRowKey ? 0 : -1}
+												onFocus={() => setFocusedRowId(selectionKey(email))}
 												onClick={() => handleRowClick(email)}
 												onKeyDown={(e) => {
 													if (e.key === "Enter" || e.key === " ") {
@@ -442,7 +544,7 @@ export default function AllAccountsRoute() {
 											>
 												{/* Selection checkbox (always visible in selection mode) */}
 												<div
-													className={`shrink-0 ${
+													className={`row-select shrink-0 ${
 														selectedCount > 0
 															? ""
 															: "invisible group-hover:visible group-focus-within:visible"
@@ -465,7 +567,7 @@ export default function AllAccountsRoute() {
 												{/* Star */}
 												<button
 													type="button"
-													className="shrink-0 p-0.5 bg-transparent border-0 cursor-pointer"
+													className="row-star shrink-0 p-0.5 bg-transparent border-0 cursor-pointer"
 													onClick={(e) => toggleStar(e, email)}
 													aria-label={email.starred ? "Unstar email" : "Star email"}
 												>
@@ -516,7 +618,7 @@ export default function AllAccountsRoute() {
 												</div>
 
 												{/* Hover actions */}
-												<div className="hidden group-hover:flex items-center shrink-0">
+												<div className="row-actions hidden group-hover:flex items-center shrink-0">
 													<Tooltip content={email.read ? "Mark unread" : "Mark read"} asChild>
 														<Button
 															variant="ghost"
@@ -581,6 +683,44 @@ export default function AllAccountsRoute() {
 					<AgentSidebar />
 				</div>
 			)}
+			<KeyboardCheatsheet
+				open={keyboardTriage.isCheatsheetOpen}
+				onOpenChange={keyboardTriage.setCheatsheetOpen}
+			/>
+			{/* Destructive confirmations (Kumo dialog, never window.confirm) */}
+			<Dialog.Root
+				open={confirmState !== null}
+				onOpenChange={(open) => {
+					if (!open) setConfirmState(null);
+				}}
+			>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="mb-2 text-base font-semibold">
+						Confirm
+					</Dialog.Title>
+					<Dialog.Description className="mb-4 text-sm text-kumo-subtle">
+						{confirmState?.message}
+					</Dialog.Description>
+					<div className="flex justify-end gap-2">
+						<Dialog.Close
+							render={({ className, ...props }) => (
+								<Button {...props} {...(className ? { className } : {})} variant="secondary">
+									Cancel
+								</Button>
+							)}
+						/>
+						<Button
+							variant="destructive"
+							onClick={() => {
+								confirmState?.onConfirm();
+								setConfirmState(null);
+							}}
+						>
+							{confirmState?.confirmLabel ?? "Confirm"}
+						</Button>
+					</div>
+				</Dialog>
+			</Dialog.Root>
 		</div>
 	);
 }

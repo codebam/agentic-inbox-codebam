@@ -181,7 +181,7 @@ describe("empty_trash tool", () => {
 		await env.BUCKET.put(attachmentKey("empty-a"), "trash blob");
 		await env.BUCKET.put(attachmentKey("empty-keep"), "inbox blob");
 
-		expect(await toolEmptyTrash(env, mailbox)).toEqual({ purged: 2 });
+		expect(await toolEmptyTrash(env, mailbox, true)).toEqual({ purged: 2 });
 
 		expect(await stub.getEmail("empty-a")).toBeNull();
 		expect(await stub.getEmail("empty-b")).toBeNull();
@@ -213,7 +213,7 @@ describe("empty_trash tool", () => {
 		});
 		await env.BUCKET.put(attachmentKey("empty-inbox"), "keep me");
 
-		expect(await toolEmptyTrash(env, mailbox)).toEqual({ purged: 0 });
+		expect(await toolEmptyTrash(env, mailbox, true)).toEqual({ purged: 0 });
 		expect(await stub.getEmail("empty-inbox")).not.toBeNull();
 		expect(await env.BUCKET.head(attachmentKey("empty-inbox"))).not.toBeNull();
 	});
@@ -379,7 +379,7 @@ describe("surface exposure", () => {
 			return tool.execute(args);
 		};
 		await run("restore_email", { emailId: "audit-restore" });
-		await run("empty_trash", {});
+		await run("empty_trash", { confirm: true });
 
 		// Both mutations happened...
 		expect(await stub.getEmail("audit-purge")).toBeNull();

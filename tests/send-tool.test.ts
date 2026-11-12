@@ -1,3 +1,4 @@
+import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { Folders } from "../shared/folders";
@@ -8,6 +9,7 @@ import {
 	MAX_TOOL_ATTACHMENT_FILES,
 	setToolSendEmailSenderFactory,
 	toolSendEmail,
+	toolSendReply,
 } from "../workers/lib/tools";
 import type { SendEmailParams } from "../workers/email-sender";
 
@@ -328,6 +330,145 @@ describe("send_email tool", () => {
 		}
 
 		expect(sent).toHaveLength(0);
+		expect(await sentRows(stub)).toHaveLength(0);
+	});
+});
+
+
+/** Seed one message into a folder for the reply-path tests below. */
+async function seedMessage(
+	mailbox: string,
+	id: string,
+	folder: string,
+	options: { category?: string | null } = {},
+) {
+	const stub = stubFor(mailbox);
+	await stub.createEmail(
+		folder,
+		{
+			id,
+			subject: `Subject ${id}`,
+			sender: "sender@example.org",
+			recipient: mailbox,
+			date: new Date().toISOString(),
+			body: "<p>body</p>",
+			in_reply_to: null,
+			email_references: null,
+			thread_id: id,
+			category: options.category ?? null,
+		},
+		[],
+	);
+	return stub;
+}
+
+
+describe("send_reply tool spam guard", () => {
+	it("refuses to send a reply to a spam-folder original and sends nothing", async () => {
+		const mailbox = "send-reply-spam-folder@example.com";
+		await registerMailbox(mailbox);
+		const stub = await seedMessage(mailbox, "spam-original", Folders.SPAM);
+
+		const result = await toolSendReply(env, mailbox, {
+			originalEmailId: "spam-original",
+			to: "sender@example.org",
+			subject: "Re: Subject spam-original",
+			bodyHtml: "<p>This body is comfortably longer than twenty characters.</p>",
+		});
+		expect(result).toEqual({
+			error: expect.stringContaining("marked as spam"),
+		});
+		expect(await sentRows(stub)).toHaveLength(0);
+	});
+
+
+	it("refuses to send a reply to a spam-category original", async () => {
+		const mailbox = "send-reply-spam-category@example.com";
+		await registerMailbox(mailbox);
+		const stub = await seedMessage(mailbox, "spamcat-original", Folders.INBOX, {
+			category: "spam",
+		});
+
+		const result = await toolSendReply(env, mailbox, {
+			originalEmailId: "spamcat-original",
+			to: "sender@example.org",
+			subject: "Re: Subject spamcat-original",
+			bodyHtml: "<p>This body is comfortably longer than twenty characters.</p>",
+		});
+		expect(result).toEqual({
+			error: expect.stringContaining("marked as spam"),
+		});
+		expect(await sentRows(stub)).toHaveLength(0);
+	});
+
+
+	it("lets a clean original through to draft verification", async () => {
+		const mailbox = "send-reply-clean@example.com";
+		await registerMailbox(mailbox);
+		const stub = await seedMessage(mailbox, "clean-original", Folders.INBOX);
+
+		// The pool's AI binding cannot run remotely, so a clean original is
+		// refused by the verifier — proof the spam check passed it through.
+		const result = await toolSendReply(env, mailbox, {
+			originalEmailId: "clean-original",
+			to: "sender@example.org",
+			subject: "Re: Subject clean-original",
+			bodyHtml: "<p>This body is comfortably longer than twenty characters.</p>",
+		});
+		expect(result).toEqual({
+			error: expect.stringContaining("Draft verification failed"),
+		});
+		expect(await sentRows(stub)).toHaveLength(0);
+	});
+});
+
+
+describe("reply and forward routes refuse spam", () => {
+	async function postRoute(
+		mailbox: string,
+		id: string,
+		action: "reply" | "forward",
+	) {
+		return SELF.fetch(
+			`http://example.com/api/v1/mailboxes/${mailbox}/emails/${id}/${action}`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					to: "recipient@example.org",
+					from: mailbox,
+					subject: action === "reply" ? "Re: Subject" : "Fwd: Subject",
+					html: "<p>hi</p>",
+				}),
+			},
+		);
+	}
+
+
+	it("the reply route answers 409 for a spam-folder original", async () => {
+		const mailbox = "send-route-reply-spam@example.com";
+		await registerMailbox(mailbox);
+		const stub = await seedMessage(mailbox, "route-reply-spam", Folders.SPAM);
+
+		const res = await postRoute(mailbox, "route-reply-spam", "reply");
+		expect(res.status).toBe(409);
+		expect(String(((await res.json()) as { error: string }).error)).toContain(
+			"marked as spam",
+		);
+		expect(await sentRows(stub)).toHaveLength(0);
+	});
+
+
+	it("the forward route answers 409 for a spam-folder original", async () => {
+		const mailbox = "send-route-forward-spam@example.com";
+		await registerMailbox(mailbox);
+		const stub = await seedMessage(mailbox, "route-forward-spam", Folders.SPAM);
+
+		const res = await postRoute(mailbox, "route-forward-spam", "forward");
+		expect(res.status).toBe(409);
+		expect(String(((await res.json()) as { error: string }).error)).toContain(
+			"marked as spam",
+		);
 		expect(await sentRows(stub)).toHaveLength(0);
 	});
 });

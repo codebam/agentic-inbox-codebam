@@ -3,27 +3,47 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 
-import { Loader } from "@cloudflare/kumo";
+import { Badge, Loader } from "@cloudflare/kumo";
 import { HardDrivesIcon } from "@phosphor-icons/react";
 import { useStorageUsage } from "~/queries/storage";
 
 
 /**
+ * Soft-quota thresholds for one mailbox's message database, in bytes.
+ * Mirrors workers/lib/quota.ts (MAX_DATABASE_BYTES /
+ * QUOTA_WARN_BYTES); duplicated here because the app bundle cannot
+ * import from workers/ — keep the values in sync (800 MiB = 80% of
+ * the 1 GB Free-plan DO ceiling, with headroom for WAL growth).
+ */
+const MAX_DATABASE_BYTES = 800 * 1024 * 1024;
+const QUOTA_WARN_BYTES = Math.floor(MAX_DATABASE_BYTES * 0.8);
+
+
+/**
  * Per-mailbox storage footprint: what the mailbox's SQLite database, its
  * stored attachments and its settings JSON currently occupy. Read-only and
- * informational — no limit is applied and nothing is cleaned up here.
+ * informational — nothing is cleaned up here.
  *
- * Every byte figure is rendered through formatBytes, so the card keeps one
+ * When the message database is at or over the soft quota (see
+ * workers/lib/quota.ts), new mail is refused server-side (503 +
+ * Retry-After), so the card surfaces a warning banner: over quota is an
+ * alert, approaching (80%) sits alongside the totals as a caution. Every
+ * byte figure is rendered through formatBytes, so the card keeps one
  * unit convention throughout.
  */
 export default function StorageCard({ mailboxId }: { mailboxId?: string | undefined }) {
 	const { data: usage, isError } = useStorageUsage(mailboxId);
+	const overQuota = !!usage && usage.database_bytes >= MAX_DATABASE_BYTES;
+	const approachingQuota =
+		!!usage && !overQuota && usage.database_bytes >= QUOTA_WARN_BYTES;
 
 	return (
 		<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
 			<div className="flex items-center gap-2 mb-3">
 				<HardDrivesIcon size={16} weight="duotone" className="text-kumo-subtle" />
 				<span className="text-sm font-medium text-kumo-default">Storage</span>
+				{overQuota && <Badge variant="red">Quota exceeded</Badge>}
+				{approachingQuota && <Badge variant="secondary">Approaching quota</Badge>}
 			</div>
 			<p className="text-xs text-kumo-subtle mb-4">
 				What this mailbox currently occupies: its message database, stored
@@ -39,28 +59,51 @@ export default function StorageCard({ mailboxId }: { mailboxId?: string | undefi
 					<Loader size="sm" aria-label="Loading storage usage" />
 				</div>
 			) : (
-				<dl className="space-y-2">
-					<StorageRow label="Messages" value={String(usage.email_count)} />
-					<StorageRow
-						label="Attachments"
-						value={`${usage.attachment_count} · ${formatBytes(usage.attachment_bytes)}`}
-					/>
-					<StorageRow
-						label="Mailbox settings"
-						value={formatBytes(usage.mailbox_json_bytes)}
-					/>
-					<StorageRow
-						label="Message database"
-						value={formatBytes(usage.database_bytes)}
-					/>
-					<StorageRow
-						label="Total"
-						value={formatBytes(
-							usage.database_bytes + usage.attachment_bytes + usage.mailbox_json_bytes,
-						)}
-						emphasis
-					/>
-				</dl>
+				<>
+					{overQuota && (
+						<div
+							role="alert"
+							className="mb-3 rounded-md border border-kumo-line bg-kumo-recessed px-3 py-2"
+						>
+							<p className="text-xs text-kumo-danger">
+								Message database ({formatBytes(usage.database_bytes)}) is over the{" "}
+								{formatBytes(MAX_DATABASE_BYTES)} limit. New mail is rejected until you
+								delete mail to make room. Reads and deletes still work.
+							</p>
+						</div>
+					)}
+					{approachingQuota && (
+						<div className="mb-3 rounded-md border border-kumo-line bg-kumo-recessed px-3 py-2">
+							<p className="text-xs text-kumo-warning">
+								Message database ({formatBytes(usage.database_bytes)}) is approaching
+								the {formatBytes(MAX_DATABASE_BYTES)} limit. Delete mail soon to keep
+								receiving new mail.
+							</p>
+						</div>
+					)}
+					<dl className="space-y-2">
+						<StorageRow label="Messages" value={String(usage.email_count)} />
+						<StorageRow
+							label="Attachments"
+							value={`${usage.attachment_count} · ${formatBytes(usage.attachment_bytes)}`}
+						/>
+						<StorageRow
+							label="Mailbox settings"
+							value={formatBytes(usage.mailbox_json_bytes)}
+						/>
+						<StorageRow
+							label="Message database"
+							value={formatBytes(usage.database_bytes)}
+						/>
+						<StorageRow
+							label="Total"
+							value={formatBytes(
+								usage.database_bytes + usage.attachment_bytes + usage.mailbox_json_bytes,
+							)}
+							emphasis
+						/>
+					</dl>
+				</>
 			)}
 		</div>
 	);

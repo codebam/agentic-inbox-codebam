@@ -124,72 +124,32 @@ import {
 	type ToolSendEmailAttachment,
 } from "./tools";
 import type { Env } from "../types";
+import {
+	appOnlyToolScopes,
+	scopedOnlyToolScopes,
+	scopedToolScopes,
+} from "../../shared/tool-registry";
 
 /**
- * The scope each mailbox-scoped tool requires. Every tool listed here is
+ * The scope each mailbox-scoped tool requires. Every tool in the map is
  * callable with either token kind, and a mailbox token can call nothing else:
- * a name that is not in the map is refused before anything else about the
- * request is looked at.
+ * a name that is not here is refused before anything else about the request
+ * is looked at. Derived from TOOL_REGISTRY (shared/tool-registry.ts) —
+ * the single source of truth — so this map cannot drift from the MCP and
+ * agent surfaces.
  */
-export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
-	list_emails: "read",
-	get_email: "read",
-	get_thread: "read",
-	search_emails: "read",
-	get_attachment: "read",
-	list_labels: "read",
-	list_templates: "read",
-	list_saved_searches: "read",
-	summarize_thread: "read",
-	list_scheduled_sends: "read",
-	get_sender_policy: "read",
-	draft_reply: "draft",
-	create_draft: "draft",
-	update_draft: "draft",
-	discard_draft: "draft",
-	mark_email_read: "manage",
-	star_email: "manage",
-	move_email: "manage",
-	delete_email: "manage",
-	snooze_email: "manage",
-	unsnooze_email: "manage",
-	set_sender_policy: "manage",
-	add_label: "manage",
-	remove_label: "manage",
-	create_label: "manage",
-	update_label: "manage",
-	delete_label: "manage",
-	create_template: "manage",
-	update_template: "manage",
-	delete_template: "manage",
-	create_saved_search: "manage",
-	update_saved_search: "manage",
-	delete_saved_search: "manage",
-	mute_thread: "manage",
-	unmute_thread: "manage",
-	mark_thread_read: "manage",
-	empty_trash: "manage",
-	restore_email: "manage",
-	remove_sender_policy: "manage",
-	send_email: "send",
-	send_reply: "send",
-	cancel_scheduled_send: "send",
-	schedule_send: "send",
-	retry_scheduled_send: "send",
-};
+export const SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> =
+	scopedToolScopes();
 
 /**
  * The all-mailbox read tools an app-level token may additionally call,
  * and the scope each requires. Deliberately separate from SCOPED_TOOL_SCOPES:
  * that map is shared with the /mcp gate, where it describes what a
  * mailbox-bound session may invoke, so an all-mailbox name must never join
- * it.
+ * it. Derived from TOOL_REGISTRY like the map above.
  */
-export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
-	list_mailboxes: "read",
-	search_all_mailboxes: "read",
-	list_all_emails: "read",
-};
+export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> =
+	appOnlyToolScopes();
 
 /**
  * The tools this surface carries that the /mcp gate must never share, and
@@ -198,12 +158,11 @@ export const APP_ONLY_SCOPED_TOOL_SCOPES: Record<string, AccessTokenScope> = {
  * one message image through the SSRF guard and R2 cache. The guardrail is
  * that only an explicit operator action through an operator-minted token
  * may reach either: the names stay out of SCOPED_TOOL_SCOPES, the map the
- * /mcp gate reads, so no agent or MCP session can ever call them.
+ * /mcp gate reads, so no agent or MCP session can ever call them. Derived
+ * from TOOL_REGISTRY like the maps above.
  */
-export const SCOPED_SURFACE_ONLY_TOOL_SCOPES: Record<string, AccessTokenScope> = {
-	get_image: "read",
-	unsubscribe_email: "send",
-};
+export const SCOPED_SURFACE_ONLY_TOOL_SCOPES: Record<string, AccessTokenScope> =
+	scopedOnlyToolScopes();
 // (get_image reuses the image-proxy guard and cache; it is read-scoped
 // because what it returns is message content, not a state change.)
 
@@ -424,7 +383,10 @@ function attachmentArguments(
  * Each call mirrors the MCP registration for that tool — the same argument
  * names, the same defaults and the same options (drafts are HTML, run the
  * draft verifier and take the mailbox signature; no-argument calls pass what
- * the MCP call passes) — and every mutating tool is wrapped in runAudited
+ * the MCP call passes) — and every destructive tool passes `confirm`
+ * through, so an irreversible call (`empty_trash`, permanent
+ * `delete_email`) without `confirm: true` is refused by the handler like
+ * on the MCP and agent surfaces — and every mutating tool is wrapped in runAudited
  * where the MCP surface wraps its own mutating tools, with source "scoped",
  * the scoped tool name, and metadata-only args (ids, a subject, a thread id —
  * never a message body).
@@ -675,6 +637,7 @@ async function invokeScopedTool(
 						mailboxId,
 						stringArgument(params, "emailId"),
 						booleanArgument(params, "permanent", false),
+						booleanArgument(params, "confirm", false),
 					),
 			);
 		case "snooze_email":
@@ -892,7 +855,12 @@ async function invokeScopedTool(
 					emailId: null,
 					args: {},
 				},
-				() => toolEmptyTrash(env, mailboxId),
+				() =>
+					toolEmptyTrash(
+						env,
+						mailboxId,
+						booleanArgument(params, "confirm", false),
+					),
 			);
 		case "restore_email":
 			return runAudited(
