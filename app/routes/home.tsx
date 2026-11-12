@@ -21,6 +21,7 @@ import {
 	GearSixIcon,
 	PlusIcon,
 	TrashIcon,
+	XIcon,
 } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -34,6 +35,8 @@ import {
 } from "~/queries/mailboxes";
 import { queryKeys } from "~/queries/keys";
 
+
+const CHECKLIST_DISMISSED_KEY = "agentic-inbox:get-started-dismissed";
 
 export function meta() {
 	return [{ title: "Agentic Inbox Codebam" }];
@@ -293,8 +296,24 @@ export default function HomeRoute() {
 			linkLabel: firstMailbox ? "Mailbox settings" : undefined,
 		},
 	] as const;
+	// Dismissed checklist: pinned in localStorage so opting out (e.g. no
+	// signature, no test email needed) survives reloads. Guarded for SSR,
+	// where localStorage does not exist — first paint shows the card, and
+	// the real value is read in the lazy initializer on the client.
+	const [checklistDismissed, setChecklistDismissed] = useState(
+		() =>
+			typeof window !== "undefined" &&
+			window.localStorage.getItem(CHECKLIST_DISMISSED_KEY) === "1",
+	);
+	const dismissChecklist = () => {
+		setChecklistDismissed(true);
+		window.localStorage.setItem(CHECKLIST_DISMISSED_KEY, "1");
+	};
 	const checklistDoneCount = checklistSteps.filter((s) => s.done).length;
-	const showChecklist = !isLoading && checklistDoneCount < checklistSteps.length;
+	const showChecklist =
+		!isLoading &&
+		!checklistDismissed &&
+		checklistDoneCount < checklistSteps.length;
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
@@ -334,9 +353,19 @@ export default function HomeRoute() {
 							<h2 className="text-base font-semibold text-kumo-default">
 								Get started
 							</h2>
-							<span className="text-xs text-kumo-subtle">
-								{checklistDoneCount} of {checklistSteps.length} complete
-							</span>
+							<div className="flex items-center gap-2">
+								<span className="text-xs text-kumo-subtle">
+									{checklistDoneCount} of {checklistSteps.length} complete
+								</span>
+								<Button
+									variant="ghost"
+									size="sm"
+									shape="square"
+									icon={<XIcon size={16} />}
+									aria-label="Dismiss get started checklist"
+									onClick={dismissChecklist}
+								/>
+							</div>
 						</div>
 						<div
 							className="h-1.5 rounded-full bg-kumo-fill overflow-hidden mb-4"
@@ -400,6 +429,15 @@ export default function HomeRoute() {
 								</li>
 							))}
 						</ul>
+						<div className="mt-4 flex justify-end">
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={dismissChecklist}
+							>
+								Don&apos;t show again
+							</Button>
+						</div>
 					</div>
 				)}
 
