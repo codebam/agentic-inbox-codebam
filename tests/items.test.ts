@@ -21,10 +21,12 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createEmailTools } from "../workers/agent/index";
 import {
+	extractItems,
 	insertExtractedItems,
 	parseExtractedItems,
 	type ExtractedItem,
 } from "../workers/lib/items";
+import { DEFAULT_MODELS } from "../shared/models";
 import { toolListItems } from "../workers/lib/tools";
 
 type Stub = ReturnType<typeof stubFor>;
@@ -822,5 +824,39 @@ describe("insertExtractedItems", () => {
 		});
 		expect(stored).toBe(0);
 		expect((await listOn(stub, {})).totalCount).toBe(0);
+	});
+});
+
+describe("extractItems", () => {
+	it("reads Chat Completions answers and disables reasoning for the default model", async () => {
+		const calls: Array<{ model: string; params: Record<string, unknown> }> = [];
+		const ai = {
+			run: async (model: string, params: Record<string, unknown>) => {
+				calls.push({ model, params });
+				return {
+					choices: [
+						{
+							message: {
+								role: "assistant",
+								content:
+									'{"items":[{"kind":"task","title":"Send the report","details":null,"due_at":null}]}',
+							},
+						},
+					],
+				};
+			},
+		} as unknown as Parameters<typeof extractItems>[0];
+
+		const items = await extractItems(
+			ai,
+			{ subject: "Report", sender: "boss@example.org", body: "Please send it." },
+			DEFAULT_MODELS.extractor,
+		);
+
+		expect(items).toEqual([
+			{ kind: "task", title: "Send the report", details: null, due_at: null },
+		]);
+		expect(calls[0]?.model).toBe(DEFAULT_MODELS.extractor);
+		expect(calls[0]?.params.reasoning_effort).toBe("none");
 	});
 });

@@ -14,20 +14,40 @@
  */
 
 
-/** Built-in defaults: the model ids the app shipped with. */
+/**
+ * Built-in defaults: the model ids the app ships with.
+ *
+ * Chosen from the Workers AI catalog (https://developers.cloudflare.com/ai/models/)
+ * for the job each one does, and deliberately kept off the models scheduled
+ * for the November 20, 2026 deprecation wave:
+ *
+ * - `@cf/deepseek-ai/deepseek-v4.1-flash-1017` — Cloudflare's recommended
+ *   frontier LLM: 1,048,576-token context, vision, function calling,
+ *   reasoning, and $0.30 / $1.20 per M input / output tokens. It does the
+ *   language-heavy work (agent chat, item extraction, thread summaries);
+ *   the two synchronous pipelines turn reasoning off or down through
+ *   `reasoning_effort` (see workers/lib/model-output.ts).
+ * - `@cf/meta/llama-4-scout-17b-16e-instruct` — a fast, non-reasoning 17B
+ *   mixture-of-experts model (131,000-token context, $0.27 / $0.85 per M
+ *   tokens). It does the two latency-sensitive guardrails: the 10-token
+ *   prompt-injection scan and the draft verifier that runs on every save.
+ * - `@cf/cloudflare/clef-flash` — Cloudflare's purpose-built 9B decision
+ *   model ($0.038 per M input tokens). It returns calibrated probabilities
+ *   for the spam, reply-expected and category questions the classifier asks.
+ */
 export const DEFAULT_MODELS = {
 	/** Chat model used by the built-in email agent. */
-	agent: "meta/muse-ember-1.0",
+	agent: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 	/** Model that proofreads drafts (verifyDraft). */
 	draftVerify: "@cf/meta/llama-4-scout-17b-16e-instruct",
 	/** Model that scans inbound mail for prompt injection. */
-	promptInjection: "@cf/meta/llama-3.1-8b-instruct-fast",
+	promptInjection: "@cf/meta/llama-4-scout-17b-16e-instruct",
 	/** Model that classifies inbound mail (spam + categories). */
 	classifier: "@cf/cloudflare/clef-flash",
 	/** Model that extracts tasks and deadlines from inbound mail. */
-	extractor: "@cf/meta/llama-3.1-8b-instruct-fast",
+	extractor: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 	/** Model that summarizes a thread on demand. */
-	summarizer: "@cf/meta/llama-3.1-8b-instruct-fast",
+	summarizer: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 } as const;
 
 
@@ -167,7 +187,7 @@ export function validateModelId(value: string): string | null {
 		return "Model IDs may only contain letters, numbers and . _ : @ / -";
 	}
 	if (!trimmed.includes("/")) {
-		return 'Model IDs look like "provider/model" (for example @cf/meta/llama-3.1-8b-instruct-fast or @cf/cloudflare/clef-flash).';
+		return 'Model IDs look like "provider/model" (for example @cf/deepseek-ai/deepseek-v4.1-flash-1017 or @cf/cloudflare/clef-flash).';
 	}
 	return null;
 }

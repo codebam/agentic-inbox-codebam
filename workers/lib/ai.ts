@@ -16,6 +16,7 @@
 
 import { DEFAULT_MODELS } from "../../shared/models";
 import { stripHtmlToText, textToHtml } from "./email-helpers";
+import { extractModelText } from "./model-output";
 
 
 // ── Prompt Injection Scanner ───────────────────────────────────────
@@ -44,7 +45,7 @@ export async function isPromptInjection(
 
 
 	try {
-		const response = (await ai.run(
+		const response = await ai.run(
 			model,
 			{
 				messages: [
@@ -54,10 +55,10 @@ export async function isPromptInjection(
 				max_tokens: 10,
 				temperature: 0,
 			},
-		)) as { response?: string };
+		);
 
 
-		const result = (response?.response || "NO").trim().toUpperCase();
+		const result = (extractModelText(response) || "NO").trim().toUpperCase();
 		
 		if (result.includes("YES")) {
 			console.warn("Prompt injection detected in incoming email, blocking auto-draft");
@@ -169,7 +170,7 @@ export async function verifyDraft(
 
 
 	try {
-		const response = (await ai.run(
+		const response = await ai.run(
 			model,
 			{
 				messages: [
@@ -179,10 +180,10 @@ export async function verifyDraft(
 				max_tokens: 4096,
 				temperature: 0,
 			},
-		)) as { response?: string };
+		);
 
 
-		const cleaned = response?.response ?? null;
+		const cleaned = extractModelText(response) || null;
 
 
 		if (!cleaned || !cleaned.trim()) {

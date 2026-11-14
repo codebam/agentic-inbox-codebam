@@ -22,6 +22,7 @@
 
 
 import { DEFAULT_MODELS } from "../../shared/models";
+import { extractModelText, reasoningEffortParam } from "./model-output";
 import {
 	isItemDueFilter,
 	isItemKind,
@@ -245,6 +246,10 @@ function buildExtractorInput(input: {
  * isPromptInjection (workers/lib/ai.ts): one system prompt, temperature 0,
  * a small token budget, and a failure that logs and answers [] instead of
  * propagating — extraction must never affect delivery.
+ *
+ * The default extractor is a reasoning model, so reasoning is turned off for
+ * this call: the answer must be strict JSON that fits in the small budget,
+ * and thinking tokens would eat it without improving extraction.
  */
 export async function extractItems(
 	ai: Ai,
@@ -255,7 +260,7 @@ export async function extractItems(
 	if (!content) return [];
 
 	try {
-		const response = (await ai.run(
+		const response = await ai.run(
 			model,
 			{
 				messages: [
@@ -264,10 +269,11 @@ export async function extractItems(
 				],
 				max_tokens: 512,
 				temperature: 0,
+				...reasoningEffortParam(model, "none"),
 			},
-		)) as { response?: string };
+		);
 
-		return parseExtractedItems(response?.response ?? "");
+		return parseExtractedItems(extractModelText(response));
 	} catch (e) {
 		console.error("Item extraction failed, skipping items:", (e as Error).message);
 		return [];

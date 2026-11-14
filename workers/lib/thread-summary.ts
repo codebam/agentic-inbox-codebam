@@ -22,6 +22,7 @@
 import { htmlToPlainText } from "../../shared/email-view";
 import { getMailboxStub } from "./email-helpers";
 import { resolveMailboxModels } from "./mailbox-settings";
+import { extractModelText, reasoningEffortParam } from "./model-output";
 import type { Env } from "../types";
 
 
@@ -216,19 +217,28 @@ export function setThreadSummaryAiRunnerFactory(
 }
 
 
-/** The real runner: one env.AI.run call with the summarizer's prompts. */
+/**
+ * The real runner: one env.AI.run call with the summarizer's prompts.
+ *
+ * The default summarizer is a reasoning model. It runs at low effort: the
+ * summary benefits from a little planning, and the 2,048-token budget leaves
+ * room for both the reasoning trace and the answer. The budget is larger than
+ * it was for the old non-reasoning default, so a thinking model cannot spend
+ * the whole allowance on its trace.
+ */
 export function createThreadSummaryAiRunner(env: Env): ThreadSummaryAiRunner {
 	return {
 		run: async (prompt, model) => {
-			const response = (await env.AI.run(model, {
+			const response = await env.AI.run(model, {
 				messages: [
 					{ role: "system", content: THREAD_SUMMARY_SYSTEM_PROMPT },
 					{ role: "user", content: prompt },
 				],
-				max_tokens: 1024,
+				max_tokens: 2048,
 				temperature: 0,
-			})) as { response?: string };
-			return response?.response ?? null;
+				...reasoningEffortParam(model, "low"),
+			});
+			return extractModelText(response) || null;
 		},
 	};
 }

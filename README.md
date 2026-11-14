@@ -83,8 +83,23 @@ This fork keeps the upstream architecture while adding per-domain catch-all rout
 
 - **Frontend:** React 19, React Router v7, Tailwind CSS, Zustand, TipTap, `@cloudflare/kumo`
 - **Backend:** Hono, Cloudflare Workers, Durable Objects (SQLite), R2, Email Routing
-- **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI / AI Gateway (`meta/muse-ember-1.0`), Cloudflare Clef-flash (`@cf/cloudflare/clef-flash`) for inbound spam + category classification, `react-markdown` + `remark-gfm`
+- **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI (`@cf/deepseek-ai/deepseek-v4.1-flash-1017` for the agent, item extraction and thread summaries; `@cf/meta/llama-4-scout-17b-16e-instruct` for prompt-injection scanning and draft verification), Cloudflare Clef-flash (`@cf/cloudflare/clef-flash`) for inbound spam + category classification, `react-markdown` + `remark-gfm`
 - **Auth:** Cloudflare Access JWT validation for the browser UI; Wrangler credential bearer auth for the agent-facing `/mcp` endpoint; per-mailbox scoped bearer tokens for `/api/v1/scoped`
+
+### AI model defaults
+
+Every AI job has its own Workers AI model. Global Settings → AI Models overrides them app-wide, and each mailbox can override the app-wide choice; a blank field inherits the next level. The defaults are picked from the [Workers AI model catalog](https://developers.cloudflare.com/ai/models/) for the work each one does, on models outside the [November 20, 2026 deprecation wave](https://developers.cloudflare.com/changelog/post/2026-11-05-planned-model-deprecations/):
+
+| Job | Default model | Why |
+| --- | --- | --- |
+| Agent chat | `@cf/deepseek-ai/deepseek-v4.1-flash-1017` | Cloudflare's recommended frontier LLM: function calling, vision and a 1M-token context for long threads and multi-step tool loops, at $0.30 / $1.20 per M input / output tokens. |
+| Draft verifier | `@cf/meta/llama-4-scout-17b-16e-instruct` | Fast, non-reasoning 17B MoE with a 131k context: the verifier runs on every draft save, so a low-latency model that returns the text unchanged is the point. |
+| Prompt-injection scanner | `@cf/meta/llama-4-scout-17b-16e-instruct` | Same fast model: a 10-token YES/NO answer needs no reasoning trace, and 131k context fits long mail. |
+| Email classifier | `@cf/cloudflare/clef-flash` | Cloudflare's 9B decision model returns calibrated probabilities for the spam, reply-expected and category questions; purpose-built and cheap at $0.038 per M input tokens. |
+| Items extractor | `@cf/deepseek-ai/deepseek-v4.1-flash-1017` | Frontier extraction quality for tasks and deadlines; reasoning is disabled for this call (`reasoning_effort: "none"`) so the strict JSON fits the small output budget. |
+| Thread summarizer | `@cf/deepseek-ai/deepseek-v4.1-flash-1017` | On-demand summaries benefit from frontier quality; reasoning runs at low effort and the 1M context fits long threads. |
+
+The model ids are validated the same way at either scope, and an invalid id is rejected before it is stored.
 
 ## Getting Started
 
