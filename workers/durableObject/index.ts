@@ -713,6 +713,9 @@ export class MailboxDO extends DurableObject<Env> {
 		super(state, env);
 		this.db = drizzle(this.ctx.storage, { schema });
 		applyMigrations(this.ctx.storage.sql, mailboxMigrations, this.ctx.storage);
+		// A `sending` row at startup was interrupted by a restart; no send
+		// can be in flight on a fresh instance. See reclaimInterruptedSends.
+		this.reclaimInterruptedSends();
 	}
 
 	// ── Email CRUD (Drizzle) ───────────────────────────────────────
@@ -2066,16 +2069,16 @@ export class MailboxDO extends DurableObject<Env> {
 			})
 			.run();
 
-		// Keep only the newest terminal rows; pending rows are never pruned
-		// (a queued send must survive any number of later ones). Ties on
-		// created_at fall back to rowid (insertion order) so the prune is
-		// deterministic.
+		// Keep only the newest terminal rows; pending and sending rows are
+		// never pruned (a queued or in-flight send must survive any number
+		// of later ones). Ties on created_at fall back to rowid (insertion
+		// order) so the prune is deterministic.
 		this.ctx.storage.sql.exec(
 			`DELETE FROM scheduled_sends
-			 WHERE status != 'pending'
+			 WHERE status NOT IN ('pending', 'sending')
 			   AND id NOT IN (
 				SELECT id FROM scheduled_sends
-				WHERE status != 'pending'
+				WHERE status NOT IN ('pending', 'sending')
 				ORDER BY created_at DESC, rowid DESC
 				LIMIT ?1
 			   )`,
@@ -2324,8 +2327,15 @@ export class MailboxDO extends DurableObject<Env> {
 	 * fails a guard or the send itself is recorded `failed` with its reason
 	 * in `last_error` and an incremented `attempts` — its payload is never
 	 * touched, and nothing is silently dropped. Returns how many due rows
-	 * were fired (delivered or recorded failed). Idempotent: every processed
-	 * row leaves `pending`, so a second run finds nothing due.
+	 * were fired (delivered or recorded failed).
+	 *
+	 * Safe under concurrent runs — the alarm and the cron sweep can overlap
+	 * on this object, and each row is claimed `sending` synchronously before
+	 * the first await, so exactly one caller fires it. The claim is the
+	 * UPDATE's own row count: a second caller's UPDATE matches nothing and
+	 * skips the row. Before the claim, a second run that started while the
+	 * first was parked in a send saw the row still `pending` and sent it a
+	 * second time.
 	 */
 	async fireDueSends(now: string): Promise<number> {
 		const due = this.db
@@ -2346,6 +2356,15 @@ export class MailboxDO extends DurableObject<Env> {
 
 		let fired = 0;
 		for (const row of due) {
+			// The claim, synchronous and before any await: between the
+			// select above and the send below, a concurrent sweep must not
+			// find this row still `pending`. `rowsWritten` is the UPDATE's
+			// own count — zero means another caller claimed it first.
+			const claim = this.ctx.storage.sql.exec(
+				`UPDATE scheduled_sends SET status = 'sending' WHERE id = ?1 AND status = 'pending'`,
+				row.id,
+			);
+			if (claim.rowsWritten === 0) continue;
 			await this.#fireScheduledSend(row, now);
 			fired += 1;
 		}
@@ -2353,10 +2372,40 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Fire one due row. Never throws: every failure — an unreadable payload,
-	 * a failed guard, a missing EMAIL binding, a rejected send — is recorded
-	 * on the row as `failed` with its reason, so the operator can see it and
-	 * retry it. A row that goes out is marked `sent` with `sent_at`.
+	 * Reclaim sends interrupted by a restart, as `failed`.
+	 *
+	 * A row left `sending` means the object died between the claim and the
+	 * outcome — and the message may or may not have gone out. Sending it
+	 * again automatically is the one answer that can duplicate mail, so the
+	 * row is recorded `failed` with a reason that says to check the Sent
+	 * folder, and only an explicit retry sends it again.
+	 *
+	 * Runs in the constructor, where no send can be in flight: a fresh
+	 * instance has no parked fire path, so every `sending` row it finds is
+	 * stale. Public so the behaviour can be exercised directly; the
+	 * constructor is the only production caller.
+	 */
+	reclaimInterruptedSends(): number {
+		const reclaimed = this.ctx.storage.sql.exec(
+			`UPDATE scheduled_sends
+			 SET status = 'failed', attempts = attempts + 1, last_error = ?1
+			 WHERE status = 'sending'`,
+			"Interrupted mid-send by a restart. The message may or may not have gone out — check the Sent folder before trying again.",
+		);
+		if (reclaimed.rowsWritten > 0) {
+			console.warn(
+				`Scheduled sends: ${reclaimed.rowsWritten} interrupted send(s) reclaimed as failed`,
+			);
+		}
+		return reclaimed.rowsWritten;
+	}
+
+	/**
+	 * Fire one due row, already claimed `sending` by `fireDueSends`. Never
+	 * throws: every failure — an unreadable payload, a failed guard, a
+	 * missing EMAIL binding, a rejected send — is recorded on the row as
+	 * `failed` with its reason, so the operator can see it and retry it. A
+	 * row that goes out is marked `sent` with `sent_at`.
 	 */
 	async #fireScheduledSend(row: ScheduledSendDbRow, now: string): Promise<void> {
 		const markFailed = (reason: string): void => {

@@ -36,6 +36,7 @@ function byCreatedAtDesc(a: ScheduledSend, b: ScheduledSend): number {
 
 const STATUS_BADGE: Record<ScheduledSend["status"], "blue" | "green" | "red" | "secondary"> = {
 	pending: "blue",
+	sending: "blue",
 	sent: "green",
 	failed: "red",
 	cancelled: "secondary",
@@ -43,6 +44,7 @@ const STATUS_BADGE: Record<ScheduledSend["status"], "blue" | "green" | "red" | "
 
 const STATUS_LABEL: Record<ScheduledSend["status"], string> = {
 	pending: "Scheduled",
+	sending: "Sending…",
 	sent: "Sent",
 	failed: "Failed",
 	cancelled: "Cancelled",
@@ -81,7 +83,9 @@ function SendRow({ send, mailboxId }: SendRowProps) {
 				? "Cancelled before sending"
 				: send.status === "failed"
 					? `Failed to send ${formatSnoozeTime(send.send_at)}`
-					: `Scheduled to send ${formatSnoozeTime(send.send_at)}`;
+					: send.status === "sending"
+						? "Sending now"
+						: `Scheduled to send ${formatSnoozeTime(send.send_at)}`;
 
 	const handleCancel = () => {
 		if (!mailboxId) return;

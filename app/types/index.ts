@@ -227,7 +227,8 @@ export interface ScheduledSend {
 	draft_id: string | null;
 	/** ISO 8601 instant the queue will send the message. */
 	send_at: string;
-	status: "pending" | "sent" | "failed" | "cancelled";
+	/** `sending` is transient: claimed mid-fire, gone by the next refetch. */
+	status: "pending" | "sending" | "sent" | "failed" | "cancelled";
 	/** Delivery attempts made so far. */
 	attempts: number;
 	/** Last delivery error, when the send failed. */

@@ -22,8 +22,13 @@
  *   reply-target check, `verifyDraft`). A send that fails a guard — or the
  *   send itself — is recorded `failed` with its reason in `last_error`; its
  *   payload is never touched, and nothing is silently dropped.
+ * - Each row is claimed `sending` synchronously before the fire path's first
+ *   await, so overlapping sweeps (the alarm and the cron) fire it exactly
+ *   once. A row found `sending` at DO startup was interrupted by a restart
+ *   and is reclaimed as `failed` — only an explicit retry sends it again.
  * - Terminal rows (sent, failed, cancelled) beyond the newest
- *   MAX_SCHEDULED_SENDS are pruned on insert. Pending rows are never pruned.
+ *   MAX_SCHEDULED_SENDS are pruned on insert. Pending and sending rows are
+ *   never pruned.
  */
 
 import { sendEmail, type SendEmailParams } from "../email-sender";
@@ -32,9 +37,17 @@ import { buildThreadingHeaders } from "./email-helpers";
 import { MAX_UPLOAD_ID_CHARS } from "./pending-uploads";
 
 
-/** The statuses a scheduled send row can hold. */
+/** The statuses a scheduled send row can hold.
+ *
+ * `sending` is transient: the row is claimed under it before the first
+ * await of the fire path, so two concurrent sweeps (the alarm and the
+ * cron) cannot both send it. A row found `sending` at DO startup was
+ * interrupted by a restart and is reclaimed as `failed` — the message may
+ * or may not have gone out, so only an explicit retry sends it again.
+ */
 export const SCHEDULED_SEND_STATUSES = [
 	"pending",
+	"sending",
 	"sent",
 	"failed",
 	"cancelled",

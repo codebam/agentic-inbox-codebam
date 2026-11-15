@@ -996,3 +996,142 @@ describe("scheduled-send verification", () => {
 		expect(row?.last_error).toContain("verifier could not run");
 	});
 });
+
+
+describe("scheduled-send claim", () => {
+	it("overlapping sweeps fire a due send exactly once", async () => {
+		// The alarm and the cron sweep can overlap on one object: while the
+		// first fire is parked in an await, the second selects its due rows.
+		// Before the claim, the row was still `pending` at that moment and
+		// both sweeps sent it — the double-fire this block exists for.
+		const mailbox = "schedule-race@example.com";
+		const stub = stubFor(mailbox);
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(-60 * 1000),
+			payload: sendPayloadJson({ from: mailbox }),
+		})) as ScheduledSendRow;
+
+		// A sender that parks until released, so the overlap is guaranteed
+		// rather than left to microtask timing.
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const sent: SendEmailParams[] = [];
+		setScheduledSendSenderFactory(() => ({
+			send: async (params: SendEmailParams) => {
+				await gate;
+				sent.push(params);
+				return { messageId: `fake-${sent.length}` };
+			},
+		}));
+		try {
+			const now = new Date().toISOString();
+			const both = Promise.all([
+				stub.fireDueSends(now),
+				stub.fireDueSends(now),
+			]);
+			// Wait (bounded) for the claim to land, so the second sweep is
+			// guaranteed to select while the first is parked past it.
+			for (let i = 0; i < 100; i++) {
+				if ((await readSendRow(stub, send.id))?.status === "sending") break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			release();
+			const [first, second] = await both;
+			expect(first + second).toBe(1);
+		} finally {
+			setScheduledSendSenderFactory(null);
+		}
+		expect(sent).toHaveLength(1);
+		expect((await readSendRow(stub, send.id))?.status).toBe("sent");
+	});
+
+	it("a row interrupted mid-send is reclaimed as failed, not resent", async () => {
+		const mailbox = "schedule-interrupted@example.com";
+		const stub = stubFor(mailbox);
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(-60 * 1000),
+			payload: sendPayloadJson({ from: mailbox }),
+		})) as ScheduledSendRow;
+		// A crash between the claim and the outcome leaves the row sending.
+		await runInDurableObject(stub, async (_instance, state) => {
+			state.storage.sql.exec(
+				"UPDATE scheduled_sends SET status = 'sending' WHERE id = ?1",
+				send.id,
+			);
+		});
+
+		const { sender, sent } = fakeSender();
+		setScheduledSendSenderFactory(() => sender);
+		try {
+			expect(await stub.reclaimInterruptedSends()).toBe(1);
+			// The reclaimed row is failed, and a sweep does not send it: the
+			// message may already have gone out before the crash.
+			expect(await stub.fireDueSends(new Date().toISOString())).toBe(0);
+		} finally {
+			setScheduledSendSenderFactory(null);
+		}
+		expect(sent).toHaveLength(0);
+		const row = await readSendRow(stub, send.id);
+		expect(row?.status).toBe("failed");
+		expect(row?.attempts).toBe(1);
+		expect(row?.last_error).toContain("Interrupted mid-send");
+
+		// Only an explicit retry sends it again.
+		const retried = await stub.retryScheduledSend(send.id);
+		expect(retried.ok).toBe(true);
+		if (retried.ok) expect(retried.send.status).toBe("pending");
+	});
+
+	it("a sending row cannot be cancelled", async () => {
+		const mailbox = "schedule-cancel-sending@example.com";
+		const stub = stubFor(mailbox);
+		const send = (await stub.scheduleSend({
+			sendAt: isoIn(60 * 60 * 1000),
+			payload: sendPayloadJson({ from: mailbox }),
+		})) as ScheduledSendRow;
+		await runInDurableObject(stub, async (_instance, state) => {
+			state.storage.sql.exec(
+				"UPDATE scheduled_sends SET status = 'sending' WHERE id = ?1",
+				send.id,
+			);
+		});
+		const result = await stub.cancelScheduledSend(send.id);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("this one is sending");
+		}
+		expect((await readSendRow(stub, send.id))?.status).toBe("sending");
+	});
+
+	it("sending rows survive the terminal prune", async () => {
+		const mailbox = "schedule-prune-sending@example.com";
+		const stub = stubFor(mailbox);
+		await runInDurableObject(stub, async (_instance, state) => {
+			for (let i = 0; i < 205; i++) {
+				state.storage.sql.exec(
+					`INSERT INTO scheduled_sends
+						(id, draft_id, send_at, status, payload, attempts, last_error, created_at, sent_at)
+					 VALUES (?1, NULL, ?2, 'cancelled', '{}', 0, NULL, ?2, NULL)`,
+					`terminal-${i}`,
+					new Date(Date.now() - i * 1000).toISOString(),
+				);
+			}
+			// Older than every terminal row: were `sending` treated as
+			// terminal, the prune would drop it outside the newest 200.
+			state.storage.sql.exec(
+				`INSERT INTO scheduled_sends
+					(id, draft_id, send_at, status, payload, attempts, last_error, created_at, sent_at)
+				 VALUES ('in-flight', NULL, ?1, 'sending', '{}', 0, NULL, ?1, NULL)`,
+				new Date(Date.now() - 1000 * 1000).toISOString(),
+			);
+		});
+
+		await stub.scheduleSend({
+			sendAt: isoIn(60 * 1000),
+			payload: sendPayloadJson({ from: mailbox }),
+		});
+		expect((await readSendRow(stub, "in-flight"))?.status).toBe("sending");
+	});
+});
