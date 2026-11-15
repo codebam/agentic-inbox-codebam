@@ -23,9 +23,10 @@
  * candidate to the same-origin `/api/v1/mailboxes/<id>/image-proxy` route,
  * so the Worker fetches it through the shared SSRF guard
  * (workers/lib/ssrf-guard.ts) and the sender only ever sees Cloudflare's
- * egress. `http:` candidates cannot be relayed (the guard is https-only) and
- * are left for the iframe CSP to block, which is why the CSP never allows
- * `https:`.
+ * egress. `http:` candidates cannot be relayed (the guard is https-only), so
+ * they are swapped for the blocked placeholder instead of being left for the
+ * iframe CSP to refuse — a refusal the browser logs once per image. The CSP
+ * itself never allows a remote host.
  */
 
 /** 1x1 transparent GIF used as the stand-in for every blocked remote image. */
@@ -269,6 +270,20 @@ function proxiedHttpsUrl(value: string): string | null {
 
 
 /**
+ * True for an explicit `http:` reference — remote, but unrelayable because
+ * the proxy's SSRF guard is https-only. Protocol-relative (`//host/...`) is
+ * NOT http-only: it resolves to https and is relayed. Control characters are
+ * stripped first, the same cleaning the other rewriters apply, so a newline
+ * inside the scheme cannot slip an http reference past the check.
+ */
+function isHttpOnlyRemoteUrl(value: string): boolean {
+	// eslint-disable-next-line no-control-regex -- deliberate: control characters are what browsers strip while parsing a URL
+	const cleaned = value.replace(/[\u0000-\u0020]/g, "");
+	return /^http:\/\//i.test(cleaned);
+}
+
+
+/**
  * The same-origin image-proxy route for one mailbox: the route fetches and
  * caches the image server-side (workers/lib/image-proxy).
  */
@@ -280,8 +295,15 @@ function proxyImageRoute(absoluteHttpsUrl: string, mailboxId: string): string {
 export interface ProxiedImagesResult {
 	/** The body with every relayable remote image rewritten to the proxy route. */
 	html: string;
-	/** How many references were rewritten (one per src/srcset candidate). */
+	/** How many references were relayed to the proxy route (one per src/srcset candidate). */
 	proxiedCount: number;
+	/**
+	 * How many `http:` references were swapped for the blocked placeholder:
+	 * remote but unrelayable (the guard is https-only), so they render as the
+	 * placeholder instead of reaching the iframe CSP and logging a violation
+	 * the browser would emit once per image.
+	 */
+	blockedHttpCount: number;
 }
 
 
@@ -289,9 +311,10 @@ export interface ProxiedImagesResult {
  * Produce the proxied variant of an opted-in email body: every `https:` and
  * protocol-relative `img` src/srcset candidate is routed through the
  * same-origin image proxy, so the sender's server never sees the reader's
- * IP. `http:`, `cid:`, `data:` and all other markup pass through untouched —
- * `http:` cannot be relayed (the guard is https-only) and is left to the
- * iframe CSP to block, while `cid:`/`data:` images are part of the message.
+ * IP. An `http:` candidate cannot be relayed (the guard is https-only), so it
+ * is swapped for the blocked placeholder rather than left for the iframe CSP
+ * to refuse — a refusal the browser would log once per image. `cid:`/`data:`
+ * images are part of the message and pass through untouched.
  *
  * An empty `mailboxId` (a caller with no mailbox to attribute the route to)
  * returns the body unchanged, so the browser never receives a proxy route it
@@ -301,29 +324,38 @@ export function proxyRemoteImages(
 	html: string,
 	mailboxId: string,
 ): ProxiedImagesResult {
-	if (!html || !mailboxId) return { html: html ?? "", proxiedCount: 0 };
+	if (!html || !mailboxId) {
+		return { html: html ?? "", proxiedCount: 0, blockedHttpCount: 0 };
+	}
 
+	let proxiedCount = 0;
+	let blockedHttpCount = 0;
+	const relay = (absolute: string): string => {
+		proxiedCount++;
+		return proxyImageRoute(absolute, mailboxId);
+	};
+	const blockHttp = (): string => {
+		blockedHttpCount++;
+		return BLOCKED_IMAGE_DATA_URI;
+	};
 	const rewriter: ImageRewriter = {
 		src: (value) => {
 			const absolute = proxiedHttpsUrl(value);
-			return absolute
-				? { value: proxyImageRoute(absolute, mailboxId), count: 1 }
-				: null;
+			if (absolute) return { value: relay(absolute), count: 1 };
+			if (isHttpOnlyRemoteUrl(value)) return { value: blockHttp(), count: 1 };
+			return null;
 		},
 		srcset: (value) =>
 			rewriteSrcsetCandidates(value, (candidate) => {
 				const absolute = proxiedHttpsUrl(candidate);
-				return absolute ? proxyImageRoute(absolute, mailboxId) : null;
+				if (absolute) return relay(absolute);
+				if (isHttpOnlyRemoteUrl(candidate)) return blockHttp();
+				return null;
 			}),
 	};
 
-	let proxiedCount = 0;
-	const proxied = html.replace(IMG_TAG_RE, (tag) => {
-		const result = rewriteImgTag(tag, rewriter);
-		proxiedCount += result.rewriteCount;
-		return result.tag;
-	});
-	return { html: proxied, proxiedCount };
+	const proxied = html.replace(IMG_TAG_RE, (tag) => rewriteImgTag(tag, rewriter).tag);
+	return { html: proxied, proxiedCount, blockedHttpCount };
 }
 
 

@@ -187,11 +187,32 @@ describe("proxyRemoteImages", () => {
 		expect(result.html).toBe(`<img src="${route(raw)}">`);
 	});
 
-	it("leaves http:, cid: and data: references untouched", () => {
+	it("swaps http: for the placeholder but leaves cid: and data: untouched", () => {
 		const body = `<img src="http://tracker.example.com/open.gif"><img src="${CID}"><img src="${DATA_IMAGE}">`;
 		const result = proxyRemoteImages(body, MAILBOX);
 		expect(result.proxiedCount).toBe(0);
-		expect(result.html).toBe(body);
+		expect(result.blockedHttpCount).toBe(1);
+		expect(result.html).toBe(
+			`<img src="${BLOCKED_IMAGE_DATA_URI}"><img src="${CID}"><img src="${DATA_IMAGE}">`,
+		);
+	});
+
+	it("does not leave an http: reference for the iframe CSP to refuse", () => {
+		// The point of the swap: an http: image that survived to the srcdoc
+		// would be refused by the CSP, and the browser logs one violation per
+		// image. After the rewrite no http: src remains.
+		const result = proxyRemoteImages(
+			`<img src="http://a.example.com/1.gif"><img src="HTTP://b.example.com/2.gif">`,
+			MAILBOX,
+		);
+		expect(result.blockedHttpCount).toBe(2);
+		expect(result.html).not.toContain("http:");
+	});
+
+	it("strips control characters before deciding a reference is http-only", () => {
+		const result = proxyRemoteImages(`<img src="ht\ntp://tracker.example.com/open.gif">`, MAILBOX);
+		expect(result.blockedHttpCount).toBe(1);
+		expect(result.html).toBe(`<img src="${BLOCKED_IMAGE_DATA_URI}">`);
 	});
 
 	it("rewrites remote srcset candidates, keeping descriptors and local ones", () => {
@@ -200,8 +221,9 @@ describe("proxyRemoteImages", () => {
 			MAILBOX,
 		);
 		expect(result.proxiedCount).toBe(2);
+		expect(result.blockedHttpCount).toBe(1);
 		expect(result.html).toBe(
-			`<img srcset="${route(TRACKER)} 1x, cid:big 2x, ${route("https://cdn.example.com/banner.png")} 640w, data:image/gif;base64,AA,BB 3x, http://plain.example.com/a.gif 4x">`,
+			`<img srcset="${route(TRACKER)} 1x, cid:big 2x, ${route("https://cdn.example.com/banner.png")} 640w, data:image/gif;base64,AA,BB 3x, ${BLOCKED_IMAGE_DATA_URI} 4x">`,
 		);
 	});
 
@@ -228,13 +250,13 @@ describe("proxyRemoteImages", () => {
 
 	it("returns image-free and empty bodies unchanged", () => {
 		const body = `<p>no images here</p><a href="${TRACKER}">link</a>`;
-		expect(proxyRemoteImages(body, MAILBOX)).toEqual({ html: body, proxiedCount: 0 });
-		expect(proxyRemoteImages("", MAILBOX)).toEqual({ html: "", proxiedCount: 0 });
+		expect(proxyRemoteImages(body, MAILBOX)).toEqual({ html: body, proxiedCount: 0, blockedHttpCount: 0 });
+		expect(proxyRemoteImages("", MAILBOX)).toEqual({ html: "", proxiedCount: 0, blockedHttpCount: 0 });
 	});
 
 	it("returns the body unchanged without a mailbox id", () => {
 		const body = `<img src="${TRACKER}">`;
-		expect(proxyRemoteImages(body, "")).toEqual({ html: body, proxiedCount: 0 });
+		expect(proxyRemoteImages(body, "")).toEqual({ html: body, proxiedCount: 0, blockedHttpCount: 0 });
 	});
 });
 

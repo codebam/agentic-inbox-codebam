@@ -108,6 +108,24 @@ export default function ExplainPanel({ email, categories }: ExplainPanelProps) {
 				)}
 
 
+				{summary.expectsReply !== null && (
+					<Tooltip
+						content={
+							summary.replyConfidence !== null
+								? `Reply gate — ${summary.replyConfidence.toFixed(2)} confidence`
+								: "Whether a reply is expected (the reply gate)"
+						}
+						asChild
+					>
+						<span className="inline-flex">
+							<Badge variant={summary.expectsReply ? "primary" : "secondary"}>
+								{summary.expectsReply ? "Reply expected" : "No reply needed"}
+							</Badge>
+						</span>
+					</Tooltip>
+				)}
+
+
 				{summary.model && (
 					<span className="text-[11px] text-kumo-subtle">{summary.model}</span>
 				)}

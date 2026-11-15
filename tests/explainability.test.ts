@@ -374,6 +374,72 @@ describe("summarizeClassification", () => {
 		expect(summary.verdict).toBe("Spam");
 		expect(summary.confidence).toBeNull();
 	});
+
+
+	it("surfaces the reply verdict and its probability", () => {
+		const summary = summarizeClassification({
+			classification: JSON.stringify({
+				is_spam: false,
+				spam_probability: 0.1,
+				category: "personal",
+				expects_reply: true,
+				expects_reply_probability: 0.87,
+			}),
+		});
+		expect(summary.expectsReply).toBe(true);
+		expect(summary.replyConfidence).toBe(0.87);
+	});
+
+
+	it("surfaces a no-reply verdict for a one-way notification", () => {
+		const summary = summarizeClassification({
+			classification: JSON.stringify({
+				is_spam: false,
+				category: "receipts",
+				expects_reply: false,
+				expects_reply_probability: 0.93,
+			}),
+		});
+		expect(summary.isSpam).toBe(false);
+		expect(summary.expectsReply).toBe(false);
+		expect(summary.replyConfidence).toBe(0.93);
+	});
+
+
+	it("reads the reply verdict even without a spam answer", () => {
+		const summary = summarizeClassification({
+			classification: JSON.stringify({ category: "updates", expects_reply: false }),
+		});
+		expect(summary.expectsReply).toBe(false);
+		expect(summary.replyConfidence).toBeNull();
+	});
+
+
+	it("leaves the reply verdict null when it was not recorded", () => {
+		// Object classification without the field, legacy token, and the
+		// category-only fallback all carry no reply gate.
+		const object = summarizeClassification({
+			classification: JSON.stringify({ is_spam: false, category: "personal" }),
+		});
+		expect(object.expectsReply).toBeNull();
+		expect(object.replyConfidence).toBeNull();
+		expect(summarizeClassification({ classification: "spam" }).expectsReply).toBeNull();
+		expect(summarizeClassification({ category: "receipts" }).expectsReply).toBeNull();
+		expect(summarizeClassification(null).expectsReply).toBeNull();
+	});
+
+
+	it("ignores a non-boolean reply verdict and non-finite probability", () => {
+		const summary = summarizeClassification({
+			classification: JSON.stringify({
+				is_spam: false,
+				expects_reply: "yes",
+				expects_reply_probability: Number.POSITIVE_INFINITY,
+			}),
+		});
+		expect(summary.expectsReply).toBeNull();
+		expect(summary.replyConfidence).toBeNull();
+	});
 });
 
 

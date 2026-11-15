@@ -9,8 +9,9 @@
  * Inputs are the columns written when an email arrives:
  *   - `classification` — the serialized Clef-flash answer (see
  *     `workers/lib/categorize.ts`): `{ is_spam, spam_probability, category,
- *     category_name, category_confidence, model, ... }`. Legacy rows may hold
- *     a plain string token (`spam`, `not_spam`) instead.
+ *     category_name, category_confidence, expects_reply,
+ *     expects_reply_probability, model, ... }`. Legacy rows may hold a plain
+ *     string token (`spam`, `not_spam`) instead.
  *   - `category` — the stored category id (`spam` or a configured category).
  *   - `category_confidence` — the model's confidence in [0, 1].
  *
@@ -45,6 +46,15 @@ export interface ClassificationSummary {
 	categoryName: string | null;
 	/** Classifier model id, when recorded. */
 	model: string | null;
+	/**
+	 * Whether the recipient is expected to reply (the `expects_reply` reply
+	 * gate), or null when the classification did not record it. Independent
+	 * of the spam verdict: a one-way notification is "not spam" but expects
+	 * no reply.
+	 */
+	expectsReply: boolean | null;
+	/** Probability backing the reply verdict, in [0, 1], when known. */
+	replyConfidence: number | null;
 	/** Where the verdict came from. */
 	source: "classification" | "category" | "none";
 }
@@ -137,6 +147,9 @@ export function summarizeClassification(
 		const jsonConfidence = finiteProbability(value["category_confidence"]);
 		const spamProbability = finiteProbability(value["spam_probability"]);
 		const isSpam = typeof value["is_spam"] === "boolean" ? value["is_spam"] : null;
+		const expectsReply =
+			typeof value["expects_reply"] === "boolean" ? value["expects_reply"] : null;
+		const replyConfidence = finiteProbability(value["expects_reply_probability"]);
 
 
 		if (isSpam !== null) {
@@ -148,6 +161,8 @@ export function summarizeClassification(
 				category,
 				categoryName,
 				model,
+				expectsReply,
+				replyConfidence,
 				source: "classification",
 			};
 		}
@@ -167,6 +182,8 @@ export function summarizeClassification(
 				category,
 				categoryName,
 				model,
+				expectsReply,
+				replyConfidence,
 				source: "classification",
 			};
 		}
@@ -179,6 +196,8 @@ export function summarizeClassification(
 			category: null,
 			categoryName: null,
 			model,
+			expectsReply,
+			replyConfidence,
 			source: "none",
 		};
 	}
@@ -201,6 +220,8 @@ export function summarizeClassification(
 					? (columnLabel ?? labelForCategory(columnCategory))
 					: null,
 				model: null,
+				expectsReply: null,
+				replyConfidence: null,
 				source: "classification",
 			};
 		}
@@ -218,6 +239,8 @@ export function summarizeClassification(
 			category: columnCategory,
 			categoryName: name,
 			model: null,
+			expectsReply: null,
+			replyConfidence: null,
 			source: "category",
 		};
 	}
@@ -230,6 +253,8 @@ export function summarizeClassification(
 		category: null,
 		categoryName: null,
 		model: null,
+		expectsReply: null,
+		replyConfidence: null,
 		source: "none",
 	};
 }
