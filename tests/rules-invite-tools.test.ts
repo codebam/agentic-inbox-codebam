@@ -344,12 +344,15 @@ describe("toolApplyRule", () => {
 		const rule = await stub.createRule(
 			ruleDraft({ actions: { move_to_folder: "temp-tool", star: true } }),
 		);
-		// The route's body-schema 400 message, limit bounds included.
-		expect(
-			await toolApplyRule(env, mailbox, { ruleId: rule.id, limit: 0 }),
-		).toEqual({
-			error: "Invalid rule — limit: Number must be greater than or equal to 1",
-		});
+		// The route's body-schema 400 message, limit bounds included. Assert the
+		// stable prefix the code constructs; zod's own wording for the bound
+		// differs between v3 ("Number must be greater than or equal to 1") and
+		// v4 ("Too small: expected number to be >=1").
+		const badLimit = (await toolApplyRule(env, mailbox, {
+			ruleId: rule.id,
+			limit: 0,
+		})) as { error: string };
+		expect(badLimit.error).toMatch(/^Invalid rule — limit:/);
 
 		// A rule with no stored-mail actions refuses with the route's message.
 		const forwardOnly = await stub.createRule(
