@@ -3756,7 +3756,17 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 	const emailReferences = parsedEmail.references ? parsedEmail.references.split(/\s+/).filter(Boolean).map(extractMsgId) : [];
 	let threadId = emailReferences[0] || inReplyTo || messageId;
 
-	if (!inReplyTo && emailReferences.length === 0) {
+	// Upstream #85: a reply citing a stored message belongs in that message's
+	// thread. The raw header value is only a fallback — look up the cited
+	// Message-IDs (immediate parent first, then References newest-first) and
+	// reuse the stored thread_id so the conversation stays in one thread.
+	const citedIds = [inReplyTo, ...[...emailReferences].reverse()].filter(
+		(id): id is string => Boolean(id),
+	);
+	const citedThread = citedIds.length > 0 ? await stub.findThreadByMessageId(citedIds) : null;
+	if (citedThread) {
+		threadId = citedThread;
+	} else if (!inReplyTo && emailReferences.length === 0) {
 		const subjectThread = await stub.findThreadBySubject(parsedEmail.subject || "", parsedEmail.from?.address || undefined);
 		if (subjectThread) threadId = subjectThread;
 	}
@@ -4128,8 +4138,12 @@ async function receiveEmail(event: InboundEmailEvent, env: Env, ctx: ExecutionCo
 		!ruleMarkedSpam;
 	if (canAutoDraft && classification?.expectsReply !== false) {
 		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+		// partyserver's Server.fetch needs a named instance: it hydrates the name
+		// from storage, and failing that requires an x-partykit-room header. A
+		// mailbox never opened in the UI has no stored name, so without this
+		// header the trigger 500s and auto-draft silently never runs (upstream #57).
 		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-			method: "POST", headers: { "Content-Type": "application/json" },
+			method: "POST", headers: { "Content-Type": "application/json", "x-partykit-room": mailboxId },
 			body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
 		})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
 	} else if (canAutoDraft) {

@@ -111,6 +111,22 @@ describe("auto-draft gate", () => {
 		expect(await agentTouched(mailbox)).toBe(true);
 	});
 
+	it("names a never-opened mailbox's agent so the trigger doesn't 500 (upstream #57)", async () => {
+		const mailbox = "auto-draft-never-opened@example.com";
+		await registerMailbox(mailbox, PIPELINE_SETTINGS);
+		await deliver(mailbox);
+		// partyserver persists its name only when the fetch carried a room
+		// header (or the instance was already named). A mailbox never opened
+		// in the UI has no stored name, so a persisted name proves the inbound
+		// trigger supplied x-partykit-room instead of throwing "Missing
+		// namespace or room headers" and silently skipping auto-draft.
+		const stub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailbox));
+		const name = await runInDurableObject(stub, async (_instance, state) =>
+			state.storage.get<string>("__ps_name"),
+		);
+		expect(name).toBe(mailbox);
+	});
+
 	it("leaves the agent alone when the mailbox turns auto-draft off", async () => {
 		const mailbox = "auto-draft-off@example.com";
 		await registerMailbox(mailbox, { ...PIPELINE_SETTINGS, autoDraft: false });

@@ -3240,6 +3240,30 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Threading helpers (raw SQL) ────────────────────────────────
 
+	/**
+	 * Upstream #85: resolve the thread of a stored message by its Message-ID.
+	 * An inbound reply citing a stored message (In-Reply-To / References)
+	 * belongs in that message's thread, not a new one keyed on the raw header
+	 * value. Checks the candidates in order (immediate parent first) and
+	 * returns the first stored thread_id found, or null.
+	 */
+	findThreadByMessageId(messageIds: string[]): string | null {
+		for (const messageId of messageIds) {
+			if (!messageId) continue;
+			const rows = [
+				...this.ctx.storage.sql.exec(
+					`SELECT thread_id FROM emails
+					 WHERE message_id = ?1 AND thread_id IS NOT NULL
+					 ORDER BY date DESC LIMIT 1`,
+					messageId,
+				),
+			] as unknown as { thread_id: string | null }[];
+			const threadId = rows[0]?.thread_id;
+			if (threadId) return threadId;
+		}
+		return null;
+	}
+
 	findThreadBySubject(subject: string, senderAddress?: string): string | null {
 		const normalized = subject
 			.replace(/^(?:(?:re|fwd?|fw|aw|wg|r[eé]f|sv)\s*:\s*)+/i, "")
