@@ -28,6 +28,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import readline from "node:readline";
@@ -35,7 +36,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.0.0";
+const BRIDGE_VERSION = "1.1.0";
 const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const LOCAL_BIN = join(PROJECT_ROOT, "node_modules", ".bin");
 const LOCAL_WRANGLER = join(LOCAL_BIN, process.platform === "win32" ? "wrangler.cmd" : "wrangler");
@@ -344,8 +345,96 @@ async function handleResponse(response) {
 	}
 }
 
+// ── Scoped-token adapter ──────────────────────────────────────────────────
+// mailflare's /mcp endpoint only accepts ep_ MCP API keys. The ain1_/ain2_
+// scoped automation tokens (the agentic-inbox wire format the harness bridge
+// and mobile app mint) authenticate against POST /api/v1/scoped/<tool>
+// instead. When the resolved credential is such a token, the bridge serves
+// the MCP protocol locally and dispatches tools/call to that scoped surface,
+// so no server change is needed. ep_/Wrangler credentials keep the original
+// /mcp forwarding below. tools/list is served from mcp-tool-manifest.json,
+// generated from mailflare's facade by scripts/export-mcp-manifest.mjs.
+const SCOPED_TOKEN_RE = /^ain[12]_/;
+const MANIFEST_PATH = join(dirname(fileURLToPath(import.meta.url)), "mcp-tool-manifest.json");
+let toolManifest;
+
+function isScopedToken(token) {
+	return typeof token === "string" && SCOPED_TOKEN_RE.test(token);
+}
+
+function scopedBaseUrl() {
+	return remoteUrl.replace(/\/mcp\/?$/, "");
+}
+
+function loadToolManifest() {
+	if (!toolManifest) toolManifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
+	return toolManifest;
+}
+
+function scopedResult(id, result) {
+	writeMessage({ jsonrpc: "2.0", id, result });
+}
+
+async function callScopedTool(name, args, token) {
+	const url = `${scopedBaseUrl()}/api/v1/scoped/${encodeURIComponent(name)}`;
+	let response;
+	try {
+		response = await fetch(url, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+				"user-agent": `agentic-inbox-codebam-mcp-bridge/${BRIDGE_VERSION}`,
+			},
+			body: JSON.stringify(args ?? {}),
+		});
+	} catch (error) {
+		throw new BridgeError(`Could not reach ${url}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const text = await response.text();
+	let body;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		body = { error: text.slice(0, 400) || response.statusText };
+	}
+	return { content: [{ type: "text", text: JSON.stringify(body) }], isError: !response.ok };
+}
+
+async function handleScopedMessage(message, token) {
+	const method = message?.method;
+	const id = message?.id;
+	const params = message?.params ?? {};
+	// Notifications (no id) get no response.
+	if (method === "notifications/initialized" || method === "notifications/cancelled") return;
+	if (method === "initialize") {
+		scopedResult(id, {
+			protocolVersion: typeof params.protocolVersion === "string" ? params.protocolVersion : "2025-06-18",
+			capabilities: { tools: {} },
+			serverInfo: { name: "agentic-inbox-codebam", version: BRIDGE_VERSION },
+		});
+		return;
+	}
+	if (method === "ping") {
+		scopedResult(id, {});
+		return;
+	}
+	if (method === "tools/list") {
+		scopedResult(id, { tools: loadToolManifest() });
+		return;
+	}
+	if (method === "tools/call") {
+		scopedResult(id, await callScopedTool(params.name, params.arguments, token));
+		return;
+	}
+	if (id !== undefined && id !== null) {
+		writeMessage({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not supported in scoped mode: ${method}` } });
+	}
+}
+
 async function postMessage(message, alreadyRetried = false) {
 	const token = await getToken();
+	if (isScopedToken(token)) return handleScopedMessage(message, token);
 	const headers = new Headers({
 		accept: "application/json, text/event-stream",
 		authorization: `Bearer ${token}`,
@@ -466,9 +555,12 @@ process.on("SIGTERM", () => {
 // Resolve the Wrangler credential before the first MCP initialize request so
 // clients get an actionable error immediately when no login key exists.
 try {
-	await getToken();
+	const token = await getToken();
+	const target = isScopedToken(token)
+		? `${scopedBaseUrl()}/api/v1/scoped (scoped-token adapter)`
+		: remoteUrl;
 	process.stderr.write(
-		`[agentic-inbox-codebam-mcp] Bridging stdio to ${remoteUrl} using the local credential.\n`,
+		`[agentic-inbox-codebam-mcp] Bridging stdio to ${target} using the local credential.\n`,
 	);
 } catch (error) {
 	process.stderr.write(

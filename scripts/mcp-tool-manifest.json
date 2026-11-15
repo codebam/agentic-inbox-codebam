@@ -1,0 +1,2168 @@
+[
+	{
+		"name": "apply_rule",
+		"description": "Retroactively apply a stored rule's folder, category, read and star actions to existing mail, one bounded batch per call (loop while remaining > 0). Strictly local: it never sends, never deletes and never records a rule firing.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"ruleId": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 90
+				}
+			},
+			"required": [
+				"mailboxId",
+				"ruleId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "clear_reminder",
+		"description": "Cancel an email's follow-up reminder, pending or already fired. Nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "create_draft",
+		"description": "Create a new draft email, or a reply draft when in_reply_to names an email. Saves to Drafts; never sends.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"bodyHtml": {
+					"type": "string"
+				},
+				"in_reply_to": {
+					"type": "string"
+				},
+				"thread_id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"subject",
+				"bodyHtml"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "create_folder",
+		"description": "Create a user folder. A colliding name answers an error. Nothing is moved.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 100
+				}
+			},
+			"required": [
+				"mailboxId",
+				"name"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "create_rule",
+		"description": "Create a deterministic rule for incoming mail: move it to a folder, set a category, star/unstar, mark read/unread, or discard it. Rules created here cannot send mail (no forward or auto-reply). Needs at least one match condition and one action.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"match": {
+					"type": "object",
+					"properties": {
+						"mode": {
+							"default": "all",
+							"type": "string",
+							"enum": [
+								"all",
+								"any"
+							]
+						},
+						"conditions": {
+							"type": "object",
+							"properties": {
+								"from_contains": {
+									"type": "string"
+								},
+								"to_contains": {
+									"type": "string"
+								},
+								"subject_contains": {
+									"type": "string"
+								},
+								"body_contains": {
+									"type": "string"
+								},
+								"has_attachment": {
+									"type": "boolean"
+								},
+								"category_equals": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"required": [
+						"conditions"
+					]
+				},
+				"actions": {
+					"type": "object",
+					"properties": {
+						"move_to_folder": {
+							"type": "string"
+						},
+						"set_category": {
+							"type": "string"
+						},
+						"mark_read": {
+							"type": "boolean"
+						},
+						"mark_unread": {
+							"type": "boolean"
+						},
+						"star": {
+							"type": "boolean"
+						},
+						"unstar": {
+							"type": "boolean"
+						},
+						"discard": {
+							"type": "boolean"
+						},
+						"forward_to": {
+							"type": "string"
+						},
+						"auto_reply_text": {
+							"type": "string"
+						}
+					}
+				},
+				"enabled": {
+					"type": "boolean"
+				},
+				"priority": {
+					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991
+				}
+			},
+			"required": [
+				"mailboxId",
+				"name",
+				"match",
+				"actions"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "create_saved_search",
+		"description": "Save a named search for a mailbox: a name (up to 120 characters) and a query (up to 1000 characters). Names need not be unique. Nothing is sent.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"name",
+				"query"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "create_template",
+		"description": "Create one message template — a reusable snippet with a name, an optional subject and a body. Nothing here sends mail.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"subject": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"body": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"name",
+				"body"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "delete_email",
+		"description": "Delete an email by id. By default it moves to Trash and can be restored; permanent=true removes it for good and requires confirm=true. Only pass permanent after the operator explicitly asks to delete forever.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"permanent": {
+					"type": "boolean"
+				},
+				"confirm": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "delete_folder",
+		"description": "Delete a user folder by id. System folders cannot be deleted. Messages in the folder return to the Inbox; nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"folderId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"folderId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "delete_rule",
+		"description": "Delete one rule by id. Nothing is sent and no mail is changed; the rule's firing statistics go with it.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"ruleId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"ruleId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "delete_saved_search",
+		"description": "Delete one saved search by id. Nothing else is touched and nothing is sent.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"searchId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"searchId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "delete_spam_emails",
+		"description": "Permanently delete every email marked as spam in this mailbox. Irreversible. Only call when the operator explicitly asks to delete spam, with confirm=true.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"confirm": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"confirm"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "delete_template",
+		"description": "Delete one message template by id. Nothing here sends mail.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"templateId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"templateId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "discard_draft",
+		"description": "Permanently delete a draft email — drafts are not moved to Trash and cannot be restored.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"draftId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"draftId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "draft_reply",
+		"description": "Draft a reply to an email and save it to the Drafts folder. Does NOT send — saves a draft for review.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"originalEmailId": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"bodyHtml": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"originalEmailId",
+				"bodyHtml"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "empty_trash",
+		"description": "Permanently delete every email in the Trash folder, including attachments. Irreversible. Only call when the operator explicitly asks to empty the Trash, with confirm=true.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"confirm": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"confirm"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "export_email",
+		"description": "One stored message as a reconstructed RFC 5322 (EML) block under the eml key — rebuilt from the stored fields, never the wire source. Read-only.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_attachment",
+		"description": "Read one attachment's metadata and, for text-ish files, its text content (UTF-8, capped at 200000 characters). Binary attachments come back as metadata plus an omission reason — never raw bytes.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"attachmentId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"attachmentId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_calendar_invite",
+		"description": "The calendar invite (iMIP) one stored message carries — uid, method, summary, organizer, location, start/end, attendees and the recorded answer — or invite: null when it carried none.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_digest",
+		"description": "The mailbox's morning brief for the trailing 24 hours: arrivals, what still needs a reply, the category breakdown, fired reminders and the items due. Read-only — nothing is stored or sent.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_email",
+		"description": "Get a single email with its full body content and attachment metadata, without marking it read.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_sender_policy",
+		"description": "List the mailbox's sender allow/block entries (address, policy, created_at), ordered by address. Allow trusts a sender (not spam); block files their mail into Spam.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_storage",
+		"description": "The mailbox's storage footprint: stored message count and attachment count/bytes. Read-only.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "get_thread",
+		"description": "Get all emails in a conversation thread, chronological order. Accepts a thread id or any message id of the thread.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"threadId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_agent_actions",
+		"description": "List the most recent mutating tool calls recorded for this mailbox, newest first, with the total number recorded. Metadata only (tool, message id, subject, thread id, folder/read/star state) — never message bodies.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_all_emails",
+		"description": "List every allowed mailbox's mail at once, merged by date (newest first) — the All Accounts view. Each row carries the mailbox_id it came from.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"folder": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100
+				},
+				"page": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 9007199254740991
+				}
+			}
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_emails",
+		"description": "List emails in a mailbox folder, newest first, with page/limit pagination. Folders: inbox, sent, draft, archive, snoozed, spam, trash, scheduled, or a user folder id/name.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"folder": {
+					"type": "string"
+				},
+				"category": {
+					"type": "string"
+				},
+				"stream": {
+					"type": "string",
+					"enum": [
+						"priority",
+						"other"
+					]
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100
+				},
+				"page": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 9007199254740991
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_folders",
+		"description": "List the mailbox's folders — the system set (inbox, sent, draft, archive, snoozed, spam, trash) plus every user folder — each with its unread count.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_items",
+		"description": "List the tasks and deadlines extracted from this mailbox's mail — one entry per concrete task or deadline, with its source message id, kind (task | deadline), title, details, due date and status (open | done | dismissed).",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"status": {
+					"type": "string",
+					"enum": [
+						"open",
+						"done",
+						"dismissed"
+					]
+				},
+				"due": {
+					"type": "string",
+					"enum": [
+						"overdue",
+						"today",
+						"upcoming",
+						"none"
+					]
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_mailboxes",
+		"description": "List mailboxes allowed for this token",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {}
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_rules",
+		"description": "List the mailbox's deterministic rules in evaluation order, with firing statistics.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_saved_searches",
+		"description": "List the mailbox's saved searches — named queries re-run from the sidebar — newest first.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_scheduled_sends",
+		"description": "List the outbound messages queued for later in a mailbox, newest first, with their send time and status.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_snoozed",
+		"description": "List the messages currently snoozed in a mailbox, earliest wake time first.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "list_templates",
+		"description": "List the mailbox's message templates — reusable snippets (name, optional subject, body).",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "mark_email_read",
+		"description": "Mark an email as read or unread.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"read": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"read"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "mark_thread_read",
+		"description": "Mark every message in a thread as read. Nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"threadId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "move_email",
+		"description": "Move an email to a different folder: inbox, archive, spam, trash, or a user folder id/name.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"folderId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"folderId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "mute_thread",
+		"description": "Mute a thread: new mail in it is skipped by push and webhook notifications. Muting an unknown thread id is allowed and muting twice is idempotent; nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"threadId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "preview_rule",
+		"description": "Dry-run a rule draft against the mailbox's stored mail: returns the matching message summaries (up to 200) and how many messages the draft matches, writing nothing and sending nothing.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"match": {
+					"type": "object",
+					"properties": {
+						"mode": {
+							"default": "all",
+							"type": "string",
+							"enum": [
+								"all",
+								"any"
+							]
+						},
+						"conditions": {
+							"type": "object",
+							"properties": {
+								"from_contains": {
+									"type": "string"
+								},
+								"to_contains": {
+									"type": "string"
+								},
+								"subject_contains": {
+									"type": "string"
+								},
+								"body_contains": {
+									"type": "string"
+								},
+								"has_attachment": {
+									"type": "boolean"
+								},
+								"category_equals": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"required": [
+						"conditions"
+					]
+				}
+			},
+			"required": [
+				"mailboxId",
+				"match"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "remove_sender_policy",
+		"description": "Remove one sender allow/block entry by address, so future mail from that sender is classified normally again. Nothing else changes — no mail is moved or deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"address": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"address"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "reorder_rules",
+		"description": "Rewrite rule priorities to follow the given id order (the first id evaluates first). Unknown or repeated ids are ignored; rules missing from the list keep their relative order after the listed ones.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"ruleIds": {
+					"minItems": 1,
+					"maxItems": 200,
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				}
+			},
+			"required": [
+				"mailboxId",
+				"ruleIds"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "respond_to_invite",
+		"description": "Answer one calendar invitation as an iMIP REPLY to the organizer: accepted, declined or tentative. Sends mail to the organizer — only call when the operator asks to answer the invitation.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"response": {
+					"type": "string",
+					"enum": [
+						"accepted",
+						"declined",
+						"tentative"
+					]
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"response"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": true
+		}
+	},
+	{
+		"name": "restore_email",
+		"description": "Move a trashed email back to the Inbox. Only a message in Trash can be restored.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "retry_scheduled_send",
+		"description": "Re-arm a failed scheduled send: it becomes pending and due immediately. Only a failed send can be retried; nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"scheduledSendId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"scheduledSendId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "schedule_send",
+		"description": "Queue a new email for delivery at a future time (ISO 8601). It can be cancelled before then. Only call after the operator has confirmed the exact recipient, subject, body and send time.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"bodyHtml": {
+					"type": "string"
+				},
+				"sendAt": {
+					"type": "string"
+				},
+				"cc": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				},
+				"bcc": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				}
+			},
+			"required": [
+				"mailboxId",
+				"to",
+				"subject",
+				"bodyHtml",
+				"sendAt"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": true
+		}
+	},
+	{
+		"name": "search_all_mailboxes",
+		"description": "Search every allowed mailbox at once and merge the matches by date (newest first). Same filters as search_emails; each row carries its mailbox_id.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string"
+				},
+				"folder": {
+					"type": "string"
+				},
+				"from": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"isRead": {
+					"type": "boolean"
+				},
+				"isStarred": {
+					"type": "boolean"
+				},
+				"hasAttachment": {
+					"type": "boolean"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100
+				},
+				"page": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 9007199254740991
+				}
+			}
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "search_contacts",
+		"description": "Search this mailbox's contacts — the addresses it has exchanged mail with. Prefix match on address or display name; omit the query for the first contacts.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "search_emails",
+		"description": "Search one mailbox. Free text matches subject, body, sender and recipient; Gmail-style operators (from:, to:, subject:, is:unread, has:attachment) work inside the query, and the explicit filters combine with it.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string"
+				},
+				"folder": {
+					"type": "string"
+				},
+				"category": {
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"from": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"isRead": {
+					"type": "boolean"
+				},
+				"isStarred": {
+					"type": "boolean"
+				},
+				"hasAttachment": {
+					"type": "boolean"
+				},
+				"before": {
+					"type": "string"
+				},
+				"after": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100
+				},
+				"page": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 9007199254740991
+				}
+			},
+			"required": [
+				"mailboxId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "semantic_search",
+		"description": "Semantic (meaning-based) search over one mailbox's stored mail. Use it when the exact words are unknown — it finds messages by what they are about rather than by keyword. Read-only. Needs the mailbox's semantic index; answers a not-configured error when the deployment has none.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string",
+					"minLength": 1
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 20
+				}
+			},
+			"required": [
+				"mailboxId",
+				"query"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "send_email",
+		"description": "Send a new email (not a reply), optionally with cc, bcc and inline attachments (up to 5 files, 5 MB total). Only call after the human operator has explicitly confirmed the exact recipient, subject and body.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"bodyHtml": {
+					"type": "string"
+				},
+				"cc": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				},
+				"bcc": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				},
+				"attachments": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"filename": {
+								"type": "string"
+							},
+							"mimetype": {
+								"type": "string"
+							},
+							"content_base64": {
+								"type": "string"
+							}
+						},
+						"required": [
+							"filename",
+							"mimetype",
+							"content_base64"
+						]
+					}
+				}
+			},
+			"required": [
+				"mailboxId",
+				"to",
+				"subject",
+				"bodyHtml"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": true
+		}
+	},
+	{
+		"name": "send_reply",
+		"description": "Send a reply to an email, keeping the thread. Only call after the human operator has explicitly confirmed the exact recipient, subject and body.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"originalEmailId": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"bodyHtml": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"originalEmailId",
+				"to",
+				"subject",
+				"bodyHtml"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": true
+		}
+	},
+	{
+		"name": "set_reminder",
+		"description": "Set a follow-up reminder for an email: ISO 8601 or a relative shorthand like 30m, 4h, 3d, 1w. Nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"at": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"at"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "set_sender_policy",
+		"description": "Record an allow or block decision for the sender of an email: allow moves future mail back to the Inbox and clears its spam markings; block files it into Spam. Nothing is deleted. The sender address is taken from the email.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"action": {
+					"type": "string",
+					"enum": [
+						"allow",
+						"block"
+					]
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"action"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "snooze_email",
+		"description": "Snooze an email until a future time: ISO 8601 or a relative shorthand like 30m, 4h, 3d, 1w. It returns to its folder when the time arrives.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"until": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"until"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "star_email",
+		"description": "Star or unstar an email.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				},
+				"starred": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId",
+				"starred"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "summarize_thread",
+		"description": "Summarize a conversation thread with an AI model: participants, decisions, open questions, action items and the thread's current state. Built per request — nothing is stored, cached or sent.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"threadId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": true,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "undo_action",
+		"description": "Undo one recorded mutating tool call by its action id: restores the message's read state, star state and folder from the state recorded before the call. It never sends and never deletes mail; only actions flagged undoable (move, star, mark read) can be undone, and each action can be undone once.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"actionId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"actionId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "unmute_thread",
+		"description": "Unmute a thread so its new mail notifies again. Unmuting is idempotent; nothing is deleted.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"threadId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "unsnooze_email",
+		"description": "Wake a snoozed email now: it returns to the folder it came from immediately.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "unsubscribe_email",
+		"description": "One-click unsubscribe (RFC 8058) for a mailing-list message, fetched through the SSRF guard. Only call on an explicit operator click. Spam is never unsubscribed.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"emailId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"emailId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": true
+		}
+	},
+	{
+		"name": "update_draft",
+		"description": "Update an existing draft email's recipient, subject or body. Never sends.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"draftId": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"subject": {
+					"type": "string"
+				},
+				"bodyHtml": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"draftId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "update_folder",
+		"description": "Rename a folder by id. The id never changes; an unknown id answers an error. Nothing is moved.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"folderId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 100
+				}
+			},
+			"required": [
+				"mailboxId",
+				"folderId",
+				"name"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "update_item",
+		"description": "Move a task or deadline extracted from this mailbox's mail to a new state: open, done or dismissed. Answers the stored item. Nothing is sent.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"itemId": {
+					"type": "string"
+				},
+				"status": {
+					"type": "string",
+					"enum": [
+						"open",
+						"done",
+						"dismissed"
+					]
+				}
+			},
+			"required": [
+				"mailboxId",
+				"itemId",
+				"status"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "update_rule",
+		"description": "Update a rule: rename, reorder, change its conditions or actions, enable or pause it. Omitted fields keep their stored value. Rules edited here cannot send mail.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"ruleId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"match": {
+					"type": "object",
+					"properties": {
+						"mode": {
+							"default": "all",
+							"type": "string",
+							"enum": [
+								"all",
+								"any"
+							]
+						},
+						"conditions": {
+							"type": "object",
+							"properties": {
+								"from_contains": {
+									"type": "string"
+								},
+								"to_contains": {
+									"type": "string"
+								},
+								"subject_contains": {
+									"type": "string"
+								},
+								"body_contains": {
+									"type": "string"
+								},
+								"has_attachment": {
+									"type": "boolean"
+								},
+								"category_equals": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"required": [
+						"conditions"
+					]
+				},
+				"actions": {
+					"type": "object",
+					"properties": {
+						"move_to_folder": {
+							"type": "string"
+						},
+						"set_category": {
+							"type": "string"
+						},
+						"mark_read": {
+							"type": "boolean"
+						},
+						"mark_unread": {
+							"type": "boolean"
+						},
+						"star": {
+							"type": "boolean"
+						},
+						"unstar": {
+							"type": "boolean"
+						},
+						"discard": {
+							"type": "boolean"
+						},
+						"forward_to": {
+							"type": "string"
+						},
+						"auto_reply_text": {
+							"type": "string"
+						}
+					}
+				},
+				"enabled": {
+					"type": "boolean"
+				},
+				"priority": {
+					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991
+				}
+			},
+			"required": [
+				"mailboxId",
+				"ruleId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "update_saved_search",
+		"description": "Update one saved search by id: rename it and/or change its query. Omitted fields keep their stored value.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"searchId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"searchId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	},
+	{
+		"name": "update_template",
+		"description": "Update one template by id: rename it, change its optional subject or rewrite its body. Omitted fields keep their stored value; an explicit null subject clears it.",
+		"inputSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"mailboxId": {
+					"type": "string"
+				},
+				"templateId": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"subject": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"body": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mailboxId",
+				"templateId"
+			]
+		},
+		"annotations": {
+			"readOnlyHint": false,
+			"destructiveHint": false,
+			"openWorldHint": false
+		}
+	}
+]
