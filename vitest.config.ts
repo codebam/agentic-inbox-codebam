@@ -31,5 +31,15 @@ export default defineConfig({
 	},
 	test: {
 		include: ["tests/**/*.test.ts"],
+		// Integration tests on real workerd — DO SQLite, R2, RPC round-trips
+		// — not unit tests: the 5s default is too tight when the whole suite
+		// runs on a loaded machine. Six files used to time out at exactly
+		// 5000ms in full runs while passing in isolation.
+		testTimeout: 15_000,
+		hookTimeout: 15_000,
+		// Every file gets its own workerd; one worker per core (16 here)
+		// oversubscribes a desk that is also running a compositor and
+		// agents. Half the cores keeps full runs stable.
+		maxWorkers: 8,
 	},
 });
