@@ -103,13 +103,6 @@
 			]
 		}
 	],
-	"routes": [
-		{
-			"pattern": "email.codebam.ca",
-			"zone_name": "codebam.ca",
-			"custom_domain": true
-		}
-	],
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
