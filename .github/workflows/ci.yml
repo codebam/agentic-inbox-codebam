@@ -1,0 +1,46 @@
+# The repository gate, run on every PR and on push to the default branch:
+# typecheck, lint, the workerd integration suite, and the production build.
+# These are the same four checks the local pre-commit gate runs, so a green CI
+# means the same thing a green local gate does.
+#
+# The tests run inside workerd via @cloudflare/vitest-pool-workers with
+# remoteBindings disabled (wrangler.test.jsonc), so no Cloudflare credentials
+# are needed and a run can never deliver mail.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

@@ -1,0 +1,53 @@
+# Semgrep Community Edition (OSS) scanning.
+#
+# Ported from the upstream App&ProdSec Semgrep Pro -> CE migration (issue #15):
+# informational findings on every PR, on push to the default branch, and on a
+# staggered monthly schedule. The scan never blocks a merge — findings are
+# reported, not enforced.
+#
+# Semgrep is pinned and installed into a cached virtualenv, so `pip install`
+# only runs on a cold cache (first run, a version bump, or GitHub's 7-day idle
+# eviction). `--config=auto` uses the default OSS ruleset.
+name: Semgrep OSS
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  schedule:
+    # Monthly, staggered off the round hour/minute to avoid the cron rush:
+    # 03:17 UTC on the 1st.
+    - cron: "17 3 1 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep CE scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Semgrep virtualenv
+        id: semgrep-cache
+        uses: actions/cache@v5
+        with:
+          path: .semgrep-venv
+          key: semgrep-venv-${{ runner.os }}-1.160.0
+
+      - name: Install Semgrep (cold cache only)
+        if: steps.semgrep-cache.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .semgrep-venv
+          .semgrep-venv/bin/pip install --disable-pip-version-check semgrep==1.160.0
+
+      - name: Semgrep scan (informational, non-blocking)
+        continue-on-error: true
+        run: .semgrep-venv/bin/semgrep scan --config=auto --metrics=off
