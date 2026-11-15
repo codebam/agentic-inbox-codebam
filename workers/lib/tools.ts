@@ -73,7 +73,13 @@ import { verifyDraft } from "./ai";
 import { applySignatureToBody } from "../../shared/signature";
 import { ensureMessageBody } from "../../shared/compose-body";
 import { loadMailboxSignature, resolveMailboxModels } from "./mailbox-settings";
-import { sendEmail, type SendEmailParams } from "../email-sender";
+import {
+	sendEmail,
+	resolveSendEmailSender,
+	setSendEmailSenderFactory,
+	type SendEmailParams,
+	type SendEmailSender,
+} from "../email-sender";
 import { decodeBase64Bytes, storeAttachments } from "./attachments";
 import { proxyImage } from "./image-proxy";
 import { formatFileSize } from "../../app/lib/attachments";
@@ -2690,7 +2696,7 @@ export async function toolSendReply(
 			email_references:
 				references.length > 0 ? JSON.stringify(references) : null,
 			thread_id: threadId,
-			message_id: outgoingMessageId,
+			message_id: sendResult.messageId || outgoingMessageId,
 		},
 		[],
 	);
@@ -2849,7 +2855,7 @@ export async function toolSendEmail(
 			in_reply_to: null,
 			email_references: null,
 			thread_id: messageId,
-			message_id: outgoingMessageId,
+			message_id: sendResult.messageId || outgoingMessageId,
 		},
 		storedAttachments,
 	);
@@ -2862,13 +2868,11 @@ export async function toolSendEmail(
 }
 
 // ── send_email sender seam ─────────────────────────────────────────
+// Delegates to the shared send seam (email-sender.ts) so the HTTP send
+// routes and the MCP send tools honour the same test override.
 
 /** Anything that can deliver one send_email tool call. Tests inject a fake. */
-export interface ToolSendEmailSender {
-	send(params: SendEmailParams): Promise<{ messageId: string }>;
-}
-
-let toolSendEmailSenderFactoryOverride: (() => ToolSendEmailSender | null) | null = null;
+export type ToolSendEmailSender = SendEmailSender;
 
 /**
  * Test seam: replace the sender toolSendEmail uses. Passing null restores
@@ -2877,7 +2881,7 @@ let toolSendEmailSenderFactoryOverride: (() => ToolSendEmailSender | null) | nul
 export function setToolSendEmailSenderFactory(
 	factory: (() => ToolSendEmailSender | null) | null,
 ): void {
-	toolSendEmailSenderFactoryOverride = factory;
+	setSendEmailSenderFactory(factory);
 }
 
 /** The real sender: the Cloudflare Email Service binding. */
@@ -2887,7 +2891,7 @@ export function createToolSendEmailSender(env: Env): ToolSendEmailSender {
 
 /** The sender toolSendEmail should use (honours the test override). */
 export function resolveToolSendEmailSender(env: Env): ToolSendEmailSender {
-	return toolSendEmailSenderFactoryOverride?.() ?? createToolSendEmailSender(env);
+	return resolveSendEmailSender(env);
 }
 
 

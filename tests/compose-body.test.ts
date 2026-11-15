@@ -4,9 +4,10 @@
 
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EMPTY_MESSAGE_BODY, ensureMessageBody } from "../shared/compose-body";
 import { SendEmailRequestSchema } from "../workers/lib/schemas";
+import { setSendEmailSenderFactory } from "../workers/email-sender";
 
 const MAILBOX = "compose-body@example.com";
 
@@ -60,6 +61,15 @@ describe("ensureMessageBody", () => {
 });
 
 describe("send route body requirement", () => {
+	// The send route now awaits delivery (upstream #84); wrangler.test.jsonc
+	// has no send_email binding, so inject a fake sender for the success path.
+	beforeEach(() => {
+		setSendEmailSenderFactory(() => ({
+			send: async () => ({ messageId: "fake-binding-id@example.com" }),
+		}));
+	});
+	afterEach(() => setSendEmailSenderFactory(null));
+
 	it("accepts the empty-body payload the composer sends", async () => {
 		await registerMailbox(MAILBOX);
 

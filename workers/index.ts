@@ -6,7 +6,7 @@ import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import PostalMime from "postal-mime";
 import { z, ZodError } from "zod";
-import { sendEmail } from "./email-sender";
+import { resolveSendEmailSender } from "./email-sender";
 import { storeAttachments, attachmentR2Key, decodeBase64Bytes, sanitizeAttachmentFilename, type StoredAttachment } from "./lib/attachments";
 import { encodeBinaryParts } from "./lib/mime-binary";
 import { repairBase64Attachment } from "./lib/attachment-content";
@@ -930,34 +930,46 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 		? `${text}${buildLinkedAttachmentText(links)}`
 		: text;
 
+	// Await the send so a binding rejection is reported to the caller instead
+	// of being swallowed in waitUntil and filed as "sent" (upstream #84). The
+	// Sent copy is only written once delivery is accepted.
+	let sendResult: { messageId: string };
+	try {
+		sendResult = await resolveSendEmailSender(c.env).send({
+			to, cc, bcc, from, subject, html: outgoingHtml, text: outgoingText,
+			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
+			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
+		});
+	} catch (e) {
+		// Nothing is filed in Sent; drop the staged attachment bytes so a
+		// rejected send leaves no orphaned objects behind.
+		await c.env.BUCKET.delete([...attachmentData, ...linkedAttachmentData].map(attachmentR2Key));
+		return c.json({ error: `Failed to send email: ${(e as Error).message}` }, 502);
+	}
+
+	// The stored Message-ID is the one the binding actually assigned, not a
+	// locally generated id no recipient ever received (upstream #83).
+	const deliveredMessageId = sendResult.messageId || outgoingMessageId;
 	await stub.createEmail(Folders.SENT, {
 		id: messageId, subject, sender: fromEmail, recipient: toStr,
 		cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
 		bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
 		date: new Date().toISOString(), body: outgoingHtml || outgoingText || "",
 		in_reply_to: in_reply_to || null, email_references: references ? JSON.stringify(references) : null,
-		thread_id: thread_id || in_reply_to || messageId, message_id: outgoingMessageId,
+		thread_id: thread_id || in_reply_to || messageId, message_id: deliveredMessageId,
 		raw_headers: JSON.stringify([
 			{ key: "from", value: typeof from === "string" ? from : `${from.name} <${from.email}>` },
 			{ key: "to", value: Array.isArray(to) ? to.join(", ") : to },
 			...(cc ? [{ key: "cc", value: Array.isArray(cc) ? cc.join(", ") : cc }] : []),
 			...(bcc ? [{ key: "bcc", value: Array.isArray(bcc) ? bcc.join(", ") : bcc }] : []),
 			{ key: "subject", value: subject }, { key: "date", value: new Date().toISOString() },
-			{ key: "message-id", value: `<${outgoingMessageId}>` },
+			{ key: "message-id", value: `<${deliveredMessageId}>` },
 		]),
 	}, [...attachmentData, ...linkedAttachmentData]);
 
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
-			to, cc, bcc, from, subject, html: outgoingHtml, text: outgoingText,
-			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
-			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
-		})
-			// Best-effort: the id the binding returned, on the Sent copy, so a
-			// bounce can be matched to it (workers/lib/delivery-match.ts).
-			.then((result) => captureSendMessageId(stub, messageId, result))
-			.catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
-	);
+	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
+	// can be matched to it (workers/lib/delivery-match.ts).
+	await captureSendMessageId(stub, messageId, sendResult);
 	return c.json({ id: messageId, status: "sent" }, 202);
 });
 
@@ -1548,8 +1560,30 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite-response", async (
 		`${invite.start_at ? ` for ${invite.start_at}` : ""}.`;
 	const { messageId, outgoingMessageId } = generateMessageId(emailDomain(from) ?? "");
 
-	// The Sent copy goes in first, exactly like the reply/forward paths, so
-	// the mailbox shows what went out even when the deferred send fails.
+	// Await the send so a binding rejection is reported to the caller instead
+	// of being swallowed in waitUntil and filed as "sent" (upstream #84).
+	let sendResult: { messageId: string };
+	try {
+		sendResult = await resolveSendEmailSender(c.env).send({
+			to: organizer,
+			from,
+			subject,
+			text,
+			attachments: [
+				{
+					content: base64Utf8(ics),
+					filename: "invite.ics",
+					type: "text/calendar",
+					disposition: "attachment",
+				},
+			],
+		});
+	} catch (e) {
+		return c.json({ error: `Failed to send invite response: ${(e as Error).message}` }, 502);
+	}
+
+	// The stored Message-ID is the one the binding assigned (upstream #83).
+	const deliveredMessageId = sendResult.messageId || outgoingMessageId;
 	try {
 		await stub.createEmail(
 			Folders.SENT,
@@ -1563,13 +1597,13 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite-response", async (
 				in_reply_to: email.message_id ?? null,
 				email_references: null,
 				thread_id: email.thread_id ?? messageId,
-				message_id: outgoingMessageId,
+				message_id: deliveredMessageId,
 				raw_headers: JSON.stringify([
 					{ key: "from", value: from },
 					{ key: "to", value: organizer },
 					{ key: "subject", value: subject },
 					{ key: "date", value: now },
-					{ key: "message-id", value: `<${outgoingMessageId}>` },
+					{ key: "message-id", value: `<${deliveredMessageId}>` },
 				]),
 			},
 			[],
@@ -1578,28 +1612,9 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:emailId/invite-response", async (
 		console.error("Storing the invite reply's Sent copy failed:", (e as Error).message);
 	}
 
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
-			to: organizer,
-			from,
-			subject,
-			text,
-			attachments: [
-				{
-					content: base64Utf8(ics),
-					filename: "invite.ics",
-					type: "text/calendar",
-					disposition: "attachment",
-				},
-			],
-		})
-			// Best-effort: the id the binding returned, on the Sent copy, so a
-			// bounce can be matched to it (workers/lib/delivery-match.ts).
-			.then((result) => captureSendMessageId(stub, messageId, result))
-			.catch((e) => {
-				console.error("Deferred invite reply delivery failed:", (e as Error).message);
-			}),
-	);
+	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
+	// can be matched to it (workers/lib/delivery-match.ts).
+	await captureSendMessageId(stub, messageId, sendResult);
 
 	const updated = await stub.setCalendarInviteResponse(emailId, response);
 	return c.json({ id: messageId, status: "sent", invite: updated }, 202);

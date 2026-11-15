@@ -31,6 +31,8 @@ export default defineConfig({
 	},
 	test: {
 		include: ["tests/**/*.test.ts"],
+		// Default fake send seam (no send_email binding in the test config).
+		setupFiles: ["./tests/setup.ts"],
 		// Integration tests on real workerd — DO SQLite, R2, RPC round-trips
 		// — not unit tests: the 5s default is too tight when the whole suite
 		// runs on a loaded machine. Six files used to time out at exactly

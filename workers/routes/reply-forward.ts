@@ -3,8 +3,8 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { Context } from "hono";
-import { sendEmail } from "../email-sender";
-import { storeAttachments } from "../lib/attachments";
+import { resolveSendEmailSender } from "../email-sender";
+import { storeAttachments, attachmentR2Key } from "../lib/attachments";
 import type { EmailFull } from "../lib/schemas";
 import {
 	validateSender,
@@ -79,40 +79,11 @@ export async function handleReplyEmail(c: AppContext) {
 
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
-	await stub.createEmail(
-		Folders.SENT,
-		{
-			id: messageId,
-			subject,
-			sender: fromEmail,
-			recipient: toStr,
-			cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
-			bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
-			date: new Date().toISOString(),
-			body: html || text || "",
-			in_reply_to: originalMsgId,
-			email_references: JSON.stringify(references),
-			thread_id: thread_id,
-			message_id: outgoingMessageId,
-			raw_headers: JSON.stringify([
-				{ key: "from", value: typeof from === "string" ? from : `${from.name} <${from.email}>` },
-				{ key: "to", value: Array.isArray(to) ? to.join(", ") : to },
-				...(cc ? [{ key: "cc", value: Array.isArray(cc) ? cc.join(", ") : cc }] : []),
-				...(bcc ? [{ key: "bcc", value: Array.isArray(bcc) ? bcc.join(", ") : bcc }] : []),
-				{ key: "subject", value: subject },
-				{ key: "date", value: new Date().toISOString() },
-				{ key: "message-id", value: `<${outgoingMessageId}>` },
-				...(originalMsgId ? [{ key: "in-reply-to", value: `<${originalMsgId}>` }] : []),
-				...(references.length > 0 ? [{ key: "references", value: references.map((r: string) => `<${r}>`).join(" ") }] : []),
-			]),
-		},
-		attachmentData,
-	);
-
-	await stub.markThreadRead(thread_id);
-
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+	// Await the send so a binding rejection is reported to the caller instead
+	// of being swallowed in waitUntil and filed as "sent" (upstream #84).
+	let sendResult: { messageId: string };
+	try {
+		sendResult = await resolveSendEmailSender(c.env).send({
 			to,
 			cc,
 			bcc,
@@ -128,14 +99,49 @@ export async function handleReplyEmail(c: AppContext) {
 				contentId: att.contentId,
 			})),
 			headers: buildThreadingHeaders(originalMsgId, references),
-		})
-			// Best-effort: the id the binding returned, on the Sent copy, so a
-			// bounce can be matched to it (workers/lib/delivery-match.ts).
-			.then((result) => captureSendMessageId(stub, messageId, result))
-			.catch((e) => {
-				console.error("Deferred reply delivery failed:", (e as Error).message);
-			}),
+		});
+	} catch (e) {
+		await c.env.BUCKET.delete(attachmentData.map(attachmentR2Key));
+		return c.json({ error: `Failed to send email: ${(e as Error).message}` }, 502);
+	}
+
+	// The stored Message-ID is the one the binding assigned (upstream #83).
+	const deliveredMessageId = sendResult.messageId || outgoingMessageId;
+	await stub.createEmail(
+		Folders.SENT,
+		{
+			id: messageId,
+			subject,
+			sender: fromEmail,
+			recipient: toStr,
+			cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
+			bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
+			date: new Date().toISOString(),
+			body: html || text || "",
+			in_reply_to: originalMsgId,
+			email_references: JSON.stringify(references),
+			thread_id: thread_id,
+			message_id: deliveredMessageId,
+			raw_headers: JSON.stringify([
+				{ key: "from", value: typeof from === "string" ? from : `${from.name} <${from.email}>` },
+				{ key: "to", value: Array.isArray(to) ? to.join(", ") : to },
+				...(cc ? [{ key: "cc", value: Array.isArray(cc) ? cc.join(", ") : cc }] : []),
+				...(bcc ? [{ key: "bcc", value: Array.isArray(bcc) ? bcc.join(", ") : bcc }] : []),
+				{ key: "subject", value: subject },
+				{ key: "date", value: new Date().toISOString() },
+				{ key: "message-id", value: `<${deliveredMessageId}>` },
+				...(originalMsgId ? [{ key: "in-reply-to", value: `<${originalMsgId}>` }] : []),
+				...(references.length > 0 ? [{ key: "references", value: references.map((r: string) => `<${r}>`).join(" ") }] : []),
+			]),
+		},
+		attachmentData,
 	);
+
+	await stub.markThreadRead(thread_id);
+
+	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
+	// can be matched to it (workers/lib/delivery-match.ts).
+	await captureSendMessageId(stub, messageId, sendResult);
 
 	return c.json({ id: messageId, status: "sent" }, 202);
 }
@@ -195,36 +201,11 @@ export async function handleForwardEmail(c: AppContext) {
 
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
-	await stub.createEmail(
-		Folders.SENT,
-		{
-			id: messageId,
-			subject,
-			sender: fromEmail,
-			recipient: toStr,
-			cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
-			bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
-			date: new Date().toISOString(),
-			body: html || text || "",
-			in_reply_to: null,
-			email_references: null,
-			thread_id: messageId,
-			message_id: outgoingMessageId,
-			raw_headers: JSON.stringify([
-				{ key: "from", value: typeof from === "string" ? from : `${from.name} <${from.email}>` },
-				{ key: "to", value: Array.isArray(to) ? to.join(", ") : to },
-				...(cc ? [{ key: "cc", value: Array.isArray(cc) ? cc.join(", ") : cc }] : []),
-				...(bcc ? [{ key: "bcc", value: Array.isArray(bcc) ? bcc.join(", ") : bcc }] : []),
-				{ key: "subject", value: subject },
-				{ key: "date", value: new Date().toISOString() },
-				{ key: "message-id", value: `<${outgoingMessageId}>` },
-			]),
-		},
-		attachmentData,
-	);
-
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+	// Await the send so a binding rejection is reported to the caller instead
+	// of being swallowed in waitUntil and filed as "sent" (upstream #84).
+	let sendResult: { messageId: string };
+	try {
+		sendResult = await resolveSendEmailSender(c.env).send({
 			to,
 			cc,
 			bcc,
@@ -239,14 +220,45 @@ export async function handleForwardEmail(c: AppContext) {
 				disposition: att.disposition,
 				contentId: att.contentId,
 			})),
-		})
-			// Best-effort: the id the binding returned, on the Sent copy, so a
-			// bounce can be matched to it (workers/lib/delivery-match.ts).
-			.then((result) => captureSendMessageId(stub, messageId, result))
-			.catch((e) => {
-				console.error("Deferred forward delivery failed:", (e as Error).message);
-			}),
+		});
+	} catch (e) {
+		await c.env.BUCKET.delete(attachmentData.map(attachmentR2Key));
+		return c.json({ error: `Failed to send email: ${(e as Error).message}` }, 502);
+	}
+
+	// The stored Message-ID is the one the binding assigned (upstream #83).
+	const deliveredMessageId = sendResult.messageId || outgoingMessageId;
+	await stub.createEmail(
+		Folders.SENT,
+		{
+			id: messageId,
+			subject,
+			sender: fromEmail,
+			recipient: toStr,
+			cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
+			bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
+			date: new Date().toISOString(),
+			body: html || text || "",
+			in_reply_to: null,
+			email_references: null,
+			thread_id: messageId,
+			message_id: deliveredMessageId,
+			raw_headers: JSON.stringify([
+				{ key: "from", value: typeof from === "string" ? from : `${from.name} <${from.email}>` },
+				{ key: "to", value: Array.isArray(to) ? to.join(", ") : to },
+				...(cc ? [{ key: "cc", value: Array.isArray(cc) ? cc.join(", ") : cc }] : []),
+				...(bcc ? [{ key: "bcc", value: Array.isArray(bcc) ? bcc.join(", ") : bcc }] : []),
+				{ key: "subject", value: subject },
+				{ key: "date", value: new Date().toISOString() },
+				{ key: "message-id", value: `<${deliveredMessageId}>` },
+			]),
+		},
+		attachmentData,
 	);
+
+	// Best-effort: the id the binding returned, on the Sent copy, so a bounce
+	// can be matched to it (workers/lib/delivery-match.ts).
+	await captureSendMessageId(stub, messageId, sendResult);
 
 	return c.json({ id: messageId, status: "sent" }, 202);
 }

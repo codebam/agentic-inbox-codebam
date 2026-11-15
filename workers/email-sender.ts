@@ -83,3 +83,34 @@ export async function sendEmail(
 	const result = await binding.send(message);
 	return { messageId: result.messageId };
 }
+
+// ── shared send seam ─────────────────────────────────────────────
+// The HTTP send routes and the MCP send tools both deliver through this
+// seam so a test can inject a fake sender: wrangler.test.jsonc deliberately
+// declares no send_email binding, so a test run can never deliver real mail.
+
+/** Anything that can deliver one send. Tests inject a fake. */
+export interface SendEmailSender {
+	send(params: SendEmailParams): Promise<{ messageId: string }>;
+}
+
+let sendEmailSenderFactoryOverride: (() => SendEmailSender | null) | null = null;
+
+/**
+ * Test seam: replace the sender the send paths use. Passing null restores
+ * the real Cloudflare Email Service binding path.
+ */
+export function setSendEmailSenderFactory(
+	factory: (() => SendEmailSender | null) | null,
+): void {
+	sendEmailSenderFactoryOverride = factory;
+}
+
+/** The sender the send paths use (honours the test override). */
+export function resolveSendEmailSender(env: { EMAIL: SendEmail }): SendEmailSender {
+	return (
+		sendEmailSenderFactoryOverride?.() ?? {
+			send: (params: SendEmailParams) => sendEmail(env.EMAIL, params),
+		}
+	);
+}
