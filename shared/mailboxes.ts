@@ -131,6 +131,31 @@ export function isMailboxCreationAllowed(
 }
 
 /**
+ * Whether a new mailbox's domain is allowed by the configured DOMAINS.
+ *
+ * Mirrors the front-end domain picker: with DOMAINS set, a mailbox may only
+ * be created on one of those domains. Two escape hatches keep existing
+ * deployments working: an explicit EMAIL_ADDRESSES entry is the authoritative
+ * allow-list and may legitimately span domains beyond DOMAINS, and an empty
+ * DOMAINS imposes no restriction at all. This is a domain check only — the
+ * EMAIL_ADDRESSES / catch-all restriction is `isMailboxCreationAllowed`, and
+ * send/receive are domain-agnostic and unaffected.
+ */
+export function isMailboxDomainAllowed(
+	rawEmail: unknown,
+	rawDomains: unknown,
+	rawConfiguredAddresses: unknown,
+): boolean {
+	const email = normalizeEmailAddress(rawEmail);
+	if (!email) return false;
+	if (normalizeEmailAddressList(rawConfiguredAddresses).includes(email)) return true;
+	const domains = parseDomains(rawDomains);
+	if (domains.length === 0) return true;
+	const domain = emailDomain(email);
+	return domain !== null && domains.includes(domain);
+}
+
+/**
  * Resolve the catch-all mailbox for every configured domain.
  *
  * Precedence:

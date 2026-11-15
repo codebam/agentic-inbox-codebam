@@ -24,7 +24,12 @@
 		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
+		// DOMAINS accepts a comma-separated list to serve several domains from
+		// one instance. Mailbox creation is restricted to these domains (the
+		// New Mailbox picker mirrors it); an empty value imposes no restriction.
 		"DOMAINS": "seanbehan.ca, codebam.ca",
+		// Optional authoritative allow-list of mailbox addresses. Entries may
+		// span domains beyond DOMAINS and bypass the domain restriction.
 		"EMAIL_ADDRESSES": [],
 		// Optional catch-all overrides. Unset derives catch-all@<domain> for
 		// every DOMAINS entry (and creates it on first use).

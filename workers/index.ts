@@ -111,6 +111,7 @@ import {
 	hasConfiguredAddresses,
 	isCatchAllAddress,
 	isMailboxCreationAllowed,
+	isMailboxDomainAllowed,
 	normalizeEmailAddress,
 	normalizeEmailAddressList,
 	parseDomains,
@@ -444,6 +445,12 @@ app.get("/api/v1/mailboxes", async (c) => {
 app.post("/api/v1/mailboxes", async (c) => {
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
 	const email = rawEmail.toLowerCase();
+	// Mirror the front-end domain picker: with DOMAINS configured, a mailbox
+	// may only be created on one of those domains (explicit EMAIL_ADDRESSES
+	// entries and an empty DOMAINS are exempt — see isMailboxDomainAllowed).
+	if (!isMailboxDomainAllowed(email, c.env.DOMAINS, c.env.EMAIL_ADDRESSES)) {
+		return c.json({ error: "Mailbox domain must be one of the configured DOMAINS" }, 400);
+	}
 	const catchAllMailboxes = [
 		...new Set(resolveCatchAllMailboxes(c.env).values()),
 	];

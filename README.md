@@ -23,14 +23,14 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 ### To set up
 
-1. Deploy to Cloudflare. The deploy flow will automatically provision R2, Durable Objects, and Workers AI. You'll be prompted for **DOMAINS**, which is the domain (yourdomain.com) you want to receive emails for (email@yourdomain.com).
+1. Deploy to Cloudflare. The deploy flow will automatically provision R2, Durable Objects, and Workers AI. You'll be prompted for **DOMAINS**, the domain (yourdomain.com) you want to receive emails for (email@yourdomain.com). It accepts a comma-separated list to serve several domains from one instance — see [Using multiple domains](#using-multiple-domains).
 
      [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/codebam/agentic-inbox-codebam)
 
 2. **Configure Cloudflare Access** -- Enable [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) on your Worker under Settings > Domains & Routes. The modal will show your `POLICY_AUD` and `TEAM_DOMAIN` values. `TEAM_DOMAIN` can be either your Access team URL or the full `.../cdn-cgi/access/certs` URL. **You must set these as secrets for your Worker.** Add a **Bypass** policy for `/mcp` and `/mcp/*` so external agents can authenticate with Wrangler keys (see [Agent-first MCP server](#agent-first-mcp-server)) and for `/api/v1/scoped` and `/api/v1/scoped/*` so automation can authenticate with access tokens, per-mailbox or app-wide (see [Scoped automation API](#scoped-automation-api)).
 3. **Set up Email Routing** -- In the Cloudflare dashboard, go to each domain > Email Routing and create a catch-all rule that forwards to this Worker. Mail sent to an address that does not have its own mailbox is delivered to that domain's `catch-all@<domain>` mailbox, which the Worker creates automatically. The original SMTP recipient is preserved and shown as **Delivered to** in the message view.
 4. **Enable Email Service** -- The worker needs the `send_email` binding to send outbound emails. See [Email Service docs](https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/)
-5. **Create a mailbox** -- Visit your deployed app and create a mailbox for any address on your domain (e.g. `hello@example.com`)
+5. **Create a mailbox** -- Visit your deployed app and create a mailbox for any address on a configured domain (e.g. `hello@example.com`)
 
 ### Troubleshooting Access
 
@@ -114,6 +114,24 @@ npm run dev
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
 3. Optional: override catch-all routing with `CATCH_ALL_MAILBOXES` (comma-separated mailbox addresses, one per domain) or `CATCH_ALL_MAILBOX` (one mailbox for every domain). Leave both unset to derive `catch-all@<domain>`. Set `CATCH_ALL_MAILBOX` to an empty string to reject/ignore unknown recipients instead of capturing them.
 4. Optional: set `ENABLE_AI_AGENT` or `ENABLE_MCP` to `"false"` to disable the AI agent (agent panels, `/agents/*`, auto-draft) or the MCP server (`/mcp`). Both default to enabled; see the comments in `wrangler.jsonc`.
+
+### Using multiple domains
+
+A single instance can serve several domains. Set `DOMAINS` to a comma-separated
+list, and add a catch-all Email Routing rule (and verified sending) for each
+domain:
+
+```jsonc
+"DOMAINS": "example.com,another.com"
+```
+
+The New Mailbox dialog offers a domain picker when more than one domain is
+configured, and the backend mirrors it: a mailbox can only be created on a
+configured domain. Two exemptions keep existing setups working — an explicit
+`EMAIL_ADDRESSES` entry is the authoritative allow-list and may span domains
+beyond `DOMAINS`, and an empty `DOMAINS` imposes no restriction. Sending and
+receiving are domain-agnostic; each domain still gets its own
+`catch-all@<domain>` mailbox.
 
 ### Deploy
 
