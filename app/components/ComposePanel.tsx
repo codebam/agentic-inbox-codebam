@@ -8,6 +8,7 @@ import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import AttachmentPicker from "./AttachmentPicker";
 import ComposeBodyEditor from "./ComposeBodyEditor";
+import { ComposeAIBar } from "./ComposeAIBar";
 import SnoozeMenu from "./email-panel/SnoozeMenu";
 import RecipientField from "./RecipientField";
 import TemplatePicker from "./TemplatePicker";
@@ -179,6 +180,9 @@ export default function ComposePanel({
 							value={body}
 							onChange={setBody}
 						/>
+						{mailboxId && (
+							<ComposeAIBar mailboxId={mailboxId} body={body} onRewrite={setBody} />
+						)}
 					</div>
 				</AttachmentPicker>
 

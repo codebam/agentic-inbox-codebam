@@ -48,6 +48,8 @@ export const DEFAULT_MODELS = {
 	extractor: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 	/** Model that summarizes a thread on demand. */
 	summarizer: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+	/** Model that rewrites a compose draft on demand (polish/tone/shorten/custom). */
+	rewrite: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 } as const;
 
 
@@ -64,6 +66,7 @@ export const MODEL_CONFIG_KEYS: readonly ModelConfigKey[] = [
 	// Appended at the end: the settings UI renders fields in this order,
 	// so a new key lands after the existing ones.
 	"summarizer",
+	"rewrite",
 ];
 
 
@@ -75,6 +78,7 @@ export const MODEL_CONFIG_LABELS: Record<ModelConfigKey, string> = {
 	classifier: "Email classifier model",
 	extractor: "Items extractor model",
 	summarizer: "Thread summarizer model",
+	rewrite: "Compose rewrite model",
 };
 
 
@@ -90,6 +94,7 @@ export interface ModelConfig {
 	classifier?: string;
 	extractor?: string;
 	summarizer?: string;
+	rewrite?: string;
 }
 
 

@@ -62,6 +62,7 @@ import { normalizeDigestEnabled } from "../shared/digest";
 import { digestWindow } from "./lib/digest";
 import { reconstructedMessage } from "./lib/eml-export";
 import { runThreadSummary } from "./lib/thread-summary";
+import { isRewriteAction, rewriteEmailBody } from "./lib/ai-rewrite";
 import { normalizeItemsSettings } from "../shared/items";
 import { normalizeSemanticSearchSettings, SEMANTIC_SEARCH_LIMIT_MAX } from "../shared/semantic";
 import { DEFAULT_ATTACHMENT_TYPE } from "../app/lib/attachments";
@@ -2746,6 +2747,32 @@ app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId/summary", async (c: AppC
 		return c.json({ error: "Thread summarization is unavailable right now." }, 502);
 	}
 	return c.json({ summary: result.summary });
+});
+
+/**
+ * On-demand AI rewrite of a compose draft (upstream #55). The reader picks a
+ * quick action or types a custom instruction; the mailbox's rewrite model
+ * returns the rewritten body, which the composer substitutes for the draft.
+ * A deliberate user action on outgoing text — nothing here sends mail.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/ai/rewrite", async (c: AppContext) => {
+	const mailboxId = decodeURIComponent(c.req.param("mailboxId")!);
+	const { body, action, instruction } = (await c.req.json().catch(() => ({}))) as {
+		body?: string;
+		action?: string;
+		instruction?: string;
+	};
+	if (!body || !body.trim()) return c.json({ error: "body is required" }, 400);
+	if (!isRewriteAction(action)) {
+		return c.json({ error: "action must be polish, formalize, friendly, shorten or custom" }, 400);
+	}
+	try {
+		const rewritten = await rewriteEmailBody(c.env, mailboxId, body, action, instruction);
+		return c.json({ body: rewritten });
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "AI rewrite failed";
+		return c.json({ error: message }, 502);
+	}
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppContext) => {

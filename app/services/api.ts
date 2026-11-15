@@ -227,6 +227,15 @@ const api = {
 	deleteMailbox: (mailboxId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
 
+	// AI compose rewrite — a deliberate user action on a draft; never sends mail.
+	/** Rewrite a compose body with the mailbox's AI model (quick action or custom instruction). */
+	rewriteEmailBody: (
+		mailboxId: string,
+		body: string,
+		action: string,
+		instruction?: string,
+	) => post<{ body: string }>(`/api/v1/mailboxes/${mailboxId}/ai/rewrite`, { body, action, instruction }),
+
 	// Morning digest — the trailing-24-hour brief. Read-only: delivery goes
 	// through the mailbox webhook and the daily cron, never this route.
 	/** The mailbox's morning brief for the trailing 24 hours. */
